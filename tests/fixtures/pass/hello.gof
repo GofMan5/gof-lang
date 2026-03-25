@@ -1,0 +1,8 @@
+fn add(a, b):
+    return a + b
+
+fn main():
+    base = 40
+    mut total = add(base, 1)
+    total = total + 1
+    return total

@@ -1,0 +1,17 @@
+[package]
+name = "gof-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+gof-compiler = { path = "../../compiler/gof-compiler" }
+
+[dev-dependencies]
+criterion = "0.7.0"
+
+[[bench]]
+name = "bootstrap_pipeline"
+harness = false
+

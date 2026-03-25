@@ -1,0 +1,122 @@
+use crate::ast::BinaryOp;
+use crate::mir::{MirFunction, MirInstruction, MirModule};
+use crate::typed_hir::Type;
+use serde::Serialize;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SsaModule {
+    pub functions: Vec<SsaFunction>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SsaFunction {
+    pub name: String,
+    pub params: Vec<String>,
+    pub return_type: Type,
+    pub values: Vec<SsaValue>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SsaValue {
+    pub name: String,
+    pub instruction: SsaInstruction,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum SsaInstruction {
+    ConstInt(i64),
+    ConstString(String),
+    LoadLocal(String),
+    StoreLocal {
+        name: String,
+        src: String,
+        mutable: bool,
+        declare: bool,
+    },
+    Call {
+        callee: String,
+        args: Vec<String>,
+    },
+    Binary {
+        lhs: String,
+        op: BinaryOp,
+        rhs: String,
+    },
+    Eval(String),
+    Return(String),
+}
+
+pub fn lower(module: &MirModule) -> SsaModule {
+    SsaModule {
+        functions: module.functions.iter().map(lower_function).collect(),
+    }
+}
+
+fn lower_function(function: &MirFunction) -> SsaFunction {
+    let values = function
+        .instructions
+        .iter()
+        .map(lower_instruction)
+        .collect::<Vec<_>>();
+
+    SsaFunction {
+        name: function.name.clone(),
+        params: function.params.clone(),
+        return_type: function.return_type,
+        values,
+    }
+}
+
+fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
+    match instruction {
+        MirInstruction::ConstInt { dest, value } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::ConstInt(*value),
+        },
+        MirInstruction::ConstString { dest, value } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::ConstString(value.clone()),
+        },
+        MirInstruction::LoadLocal { dest, name } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::LoadLocal(name.clone()),
+        },
+        MirInstruction::StoreLocal {
+            name,
+            src,
+            mutable,
+            declare,
+        } => SsaValue {
+            name: format!("%store_{name}"),
+            instruction: SsaInstruction::StoreLocal {
+                name: name.clone(),
+                src: format!("%{src}"),
+                mutable: *mutable,
+                declare: *declare,
+            },
+        },
+        MirInstruction::Call { dest, callee, args } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::Call {
+                callee: callee.clone(),
+                args: args.iter().map(|arg| format!("%{arg}")).collect(),
+            },
+        },
+        MirInstruction::Binary { dest, lhs, op, rhs } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::Binary {
+                lhs: format!("%{lhs}"),
+                op: *op,
+                rhs: format!("%{rhs}"),
+            },
+        },
+        MirInstruction::Eval { value } => SsaValue {
+            name: format!("%eval_{value}"),
+            instruction: SsaInstruction::Eval(format!("%{value}")),
+        },
+        MirInstruction::Return { value } => SsaValue {
+            name: "%ret".to_string(),
+            instruction: SsaInstruction::Return(format!("%{value}")),
+        },
+    }
+}
