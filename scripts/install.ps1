@@ -1,7 +1,7 @@
 param(
     [string]$Version = "latest",
     [string]$Repo = "GofMan5/gof-lang",
-    [string]$InstallRoot = "$HOME\.gof"
+    [string]$InstallRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,12 +21,12 @@ New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 try {
     Write-Host "Downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $installerPath
-    $installerArgs = @("/quiet")
+    $installerArgs = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-")
     if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
-        $installerArgs += "/installRoot=$InstallRoot"
+        $installerArgs += "/DIR=$InstallRoot"
     }
     Start-Process -FilePath $installerPath -ArgumentList $installerArgs -Wait -NoNewWindow
-    Write-Host "Installed gof with the Windows installer package."
+    Write-Host "Installed gof with the Windows setup package."
     Write-Host "Run the installer again later to update."
 } finally {
     if (Test-Path $tempDir) {

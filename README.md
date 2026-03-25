@@ -101,7 +101,7 @@ irm https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.ps1 
 ```
 
 Run the same installer command later to update to the newest release.
-The Windows install flow now downloads and runs a real `setup.exe`, which installs `gof` into the current user profile and updates PATH.
+The Windows install flow now downloads and runs an `Inno Setup`-built `setup.exe`, which installs `gof` into the current user profile and updates PATH.
 
 Install a specific tagged release on Unix-like systems:
 

@@ -46,7 +46,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` Cross-platform install scripts for released binaries
 - `[x]` Packaging smoke builds on CI for Linux, Windows, and macOS
 - `[x]` Local rolling snapshot publish script for every maintainer push
-- `[x]` Windows `setup.exe` installer with PATH integration for user-level installs
+- `[x]` Windows `Inno Setup` installer with PATH integration for user-level installs
 - Exit criteria:
 - governance docs exist
 - quality rules are explicit

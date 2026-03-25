@@ -28,8 +28,6 @@ try {
     Copy-Item "target/release/gof.exe" (Join-Path $installerPayloadDir "gof.exe") -Force
     Copy-Item "README.md" (Join-Path $installerPayloadDir "README.md") -Force
     Copy-Item "LICENSE" (Join-Path $installerPayloadDir "LICENSE") -Force
-    Copy-Item "scripts/windows-installer/install-gof.ps1" (Join-Path $installerPayloadDir "install-gof.ps1") -Force
-    Copy-Item "scripts/windows-installer/uninstall-gof.ps1" (Join-Path $installerPayloadDir "uninstall-gof.ps1") -Force
 
     $archivePath = Join-Path $DistDir $zipAsset
     if (Test-Path $archivePath) {
