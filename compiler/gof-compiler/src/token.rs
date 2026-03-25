@@ -4,10 +4,12 @@ use serde::Serialize;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum TokenKind {
     Module,
+    Import,
     Fn,
     If,
     Else,
     While,
+    Go,
     Return,
     Struct,
     Enum,
@@ -35,6 +37,7 @@ pub enum TokenKind {
     LessEqual,
     Greater,
     GreaterEqual,
+    Arrow,
     Plus,
     Minus,
     Star,

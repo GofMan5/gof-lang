@@ -1,0 +1,5 @@
+fn truth() -> bool:
+    return 1
+
+fn main() -> bool:
+    return truth()

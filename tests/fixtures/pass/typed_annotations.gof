@@ -1,0 +1,7 @@
+fn square(x: int) -> int:
+    return x * x
+
+fn main() -> int:
+    task: task = go square(7)
+    value: int = await task
+    return value

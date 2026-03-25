@@ -1,0 +1,4 @@
+import math
+
+fn main() -> int:
+    return square(11)

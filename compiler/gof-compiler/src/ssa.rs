@@ -38,6 +38,13 @@ pub enum SsaInstruction {
         callee: String,
         args: Vec<String>,
     },
+    Spawn {
+        callee: String,
+        args: Vec<String>,
+    },
+    Await {
+        task: String,
+    },
     Binary {
         lhs: String,
         op: BinaryOp,
@@ -72,7 +79,7 @@ fn lower_function(function: &MirFunction) -> SsaFunction {
     SsaFunction {
         name: function.name.clone(),
         params: function.params.clone(),
-        return_type: function.return_type,
+        return_type: function.return_type.clone(),
         values,
     }
 }
@@ -114,6 +121,19 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             instruction: SsaInstruction::Call {
                 callee: callee.clone(),
                 args: args.iter().map(|arg| format!("%{arg}")).collect(),
+            },
+        },
+        MirInstruction::Spawn { dest, callee, args } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::Spawn {
+                callee: callee.clone(),
+                args: args.iter().map(|arg| format!("%{arg}")).collect(),
+            },
+        },
+        MirInstruction::Await { dest, task } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::Await {
+                task: format!("%{task}"),
             },
         },
         MirInstruction::Binary { dest, lhs, op, rhs } => SsaValue {

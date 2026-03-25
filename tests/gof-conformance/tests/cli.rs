@@ -56,6 +56,87 @@ fn gof_run_executes_factorial_example() {
 }
 
 #[test]
+fn gof_run_executes_concurrent_squares_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("concurrent_squares.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("225"));
+}
+
+#[test]
+fn gof_run_executes_modular_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("modules")
+        .join("main.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("121"));
+}
+
+#[test]
+fn gof_run_executes_local_import_graph() {
+    let temp = tempdir().expect("tempdir should exist");
+    let helper_path = temp.path().join("math.gof");
+    let main_path = temp.path().join("main.gof");
+
+    fs::write(
+        &helper_path,
+        "fn square(x: int) -> int:\n    return x * x\n",
+    )
+    .expect("helper module should be written");
+    fs::write(
+        &main_path,
+        "import math\n\nfn main() -> int:\n    return square(9)\n",
+    )
+    .expect("main module should be written");
+
+    gof_command()
+        .arg("run")
+        .arg(&main_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("81"));
+}
+
+#[test]
+fn gof_run_reports_imported_file_diagnostics_with_their_path() {
+    let temp = tempdir().expect("tempdir should exist");
+    let helper_path = temp.path().join("math.gof");
+    let main_path = temp.path().join("main.gof");
+    let helper_display = helper_path.to_string_lossy().to_string();
+
+    fs::write(
+        &helper_path,
+        "fn square(x: int) -> int:\n    return await 1\n",
+    )
+    .expect("helper module should be written");
+    fs::write(
+        &main_path,
+        "import math\n\nfn main() -> int:\n    return square(9)\n",
+    )
+    .expect("main module should be written");
+
+    gof_command()
+        .arg("run")
+        .arg(&main_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(helper_display))
+        .stderr(predicate::str::contains("GOF3009"));
+}
+
+#[test]
 fn gof_mod_init_writes_manifest() {
     let temp = tempdir().expect("tempdir should exist");
     gof_command()
@@ -75,7 +156,7 @@ fn gof_fmt_rewrites_source() {
     let source_path = temp.path().join("main.gof");
     fs::write(
         &source_path,
-        "fn add(a, b):\n    return a+b\n\nfn main():\n    mut total=add(1,2)\n    total=total+1\n    return total\n",
+        "fn add(a:int, b:int)->int:\n    return a+b\n\nfn main()->int:\n    mut total:int=add(1,2)\n    total=total+1\n    return total\n",
     )
     .expect("source should be written");
 
@@ -88,7 +169,7 @@ fn gof_fmt_rewrites_source() {
     let formatted = fs::read_to_string(&source_path).expect("formatted source should exist");
     assert_eq!(
         formatted,
-        "fn add(a, b):\n    return a + b\n\nfn main():\n    mut total = add(1, 2)\n    total = total + 1\n    return total\n"
+        "fn add(a: int, b: int) -> int:\n    return a + b\n\nfn main() -> int:\n    mut total: int = add(1, 2)\n    total = total + 1\n    return total\n"
     );
 }
 

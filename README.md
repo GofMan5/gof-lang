@@ -41,11 +41,11 @@
 |---|---|
 | CLI | `gof build`, `gof run`, `gof test`, `gof fmt`, `gof mod init`, `gof doc`, `gof bench` |
 | Лексер | чувствительность к отступам, `INDENT` / `DEDENT`, базовые токены языка |
-| Парсер | функции, параметры, биндинги, присваивания, вызовы функций, арифметика |
-| Семантика | проверки неизвестных локалов, immutable reassignment, unknown function, wrong arity, duplicate binding, bool conditions |
+| Парсер | функции, параметры с optional type annotations, биндинги, typed bindings, присваивания, вызовы функций, арифметика, `go`, `await` |
+| Семантика | проверки неизвестных локалов, immutable reassignment, unknown function, wrong arity, duplicate binding, bool conditions, корректность `go/await`, вывод возвращаемых типов функций, проверки type annotations |
 | Formatter | детерминированное форматирование bootstrap-подмножества языка |
 | Pipeline | `Lexer -> CST -> AST -> HIR -> Typed HIR -> MIR -> SSA -> backend artifact` |
-| Исполнение | bootstrap evaluator для запуска программ через `gof run`, включая `if/else` и `while` |
+| Исполнение | bootstrap evaluator для запуска программ через `gof run`, включая `if/else`, `while` и первый task-based concurrency slice |
 | Тесты | unit, integration, fixture-based conformance, benchmark harness |
 
 ### Что пока еще не реализовано
@@ -54,7 +54,7 @@
 |---|---|
 | Нативный machine code backend | еще нет |
 | Импорты и модульная система как рабочая user-facing фича | еще нет |
-| `struct`, `enum`, `protocol`, `match`, `async/await`, `select`, `defer`, `unsafe` | зарезервированы в направлении языка, но пока не реализованы |
+| `struct`, `enum`, `protocol`, `match`, `async`, `select`, `defer`, `unsafe` | зарезервированы в направлении языка, но пока не реализованы |
 | Реальный stdlib | еще нет |
 | Полноценный package resolver и registry | еще нет |
 | Производственный runtime с GC/scheduler/FFI | еще нет |
@@ -66,12 +66,12 @@
 ## Как выглядит код на `gof`
 
 ```gof
-fn add(a, b):
+fn add(a: int, b: int) -> int:
     return a + b
 
-fn main():
-    base = 40
-    mut total = add(base, 1)
+fn main() -> int:
+    base: int = 40
+    mut total: int = add(base, 1)
     total = total + 1
     return total
 ```
@@ -90,12 +90,21 @@ fn main():
 
 - top-level `fn`
 - параметры функций
+- optional builtin type annotations у параметров
+- explicit builtin return type annotations через `fn name(...) -> type:`
+- local same-directory imports через `import name`
 - блоки через отступы
 - `return`
 - `if` / `else`
 - `while`
+- `go some_function(...)`
+- `await task`
+- local module graph resolution для sibling `.gof` файлов
+- вывод возвращаемых типов функций по `return`-выражениям на уровне модуля
 - immutable binding через `name = expr`
+- typed immutable binding через `name: type = expr`
 - mutable binding через `mut name = expr`
+- typed mutable binding через `mut name: type = expr`
 - повторное присваивание только mutable-переменным
 - целочисленные литералы
 - булевы литералы `true` / `false`
@@ -108,9 +117,21 @@ fn main():
 ### Правила биндингов
 
 - `name = expr` создает новую immutable-переменную, если такого имени еще нет
+- `name: type = expr` создает immutable binding с явным builtin-типом
 - `mut name = expr` создает mutable-переменную
+- `mut name: type = expr` создает mutable binding с явным builtin-типом
 - попытка изменить immutable binding приводит к диагностике компилятора
+- параметры и bindings сейчас поддерживают builtin-annotations: `int`, `string`, `bool`, `task`, `unit`
+- функции сейчас поддерживают явный return contract через `-> int`, `-> string`, `-> bool`, `-> task`, `-> unit`
+- `import name` сейчас ищет `name.gof` рядом с текущим файлом и подключает его top-level функции в bootstrap module graph
 - вызовы функций в bootstrap-режиме разрешены только для top-level функций
+- compiler пытается вывести один стабильный return type для каждой функции
+- если у функции есть явный return type, тело обязано ему соответствовать
+- все `return` внутри одной функции должны быть совместимыми по типу
+- циклы imports и duplicate top-level functions между модулями сейчас запрещены диагностикой
+- `go` в bootstrap-режиме пока разрешен только для top-level именованных функций
+- task-значение несет тип результата вызываемой функции, если он уже выводится компилятором
+- `await` работает только с task-значениями, созданными через `go`
 
 ---
 
@@ -218,6 +239,11 @@ cargo bench -p gof-bench --no-run
 - неверное число аргументов
 - повторное объявление binding в одной функции
 - небулевы условия в `if` и `while`
+- некорректную цель для `go`
+- попытку `await` не-task значения
+- несовместимые `return`-типы внутри одной функции
+- неизвестные type annotations
+- несовместимость между annotation и реальным типом выражения
 
 См.:
 
@@ -274,7 +300,7 @@ cargo bench -p gof-bench --no-run
 
 - imports и module loading
 - `if`, циклы и расширение statement/expression surface
-- более сильный type inference
+- более сильный type inference за пределами текущих builtin annotations и return inference
 - typed bindings и richer semantic analysis
 - реальный package resolver
 - backend ниже уровня SSA JSON

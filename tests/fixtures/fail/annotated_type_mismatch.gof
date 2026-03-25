@@ -1,0 +1,6 @@
+fn add_one(x: int):
+    return x + 1
+
+fn main():
+    value: string = add_one(1)
+    return value

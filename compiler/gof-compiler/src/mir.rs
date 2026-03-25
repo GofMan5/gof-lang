@@ -44,6 +44,15 @@ pub enum MirInstruction {
         callee: String,
         args: Vec<usize>,
     },
+    Spawn {
+        dest: usize,
+        callee: String,
+        args: Vec<usize>,
+    },
+    Await {
+        dest: usize,
+        task: usize,
+    },
     Binary {
         dest: usize,
         lhs: usize,
@@ -79,8 +88,12 @@ fn lower_function(function: &TypedFunction) -> MirFunction {
 
     MirFunction {
         name: function.name.clone(),
-        params: function.params.clone(),
-        return_type: function.return_type,
+        params: function
+            .params
+            .iter()
+            .map(|param| param.name.clone())
+            .collect(),
+        return_type: function.return_type.clone(),
         instructions: builder.instructions,
     }
 }
@@ -200,6 +213,25 @@ impl MirBuilder {
                     callee: callee.clone(),
                     args,
                 });
+                dest
+            }
+            TypedExprKind::Spawn { callee, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg))
+                    .collect::<Vec<_>>();
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::Spawn {
+                    dest,
+                    callee: callee.clone(),
+                    args,
+                });
+                dest
+            }
+            TypedExprKind::Await { value } => {
+                let task = self.lower_expr(value);
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::Await { dest, task });
                 dest
             }
             TypedExprKind::Binary { lhs, op, rhs } => {

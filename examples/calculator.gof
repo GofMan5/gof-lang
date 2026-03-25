@@ -1,14 +1,14 @@
-fn add(a, b):
+fn add(a: int, b: int) -> int:
     return a + b
 
-fn sub(a, b):
+fn sub(a: int, b: int) -> int:
     return a - b
 
-fn calculate():
-    base = add(120, 30)
-    mut total = sub(base, 50)
+fn calculate() -> int:
+    base: int = add(120, 30)
+    mut total: int = sub(base, 50)
     total = add(total, 7)
     return total
 
-fn main():
+fn main() -> int:
     return calculate()

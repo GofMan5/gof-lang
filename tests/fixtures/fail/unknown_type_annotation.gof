@@ -1,0 +1,3 @@
+fn main(x: number) -> number:
+    value: number = 1
+    return x

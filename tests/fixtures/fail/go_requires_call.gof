@@ -1,0 +1,3 @@
+fn main():
+    worker = 42
+    return go worker

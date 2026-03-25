@@ -1,5 +1,6 @@
 use crate::source::{SourceFile, Span};
 use std::fmt::{Display, Formatter};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Severity {
@@ -15,6 +16,7 @@ pub struct Diagnostic {
     pub note: String,
     pub span: Span,
     pub fix_it: Option<String>,
+    pub source_path: Option<PathBuf>,
 }
 
 impl Diagnostic {
@@ -31,6 +33,7 @@ impl Diagnostic {
             note: note.into(),
             span,
             fix_it: None,
+            source_path: None,
         }
     }
 
@@ -39,12 +42,14 @@ impl Diagnostic {
         self
     }
 
+    pub fn with_source_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.source_path = Some(path.into());
+        self
+    }
+
     pub fn render(&self, source: &SourceFile) -> String {
-        let line = source
-            .text()
-            .lines()
-            .nth(self.span.line.saturating_sub(1))
-            .unwrap_or_default();
+        let render_path = self.source_path.as_deref().unwrap_or_else(|| source.path());
+        let line = source_line(render_path, source, self.span.line);
         let caret_width = self.span.end_column.saturating_sub(self.span.column).max(1);
         let padding = " ".repeat(self.span.column.saturating_sub(1));
         let marker = "^".repeat(caret_width);
@@ -56,7 +61,7 @@ impl Diagnostic {
 
         format!(
             "{}:{}:{}: {}: {}\n{}\n{}{}\nnote: {}{}",
-            source.path().display(),
+            render_path.display(),
             self.span.line,
             self.span.column,
             self.code,
@@ -93,6 +98,14 @@ impl Diagnostics {
             .collect::<Vec<_>>()
             .join("\n\n")
     }
+
+    pub fn with_source_path(mut self, path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        for diagnostic in &mut self.0 {
+            diagnostic.source_path = Some(path.clone());
+        }
+        self
+    }
 }
 
 impl From<Vec<Diagnostic>> for Diagnostics {
@@ -114,3 +127,23 @@ impl Display for Diagnostics {
 }
 
 impl std::error::Error for Diagnostics {}
+
+fn source_line(path: &Path, fallback: &SourceFile, line_number: usize) -> String {
+    if path == fallback.path() {
+        return fallback
+            .text()
+            .lines()
+            .nth(line_number.saturating_sub(1))
+            .unwrap_or_default()
+            .to_string();
+    }
+
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .nth(line_number.saturating_sub(1))
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}

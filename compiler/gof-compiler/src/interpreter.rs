@@ -1,14 +1,110 @@
-use crate::ast::{BinaryOp, Expr, Function, Module, Stmt};
+use crate::ast::{BinaryOp, Expr, Function, Module, Param, Stmt};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
 use std::collections::HashMap;
+use std::fmt::{Debug, Formatter};
+use std::panic::AssertUnwindSafe;
+use std::path::Path;
+use std::sync::{Arc, Condvar, Mutex};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+type FunctionTable = Arc<HashMap<String, Function>>;
+
+#[derive(Clone)]
 pub enum Value {
     Int(i64),
     String(String),
     Bool(bool),
+    Task(TaskValue),
     Unit,
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Int(value) => f.debug_tuple("Int").field(value).finish(),
+            Self::String(value) => f.debug_tuple("String").field(value).finish(),
+            Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            Self::Task(_) => f.write_str("Task(<pending-or-completed>)"),
+            Self::Unit => f.write_str("Unit"),
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Int(lhs), Self::Int(rhs)) => lhs == rhs,
+            (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
+            (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
+            (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
+            (Self::Unit, Self::Unit) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Value {}
+
+impl Value {
+    pub fn cli_text(&self) -> Option<String> {
+        match self {
+            Self::Int(value) => Some(value.to_string()),
+            Self::String(value) => Some(value.clone()),
+            Self::Bool(value) => Some(value.to_string()),
+            Self::Task(_) => Some("<task>".to_string()),
+            Self::Unit => None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TaskValue(Arc<TaskHandle>);
+
+impl TaskValue {
+    fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    fn await_value(&self) -> Result<Value, Diagnostics> {
+        self.0.await_value()
+    }
+}
+
+#[derive(Debug)]
+struct TaskHandle {
+    result: Arc<(Mutex<Option<Result<Value, Diagnostics>>>, Condvar)>,
+}
+
+impl TaskHandle {
+    fn new() -> Self {
+        Self {
+            result: Arc::new((Mutex::new(None), Condvar::new())),
+        }
+    }
+
+    fn store(&self, result: Result<Value, Diagnostics>) {
+        let (lock, ready) = &*self.result;
+        let mut slot = lock
+            .lock()
+            .expect("task result mutex should not be poisoned");
+        *slot = Some(result);
+        ready.notify_all();
+    }
+
+    fn await_value(&self) -> Result<Value, Diagnostics> {
+        let (lock, ready) = &*self.result;
+        let mut slot = lock
+            .lock()
+            .expect("task result mutex should not be poisoned");
+        while slot.is_none() {
+            slot = ready
+                .wait(slot)
+                .expect("task result wait should not be poisoned");
+        }
+        slot.as_ref()
+            .expect("task result should exist after wait")
+            .clone()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -23,10 +119,10 @@ struct ScopeStack {
 }
 
 impl ScopeStack {
-    fn new(params: &[String], args: &[Value]) -> Self {
+    fn new(params: &[Param], args: &[Value]) -> Self {
         let root = params
             .iter()
-            .cloned()
+            .map(|param| param.name.clone())
             .zip(args.iter().cloned())
             .map(|(name, value)| {
                 (
@@ -78,13 +174,15 @@ impl ScopeStack {
 }
 
 pub fn run(module: &Module) -> Result<Value, Diagnostics> {
-    let functions = module
-        .functions
-        .iter()
-        .map(|function| (function.name.clone(), function))
-        .collect::<HashMap<_, _>>();
+    let functions = Arc::new(
+        module
+            .functions
+            .iter()
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect::<HashMap<_, _>>(),
+    );
 
-    let main = functions.get("main").ok_or_else(|| {
+    let main = functions.get("main").cloned().ok_or_else(|| {
         Diagnostics(vec![
             Diagnostic::error(
                 "GOF3001",
@@ -108,29 +206,38 @@ pub fn run(module: &Module) -> Result<Value, Diagnostics> {
         ]));
     }
 
-    eval_function(main, &[], &functions)
+    eval_function(&main, &[], &functions)
 }
 
 fn eval_function(
     function: &Function,
     args: &[Value],
-    functions: &HashMap<String, &Function>,
+    functions: &FunctionTable,
 ) -> Result<Value, Diagnostics> {
     if function.params.len() != args.len() {
-        return Err(Diagnostics(vec![Diagnostic::error(
-            "GOF3005",
-            format!("wrong number of arguments for `{}`", function.name),
-            format!(
-                "expected {} argument(s), got {}",
-                function.params.len(),
-                args.len()
-            ),
-            function.span,
-        )]));
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{}`", function.name),
+                format!(
+                    "expected {} argument(s), got {}",
+                    function.params.len(),
+                    args.len()
+                ),
+                function.span,
+            )
+            .with_source_path(function.source_path.clone()),
+        ]));
     }
 
     let mut scopes = ScopeStack::new(&function.params, args);
-    if let Some(value) = eval_block(&function.body, &mut scopes, functions, false)? {
+    if let Some(value) = eval_block(
+        &function.body,
+        &mut scopes,
+        functions,
+        false,
+        &function.source_path,
+    )? {
         Ok(value)
     } else {
         Ok(Value::Unit)
@@ -140,15 +247,16 @@ fn eval_function(
 fn eval_block(
     stmts: &[Stmt],
     scopes: &mut ScopeStack,
-    functions: &HashMap<String, &Function>,
+    functions: &FunctionTable,
     nested_scope: bool,
+    source_path: &Path,
 ) -> Result<Option<Value>, Diagnostics> {
     if nested_scope {
         scopes.push();
     }
 
     for stmt in stmts {
-        if let Some(value) = eval_stmt(stmt, scopes, functions)? {
+        if let Some(value) = eval_stmt(stmt, scopes, functions, source_path)? {
             if nested_scope {
                 scopes.pop();
             }
@@ -166,15 +274,17 @@ fn eval_block(
 fn eval_stmt(
     stmt: &Stmt,
     scopes: &mut ScopeStack,
-    functions: &HashMap<String, &Function>,
+    functions: &FunctionTable,
+    source_path: &Path,
 ) -> Result<Option<Value>, Diagnostics> {
     match stmt {
-        Stmt::Return(expr, _) => Ok(Some(eval_expr(expr, scopes, functions)?)),
+        Stmt::Return(expr, _) => Ok(Some(eval_expr(expr, scopes, functions, source_path)?)),
         Stmt::Bind {
             name,
             mutable,
             value,
             span,
+            ..
         } => {
             if scopes.contains_in_current(name) {
                 return Err(Diagnostics(vec![Diagnostic::error(
@@ -185,7 +295,7 @@ fn eval_stmt(
                 )]));
             }
 
-            let value = eval_expr(value, scopes, functions)?;
+            let value = eval_expr(value, scopes, functions, source_path)?;
             scopes.define_current(
                 name.clone(),
                 Binding {
@@ -196,7 +306,7 @@ fn eval_stmt(
             Ok(None)
         }
         Stmt::Assign { name, value, span } => {
-            let value = eval_expr(value, scopes, functions)?;
+            let value = eval_expr(value, scopes, functions, source_path)?;
             if let Some(existing) = scopes.get_mut(name) {
                 if !existing.mutable {
                     return Err(Diagnostics(vec![
@@ -206,7 +316,8 @@ fn eval_stmt(
                             "bindings declared without `mut` are immutable after their first assignment",
                             *span,
                         )
-                        .with_fix_it("declare the binding as `mut name = ...` before reassigning it"),
+                        .with_fix_it("declare the binding as `mut name = ...` before reassigning it")
+                        .with_source_path(source_path.to_path_buf()),
                     ]));
                 }
                 existing.value = value;
@@ -227,10 +338,10 @@ fn eval_stmt(
             else_body,
             ..
         } => {
-            let condition = eval_expr(condition, scopes, functions)?;
+            let condition = eval_expr(condition, scopes, functions, source_path)?;
             match condition {
-                Value::Bool(true) => eval_block(then_body, scopes, functions, true),
-                Value::Bool(false) => eval_block(else_body, scopes, functions, true),
+                Value::Bool(true) => eval_block(then_body, scopes, functions, true, source_path),
+                Value::Bool(false) => eval_block(else_body, scopes, functions, true, source_path),
                 _ => Err(Diagnostics(vec![
                     Diagnostic::error(
                         "GOF3007",
@@ -238,7 +349,8 @@ fn eval_stmt(
                         "control-flow conditions in gof currently require a boolean expression",
                         condition_span(stmt),
                     )
-                    .with_fix_it("use a comparison like `x > 0` or a boolean literal"),
+                    .with_fix_it("use a comparison like `x > 0` or a boolean literal")
+                    .with_source_path(source_path.to_path_buf()),
                 ])),
             }
         }
@@ -246,31 +358,34 @@ fn eval_stmt(
             condition, body, ..
         } => {
             loop {
-                let value = eval_expr(condition, scopes, functions)?;
+                let value = eval_expr(condition, scopes, functions, source_path)?;
                 match value {
                     Value::Bool(true) => {
-                        if let Some(result) = eval_block(body, scopes, functions, true)? {
+                        if let Some(result) =
+                            eval_block(body, scopes, functions, true, source_path)?
+                        {
                             return Ok(Some(result));
                         }
                     }
                     Value::Bool(false) => break,
                     _ => {
                         return Err(Diagnostics(vec![
-                        Diagnostic::error(
-                            "GOF3007",
-                            "condition must evaluate to `bool`",
-                            "control-flow conditions in gof currently require a boolean expression",
-                            condition_span(stmt),
-                        )
-                        .with_fix_it("use a comparison like `x > 0` or a boolean literal"),
-                    ]));
+                            Diagnostic::error(
+                                "GOF3007",
+                                "condition must evaluate to `bool`",
+                                "control-flow conditions in gof currently require a boolean expression",
+                                condition_span(stmt),
+                            )
+                            .with_fix_it("use a comparison like `x > 0` or a boolean literal")
+                            .with_source_path(source_path.to_path_buf()),
+                        ]));
                     }
                 }
             }
             Ok(None)
         }
         Stmt::Expr(expr, _) => {
-            let _ = eval_expr(expr, scopes, functions)?;
+            let _ = eval_expr(expr, scopes, functions, source_path)?;
             Ok(None)
         }
     }
@@ -279,7 +394,8 @@ fn eval_stmt(
 fn eval_expr(
     expr: &Expr,
     scopes: &ScopeStack,
-    functions: &HashMap<String, &Function>,
+    functions: &FunctionTable,
+    source_path: &Path,
 ) -> Result<Value, Diagnostics> {
     match expr {
         Expr::Int(value, _) => Ok(Value::Int(*value)),
@@ -296,11 +412,12 @@ fn eval_expr(
                         "the identifier is not a parameter or a previously created binding in scope",
                         *span,
                     )
-                    .with_fix_it("define the binding before using it"),
+                    .with_fix_it("define the binding before using it")
+                    .with_source_path(source_path.to_path_buf()),
                 ])
             }),
         Expr::Call { callee, args, span } => {
-            let function = functions.get(callee).ok_or_else(|| {
+            let function = functions.get(callee).cloned().ok_or_else(|| {
                 Diagnostics(vec![
                     Diagnostic::error(
                         "GOF3004",
@@ -308,24 +425,110 @@ fn eval_expr(
                         "only top-level named functions can be called in the bootstrap evaluator",
                         *span,
                     )
-                    .with_fix_it("define the function before calling it"),
+                    .with_fix_it("define the function before calling it")
+                    .with_source_path(source_path.to_path_buf()),
                 ])
             })?;
             let values = args
                 .iter()
-                .map(|arg| eval_expr(arg, scopes, functions))
+                .map(|arg| eval_expr(arg, scopes, functions, source_path))
                 .collect::<Result<Vec<_>, _>>()?;
-            eval_function(function, &values, functions)
+            eval_function(&function, &values, functions)
         }
+        Expr::Go { value, span } => match value.as_ref() {
+            Expr::Call { callee, args, span } => {
+                let values = args
+                    .iter()
+                    .map(|arg| eval_expr(arg, scopes, functions, source_path))
+                    .collect::<Result<Vec<_>, _>>()?;
+                spawn_task(callee, values, *span, functions, source_path)
+            }
+            _ => Err(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3008",
+                    "`go` currently requires a named function call",
+                    "the bootstrap concurrency model only supports `go some_fn(...)` for top-level functions",
+                    *span,
+                )
+                .with_fix_it("replace this expression with `go some_function(...)`")
+                .with_source_path(source_path.to_path_buf()),
+            ])),
+        },
+        Expr::Await { value, span } => match eval_expr(value, scopes, functions, source_path)? {
+            Value::Task(task) => task.await_value(),
+            _ => Err(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3009",
+                    "`await` requires a task value",
+                    "only values produced by `go` can currently be awaited in the bootstrap evaluator",
+                    *span,
+                )
+                .with_fix_it("store `go some_function(...)` in a binding and await that task")
+                .with_source_path(source_path.to_path_buf()),
+            ])),
+        },
         Expr::Binary { lhs, op, rhs, span } => {
-            let lhs = eval_expr(lhs, scopes, functions)?;
-            let rhs = eval_expr(rhs, scopes, functions)?;
-            eval_binary(lhs, *op, rhs, *span)
+            let lhs = eval_expr(lhs, scopes, functions, source_path)?;
+            let rhs = eval_expr(rhs, scopes, functions, source_path)?;
+            eval_binary(lhs, *op, rhs, *span, source_path)
         }
     }
 }
 
-fn eval_binary(lhs: Value, op: BinaryOp, rhs: Value, span: Span) -> Result<Value, Diagnostics> {
+fn spawn_task(
+    callee: &str,
+    args: Vec<Value>,
+    span: Span,
+    functions: &FunctionTable,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
+    let function = functions.get(callee).cloned().ok_or_else(|| {
+        Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3004",
+                format!("unknown function `{callee}`"),
+                "only top-level named functions can be called in the bootstrap evaluator",
+                span,
+            )
+            .with_fix_it("define the function before calling it")
+            .with_source_path(source_path.to_path_buf()),
+        ])
+    })?;
+
+    let task = Arc::new(TaskHandle::new());
+    let task_handle = Arc::clone(&task);
+    let function_name = callee.to_string();
+    let functions = Arc::clone(functions);
+
+    std::thread::spawn(move || {
+        let result = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+            eval_function(&function, &args, &functions)
+        })) {
+            Ok(result) => result,
+            Err(_) => Err(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3010",
+                    format!("task `{function_name}` panicked"),
+                    "a spawned task hit an internal failure before producing a value",
+                    span,
+                )
+                .with_fix_it("inspect the spawned function and remove invariant-breaking panics")
+                .with_source_path(function.source_path.clone()),
+            ])),
+        };
+        task_handle.store(result);
+    });
+
+    Ok(Value::Task(TaskValue(task)))
+}
+
+fn eval_binary(
+    lhs: Value,
+    op: BinaryOp,
+    rhs: Value,
+    span: Span,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
     match (lhs, op, rhs) {
         (Value::Int(lhs), BinaryOp::Add, Value::Int(rhs)) => Ok(Value::Int(lhs + rhs)),
         (Value::Int(lhs), BinaryOp::Sub, Value::Int(rhs)) => Ok(Value::Int(lhs - rhs)),
@@ -346,7 +549,8 @@ fn eval_binary(lhs: Value, op: BinaryOp, rhs: Value, span: Span) -> Result<Value
             "unsupported expression in bootstrap evaluator",
             "the current evaluator only supports int arithmetic, comparisons, and string/bool equality",
             span,
-        )])),
+        )
+        .with_source_path(source_path.to_path_buf())])),
     }
 }
 
@@ -354,5 +558,37 @@ fn condition_span(stmt: &Stmt) -> Span {
     match stmt {
         Stmt::If { condition, .. } | Stmt::While { condition, .. } => condition.span(),
         _ => Span::new(1, 1, 1),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Value, run};
+    use crate::ast::parse;
+    use crate::cst::CstModule;
+    use crate::lexer::lex;
+    use crate::source::SourceFile;
+
+    fn run_source(text: &str) -> Result<Value, crate::diagnostics::Diagnostics> {
+        let source = SourceFile::new("test.gof", text);
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        run(&module)
+    }
+
+    #[test]
+    fn evaluates_go_and_await() {
+        let value = run_source(
+            "fn square(x):\n    return x * x\nfn main():\n    left = go square(5)\n    right = go square(4)\n    return await left + await right\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(41));
+    }
+
+    #[test]
+    fn rejects_await_on_non_task() {
+        let diagnostics =
+            run_source("fn main():\n    return await 42\n").expect_err("await should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3009"]);
     }
 }

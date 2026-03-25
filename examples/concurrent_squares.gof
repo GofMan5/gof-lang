@@ -1,0 +1,7 @@
+fn square(x: int) -> int:
+    return x * x
+
+fn main() -> int:
+    left = go square(9)
+    right = go square(12)
+    return await left + await right

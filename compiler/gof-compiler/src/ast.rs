@@ -3,17 +3,40 @@ use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
 use crate::token::{Token, TokenKind};
 use serde::Serialize;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Module {
+    pub imports: Vec<Import>,
     pub functions: Vec<Function>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Import {
+    pub module: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Function {
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<Param>,
+    pub return_type: Option<TypeRef>,
     pub body: Vec<Stmt>,
+    pub span: Span,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Param {
+    pub name: String,
+    pub ty: Option<TypeRef>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeRef {
+    pub name: String,
     pub span: Span,
 }
 
@@ -23,6 +46,7 @@ pub enum Stmt {
     Bind {
         name: String,
         mutable: bool,
+        ty: Option<TypeRef>,
         value: Expr,
         span: Span,
     },
@@ -54,6 +78,14 @@ pub enum Expr {
     Call {
         callee: String,
         args: Vec<Expr>,
+        span: Span,
+    },
+    Go {
+        value: Box<Expr>,
+        span: Span,
+    },
+    Await {
+        value: Box<Expr>,
         span: Span,
     },
     Binary {
@@ -103,15 +135,30 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_module(&mut self) -> Module {
+        let mut imports = Vec::new();
         let mut functions = Vec::new();
         while !self.at_end() {
             self.skip_newlines();
             if self.matches(TokenDiscriminant::Eof) {
                 break;
             }
-            functions.push(self.parse_function());
+            if self.check(TokenDiscriminant::Import) {
+                imports.push(self.parse_import());
+            } else {
+                functions.push(self.parse_function());
+            }
         }
-        Module { functions }
+        Module { imports, functions }
+    }
+
+    fn parse_import(&mut self) -> Import {
+        let span = self.expect(TokenDiscriminant::Import, "expected `import`");
+        let module = self.expect_ident("expected a module name after `import`");
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline after import statement",
+        );
+        Import { module, span }
     }
 
     fn parse_function(&mut self) -> Function {
@@ -126,6 +173,7 @@ impl<'a> Parser<'a> {
             TokenDiscriminant::RParen,
             "expected `)` after function parameters",
         );
+        let return_type = self.parse_optional_return_type_ref();
         self.expect(
             TokenDiscriminant::Colon,
             "expected `:` after function signature",
@@ -135,24 +183,33 @@ impl<'a> Parser<'a> {
         Function {
             name,
             params,
+            return_type,
             body,
             span: Span::new(start.line, start.column, start.end_column),
+            source_path: PathBuf::new(),
         }
     }
 
-    fn parse_params(&mut self) -> Vec<String> {
+    fn parse_params(&mut self) -> Vec<Param> {
         let mut params = Vec::new();
         if self.check(TokenDiscriminant::RParen) {
             return params;
         }
 
         loop {
-            params.push(self.expect_ident("expected parameter name"));
+            params.push(self.parse_param());
             if !self.matches(TokenDiscriminant::Comma) {
                 break;
             }
         }
         params
+    }
+
+    fn parse_param(&mut self) -> Param {
+        let name = self.expect_ident("expected parameter name");
+        let span = self.previous().span;
+        let ty = self.parse_optional_type_ref();
+        Param { name, ty, span }
     }
 
     fn parse_stmt(&mut self) -> Stmt {
@@ -206,6 +263,7 @@ impl<'a> Parser<'a> {
         if self.matches(TokenDiscriminant::Mut) {
             let span = self.previous().span;
             let name = self.expect_ident("expected an identifier after `mut`");
+            let ty = self.parse_optional_type_ref();
             self.expect(TokenDiscriminant::Equal, "expected `=` in a binding");
             let value = self.parse_expr();
             self.expect(
@@ -215,14 +273,16 @@ impl<'a> Parser<'a> {
             return Stmt::Bind {
                 name,
                 mutable: true,
+                ty,
                 value,
                 span,
             };
         }
 
-        if self.check_ident_assignment() {
+        if self.check_ident_binding_or_assignment() {
             let name = self.expect_ident("expected a binding target");
             let span = self.previous().span;
+            let ty = self.parse_optional_type_ref();
             self.expect(
                 TokenDiscriminant::Equal,
                 "expected `=` in an assignment or binding",
@@ -232,7 +292,17 @@ impl<'a> Parser<'a> {
                 TokenDiscriminant::Newline,
                 "expected a newline after assignment",
             );
-            return Stmt::Assign { name, value, span };
+            return if ty.is_some() {
+                Stmt::Bind {
+                    name,
+                    mutable: false,
+                    ty,
+                    value,
+                    span,
+                }
+            } else {
+                Stmt::Assign { name, value, span }
+            };
         }
 
         let expr = self.parse_expr();
@@ -321,10 +391,10 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_multiplicative(&mut self) -> Expr {
-        let mut expr = self.parse_call();
+        let mut expr = self.parse_unary();
 
         while self.matches(TokenDiscriminant::Star) {
-            let rhs = self.parse_call();
+            let rhs = self.parse_unary();
             let span = Span::new(expr.span().line, expr.span().column, rhs.span().end_column);
             expr = Expr::Binary {
                 lhs: Box::new(expr),
@@ -335,6 +405,28 @@ impl<'a> Parser<'a> {
         }
 
         expr
+    }
+
+    fn parse_unary(&mut self) -> Expr {
+        if self.matches(TokenDiscriminant::Go) {
+            let start = self.previous().span;
+            let value = self.parse_unary();
+            return Expr::Go {
+                span: Span::new(start.line, start.column, value.span().end_column),
+                value: Box::new(value),
+            };
+        }
+
+        if self.matches(TokenDiscriminant::Await) {
+            let start = self.previous().span;
+            let value = self.parse_unary();
+            return Expr::Await {
+                span: Span::new(start.line, start.column, value.span().end_column),
+                value: Box::new(value),
+            };
+        }
+
+        self.parse_call()
     }
 
     fn parse_call(&mut self) -> Expr {
@@ -417,6 +509,26 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_optional_type_ref(&mut self) -> Option<TypeRef> {
+        if !self.matches(TokenDiscriminant::Colon) {
+            return None;
+        }
+
+        let name = self.expect_ident("expected a type name after `:`");
+        let span = self.previous().span;
+        Some(TypeRef { name, span })
+    }
+
+    fn parse_optional_return_type_ref(&mut self) -> Option<TypeRef> {
+        if !self.matches(TokenDiscriminant::Arrow) {
+            return None;
+        }
+
+        let name = self.expect_ident("expected a type name after `->`");
+        let span = self.previous().span;
+        Some(TypeRef { name, span })
+    }
+
     fn expect(&mut self, expected: TokenDiscriminant, message: &'static str) -> Span {
         if self.check(expected) {
             return self.advance().span;
@@ -472,11 +584,11 @@ impl<'a> Parser<'a> {
         !self.at_end() && expected.matches(&self.peek().kind)
     }
 
-    fn check_ident_assignment(&self) -> bool {
+    fn check_ident_binding_or_assignment(&self) -> bool {
         matches!(self.peek().kind, TokenKind::Ident(_))
             && matches!(
                 self.peek_next().map(|token| &token.kind),
-                Some(TokenKind::Equal)
+                Some(TokenKind::Equal | TokenKind::Colon)
             )
     }
 
@@ -516,6 +628,8 @@ impl Expr {
             | Expr::Bool(_, span)
             | Expr::Ident(_, span)
             | Expr::Call { span, .. }
+            | Expr::Go { span, .. }
+            | Expr::Await { span, .. }
             | Expr::Binary { span, .. } => *span,
         }
     }
@@ -523,10 +637,13 @@ impl Expr {
 
 #[derive(Debug, Clone, Copy)]
 enum TokenDiscriminant {
+    Import,
     Fn,
     If,
     Else,
     While,
+    Go,
+    Await,
     Return,
     Mut,
     LParen,
@@ -540,6 +657,7 @@ enum TokenDiscriminant {
     LessEqual,
     Greater,
     GreaterEqual,
+    Arrow,
     Plus,
     Minus,
     Star,
@@ -553,10 +671,13 @@ impl TokenDiscriminant {
     fn matches(self, kind: &TokenKind) -> bool {
         matches!(
             (self, kind),
-            (Self::Fn, TokenKind::Fn)
+            (Self::Import, TokenKind::Import)
+                | (Self::Fn, TokenKind::Fn)
                 | (Self::If, TokenKind::If)
                 | (Self::Else, TokenKind::Else)
                 | (Self::While, TokenKind::While)
+                | (Self::Go, TokenKind::Go)
+                | (Self::Await, TokenKind::Await)
                 | (Self::Return, TokenKind::Return)
                 | (Self::Mut, TokenKind::Mut)
                 | (Self::LParen, TokenKind::LParen)
@@ -570,6 +691,7 @@ impl TokenDiscriminant {
                 | (Self::LessEqual, TokenKind::LessEqual)
                 | (Self::Greater, TokenKind::Greater)
                 | (Self::GreaterEqual, TokenKind::GreaterEqual)
+                | (Self::Arrow, TokenKind::Arrow)
                 | (Self::Plus, TokenKind::Plus)
                 | (Self::Minus, TokenKind::Minus)
                 | (Self::Star, TokenKind::Star)
@@ -582,10 +704,13 @@ impl TokenDiscriminant {
 
     fn as_hint(self) -> &'static str {
         match self {
+            Self::Import => "`import`",
             Self::Fn => "`fn`",
             Self::If => "`if`",
             Self::Else => "`else`",
             Self::While => "`while`",
+            Self::Go => "`go`",
+            Self::Await => "`await`",
             Self::Return => "`return`",
             Self::Mut => "`mut`",
             Self::LParen => "`(`",
@@ -599,6 +724,7 @@ impl TokenDiscriminant {
             Self::LessEqual => "`<=`",
             Self::Greater => "`>`",
             Self::GreaterEqual => "`>=`",
+            Self::Arrow => "`->`",
             Self::Plus => "`+`",
             Self::Minus => "`-`",
             Self::Star => "`*`",
@@ -630,9 +756,11 @@ mod tests {
 
     #[test]
     fn parses_function_module() {
-        let source = SourceFile::new("test.gof", "fn main():\n    return 40 + 2\n");
+        let source = SourceFile::new("test.gof", "import math\n\nfn main():\n    return 40 + 2\n");
         let tokens = lex(&source).expect("lexing should succeed");
         let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert_eq!(module.imports.len(), 1);
+        assert_eq!(module.imports[0].module, "math");
         assert_eq!(module.functions.len(), 1);
         assert_eq!(module.functions[0].name, "main");
     }
@@ -641,19 +769,49 @@ mod tests {
     fn parses_bindings_and_calls() {
         let source = SourceFile::new(
             "test.gof",
-            "fn add(a, b):\n    return a + b\nfn main():\n    mut total = add(40, 1)\n    total = total + 1\n    return total\n",
+            "fn add(a: int, b: int) -> int:\n    return a + b\nfn main() -> int:\n    mut total: int = add(40, 1)\n    total = total + 1\n    return total\n",
         );
         let tokens = lex(&source).expect("lexing should succeed");
         let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
         assert_eq!(module.functions.len(), 2);
+        assert_eq!(
+            module.functions[0].params[0].ty.as_ref().unwrap().name,
+            "int"
+        );
+        assert_eq!(
+            module.functions[0].return_type.as_ref().unwrap().name,
+            "int"
+        );
         assert!(matches!(
             &module.functions[1].body[0],
-            Stmt::Bind { mutable: true, .. }
+            Stmt::Bind {
+                mutable: true,
+                ty: Some(_),
+                ..
+            }
         ));
         assert!(matches!(
             &module.functions[1].body[2],
             Stmt::Return(Expr::Ident(name, _), _) if name == "total"
         ));
+    }
+
+    #[test]
+    fn parses_explicit_return_annotations() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn truth() -> bool:\n    return true\nfn main() -> bool:\n    return truth()\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert_eq!(
+            module.functions[0].return_type.as_ref().unwrap().name,
+            "bool"
+        );
+        assert_eq!(
+            module.functions[1].return_type.as_ref().unwrap().name,
+            "bool"
+        );
     }
 
     #[test]
@@ -666,5 +824,26 @@ mod tests {
         let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
         assert!(matches!(&module.functions[0].body[1], Stmt::While { .. }));
         assert!(matches!(&module.functions[0].body[2], Stmt::If { .. }));
+    }
+
+    #[test]
+    fn parses_go_and_await() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn square(x):\n    return x * x\nfn main():\n    task = go square(12)\n    return await task\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[1].body[0],
+            Stmt::Assign {
+                value: Expr::Go { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &module.functions[1].body[1],
+            Stmt::Return(Expr::Await { .. }, _)
+        ));
     }
 }

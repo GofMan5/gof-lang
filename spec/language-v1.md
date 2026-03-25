@@ -39,14 +39,21 @@
 
 The bootstrap compiler in this repository currently supports:
 
+- local same-directory imports through `import name`
 - top-level `fn`
-- function parameters
+- function parameters with optional builtin type annotations
+- explicit function return type annotations through `fn name(...) -> type:`
 - block indentation with `INDENT` / `DEDENT`
 - `return`
 - `if` / `else`
 - `while`
+- `go` for spawning top-level named function calls
+- `await` for waiting on task values
+- module-level inference of function return types when they can be derived from return expressions
 - local bindings through `name = expr`
+- typed local bindings through `name: type = expr`
 - mutable bindings through `mut name = expr`
+- typed mutable bindings through `mut name: type = expr`
 - reassignment only for previously mutable bindings
 - integer and string literals
 - boolean literals through `true` / `false`
@@ -58,9 +65,22 @@ The bootstrap compiler in this repository currently supports:
 ## Bootstrap binding rules
 
 - `name = expr` creates an immutable local if `name` does not exist yet
+- `name: type = expr` creates an immutable local constrained by the declared builtin type
 - `mut name = expr` creates a mutable local
+- `mut name: type = expr` creates a mutable local constrained by the declared builtin type
 - reassigning an immutable local is a compile error
+- function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `task`, and `unit`
+- function return types can currently be annotated with the same builtin types
+- `import name` currently resolves `name.gof` next to the importing source file and merges top-level functions into one bootstrap module graph
+- import cycles are rejected during module graph loading
+- duplicate top-level function names across the module graph are rejected
 - function calls currently target only top-level named functions
+- function return types are inferred across the module until the bootstrap type layer reaches a stable result
+- an explicit function return annotation acts as the function contract and must stay compatible with every return path in the body
+- every `return` inside one function must resolve to one compatible type
+- `go` currently accepts only `go some_function(...)`
+- task values carry the inferred return type of the spawned function when known
+- `await` currently accepts only task values produced by `go`
 - control-flow conditions must evaluate to `bool`
 
 Everything else is specified as future work and intentionally blocked from pretending to be stable.

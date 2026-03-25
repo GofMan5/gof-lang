@@ -1,6 +1,7 @@
-use crate::ast::{BinaryOp, Expr, Module, Stmt};
+use crate::ast::{BinaryOp, Expr, Module, Param, Stmt, TypeRef};
 use crate::source::Span;
 use serde::Serialize;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HirModule {
@@ -11,8 +12,23 @@ pub struct HirModule {
 pub struct HirFunction {
     pub id: usize,
     pub name: String,
-    pub params: Vec<String>,
+    pub params: Vec<HirParam>,
+    pub return_type: Option<HirTypeRef>,
     pub body: Vec<HirStmt>,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirParam {
+    pub name: String,
+    pub ty: Option<HirTypeRef>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirTypeRef {
+    pub name: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -21,6 +37,7 @@ pub enum HirStmt {
     Bind {
         name: String,
         mutable: bool,
+        ty: Option<HirTypeRef>,
         value: HirExpr,
         span: Span,
     },
@@ -54,6 +71,14 @@ pub enum HirExpr {
         args: Vec<HirExpr>,
         span: Span,
     },
+    Go {
+        value: Box<HirExpr>,
+        span: Span,
+    },
+    Await {
+        value: Box<HirExpr>,
+        span: Span,
+    },
     Binary {
         lhs: Box<HirExpr>,
         op: BinaryOp,
@@ -71,10 +96,27 @@ pub fn lower(module: &Module) -> HirModule {
             .map(|(id, function)| HirFunction {
                 id,
                 name: function.name.clone(),
-                params: function.params.clone(),
+                params: function.params.iter().map(lower_param).collect(),
+                return_type: function.return_type.as_ref().map(lower_type_ref),
                 body: function.body.iter().map(lower_stmt).collect(),
+                source_path: function.source_path.clone(),
             })
             .collect(),
+    }
+}
+
+fn lower_param(param: &Param) -> HirParam {
+    HirParam {
+        name: param.name.clone(),
+        ty: param.ty.as_ref().map(lower_type_ref),
+        span: param.span,
+    }
+}
+
+fn lower_type_ref(ty: &TypeRef) -> HirTypeRef {
+    HirTypeRef {
+        name: ty.name.clone(),
+        span: ty.span,
     }
 }
 
@@ -84,11 +126,13 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
         Stmt::Bind {
             name,
             mutable,
+            ty,
             value,
             span,
         } => HirStmt::Bind {
             name: name.clone(),
             mutable: *mutable,
+            ty: ty.as_ref().map(lower_type_ref),
             value: lower_expr(value),
             span: *span,
         },
@@ -132,6 +176,14 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             args: args.iter().map(lower_expr).collect(),
             span: *span,
         },
+        Expr::Go { value, span } => HirExpr::Go {
+            value: Box::new(lower_expr(value)),
+            span: *span,
+        },
+        Expr::Await { value, span } => HirExpr::Await {
+            value: Box::new(lower_expr(value)),
+            span: *span,
+        },
         Expr::Binary { lhs, op, rhs, span } => HirExpr::Binary {
             lhs: Box::new(lower_expr(lhs)),
             op: *op,
@@ -149,6 +201,8 @@ impl HirExpr {
             | HirExpr::Bool(_, span)
             | HirExpr::Local(_, span)
             | HirExpr::Call { span, .. }
+            | HirExpr::Go { span, .. }
+            | HirExpr::Await { span, .. }
             | HirExpr::Binary { span, .. } => *span,
         }
     }

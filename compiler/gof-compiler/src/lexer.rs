@@ -246,11 +246,19 @@ fn lex_line(
                 index += 1;
             }
             '-' => {
-                tokens.push(Token::new(
-                    TokenKind::Minus,
-                    Span::new(line_number, column, column + 1),
-                ));
-                index += 1;
+                if matches!(chars.get(index + 1), Some('>')) {
+                    tokens.push(Token::new(
+                        TokenKind::Arrow,
+                        Span::new(line_number, column, column + 2),
+                    ));
+                    index += 2;
+                } else {
+                    tokens.push(Token::new(
+                        TokenKind::Minus,
+                        Span::new(line_number, column, column + 1),
+                    ));
+                    index += 1;
+                }
             }
             '*' => {
                 tokens.push(Token::new(
@@ -289,10 +297,12 @@ fn lex_line(
                 let value = chars[start..index].iter().collect::<String>();
                 let kind = match value.as_str() {
                     "module" => TokenKind::Module,
+                    "import" => TokenKind::Import,
                     "fn" => TokenKind::Fn,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
                     "while" => TokenKind::While,
+                    "go" => TokenKind::Go,
                     "return" => TokenKind::Return,
                     "struct" => TokenKind::Struct,
                     "enum" => TokenKind::Enum,

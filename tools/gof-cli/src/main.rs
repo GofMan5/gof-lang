@@ -103,11 +103,8 @@ fn build(args: FileInput) -> Result<()> {
 fn run_file(args: FileInput) -> Result<()> {
     let source = SourceFile::from_path(&args.input)?;
     let value = run_module(&source).map_err(|error| render_error(&source, error))?;
-    match value {
-        gof_compiler::interpreter::Value::Int(value) => println!("{value}"),
-        gof_compiler::interpreter::Value::String(value) => println!("{value}"),
-        gof_compiler::interpreter::Value::Bool(value) => println!("{value}"),
-        gof_compiler::interpreter::Value::Unit => {}
+    if let Some(rendered) = value.cli_text() {
+        println!("{rendered}");
     }
     Ok(())
 }

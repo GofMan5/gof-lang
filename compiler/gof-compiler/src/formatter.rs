@@ -1,22 +1,61 @@
-use crate::ast::{BinaryOp, Expr, Function, Module, Stmt};
+use crate::ast::{BinaryOp, Expr, Function, Import, Module, Param, Stmt, TypeRef};
 
 pub fn format_module(module: &Module) -> String {
-    let mut output = String::new();
+    let mut sections = Vec::new();
 
-    for (index, function) in module.functions.iter().enumerate() {
-        if index > 0 {
-            output.push('\n');
-        }
-        output.push_str(&format_function(function));
+    if !module.imports.is_empty() {
+        sections.push(
+            module
+                .imports
+                .iter()
+                .map(format_import)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
     }
 
-    output
+    if !module.functions.is_empty() {
+        sections.push(
+            module
+                .functions
+                .iter()
+                .map(format_function)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    sections.join("\n\n")
+}
+
+fn format_import(import: &Import) -> String {
+    format!("import {}", import.module)
 }
 
 fn format_function(function: &Function) -> String {
-    let params = function.params.join(", ");
+    let params = function
+        .params
+        .iter()
+        .map(format_param)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let return_annotation = function
+        .return_type
+        .as_ref()
+        .map(|ty| format!(" -> {}", format_type_ref(ty)))
+        .unwrap_or_default();
     let body = format_block(&function.body, 1);
-    format!("fn {}({params}):\n{body}\n", function.name)
+    format!(
+        "fn {}({params}){return_annotation}:\n{body}\n",
+        function.name
+    )
+}
+
+fn format_param(param: &Param) -> String {
+    match &param.ty {
+        Some(ty) => format!("{}: {}", param.name, format_type_ref(ty)),
+        None => param.name.clone(),
+    }
 }
 
 fn format_block(stmts: &[Stmt], indent_level: usize) -> String {
@@ -34,11 +73,19 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
         Stmt::Bind {
             name,
             mutable,
+            ty,
             value,
             ..
         } => {
             let prefix = if *mutable { "mut " } else { "" };
-            format!("{indent}{prefix}{name} = {}", format_expr(value))
+            let annotation = ty
+                .as_ref()
+                .map(|ty| format!(": {}", format_type_ref(ty)))
+                .unwrap_or_default();
+            format!(
+                "{indent}{prefix}{name}{annotation} = {}",
+                format_expr(value)
+            )
         }
         Stmt::Assign { name, value, .. } => format!("{indent}{name} = {}", format_expr(value)),
         Stmt::If {
@@ -71,6 +118,10 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
     }
 }
 
+fn format_type_ref(ty: &TypeRef) -> String {
+    ty.name.clone()
+}
+
 fn format_expr(expr: &Expr) -> String {
     match expr {
         Expr::Int(value, _) => value.to_string(),
@@ -81,6 +132,8 @@ fn format_expr(expr: &Expr) -> String {
             "{callee}({})",
             args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
         ),
+        Expr::Go { value, .. } => format!("go {}", format_expr(value)),
+        Expr::Await { value, .. } => format!("await {}", format_expr(value)),
         Expr::Binary { lhs, op, rhs, .. } => format!(
             "{} {} {}",
             format_expr(lhs),
@@ -119,5 +172,18 @@ mod tests {
         let twice =
             format_source(&SourceFile::new("fmt.gof", &once)).expect("reformatting should succeed");
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn formatter_supports_go_and_await() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "import worker\n\nfn work(x:int)->int:\n    return x*x\nfn main()->int:\n    task:task=go work(6)\n    return await task\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "import worker\n\nfn work(x: int) -> int:\n    return x * x\n\nfn main() -> int:\n    task: task = go work(6)\n    return await task\n"
+        );
     }
 }

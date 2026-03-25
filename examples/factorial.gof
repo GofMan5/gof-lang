@@ -1,6 +1,6 @@
-fn factorial(n):
-    mut current = n
-    mut total = 1
+fn factorial(n: int) -> int:
+    mut current: int = n
+    mut total: int = 1
 
     while current > 1:
         total = total * current
@@ -11,5 +11,5 @@ fn factorial(n):
     else:
         return 0
 
-fn main():
+fn main() -> int:
     return factorial(5)
