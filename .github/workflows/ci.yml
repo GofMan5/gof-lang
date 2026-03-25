@@ -62,20 +62,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            shell: bash
-            command: bash ./scripts/package-release.sh ci-smoke
-          - os: windows-latest
-            shell: pwsh
-            command: ./scripts/package-release.ps1 -Version ci-smoke
-          - os: macos-14
-            shell: bash
-            command: bash ./scripts/package-release.sh ci-smoke
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Build release package
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.command }}
+      - name: Build release package on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./scripts/package-release.sh ci-smoke
+      - name: Build release package on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-release.ps1 -Version ci-smoke
+      - name: Upload CI package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-package-${{ matrix.os }}
+          path: dist/*
+          if-no-files-found: error

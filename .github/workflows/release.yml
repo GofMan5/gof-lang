@@ -37,26 +37,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            shell: bash
-            command: bash ./scripts/package-release.sh "${RELEASE_VERSION}"
-          - os: windows-latest
-            shell: pwsh
-            command: ./scripts/package-release.ps1 -Version "${env:RELEASE_VERSION}"
-          - os: macos-13
-            shell: bash
-            command: bash ./scripts/package-release.sh "${RELEASE_VERSION}"
-          - os: macos-14
-            shell: bash
-            command: bash ./scripts/package-release.sh "${RELEASE_VERSION}"
+        os:
+          - ubuntu-latest
+          - windows-latest
+          - macos-13
+          - macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Package release artifact
-        shell: ${{ matrix.shell }}
-        run: ${{ matrix.command }}
+      - name: Package release artifact on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash ./scripts/package-release.sh "${RELEASE_VERSION}"
+      - name: Package release artifact on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/package-release.ps1 -Version "${env:RELEASE_VERSION}"
       - name: Upload packaged artifact
         uses: actions/upload-artifact@v4
         with:
