@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, Module, Param, Stmt, StructDecl, StructField, TypeRef};
+use crate::ast::{BinaryOp, Expr, Module, Param, Stmt, StructDecl, StructField, TypeRef, UnaryOp};
 use crate::source::Span;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -105,6 +105,11 @@ pub enum HirExpr {
         span: Span,
     },
     Await {
+        value: Box<HirExpr>,
+        span: Span,
+    },
+    Unary {
+        op: UnaryOp,
         value: Box<HirExpr>,
         span: Span,
     },
@@ -252,6 +257,11 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             value: Box::new(lower_expr(value)),
             span: *span,
         },
+        Expr::Unary { op, value, span } => HirExpr::Unary {
+            op: *op,
+            value: Box::new(lower_expr(value)),
+            span: *span,
+        },
         Expr::Binary { lhs, op, rhs, span } => HirExpr::Binary {
             lhs: Box::new(lower_expr(lhs)),
             op: *op,
@@ -274,6 +284,7 @@ impl HirExpr {
             | HirExpr::Index { span, .. }
             | HirExpr::Go { span, .. }
             | HirExpr::Await { span, .. }
+            | HirExpr::Unary { span, .. }
             | HirExpr::Binary { span, .. } => *span,
         }
     }

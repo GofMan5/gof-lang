@@ -1,5 +1,6 @@
 use crate::ast::{
     BinaryOp, Expr, Function, Import, Module, Param, Stmt, StructDecl, StructField, TypeRef,
+    UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -170,6 +171,7 @@ fn format_expr(expr: &Expr) -> String {
         }
         Expr::Go { value, .. } => format!("go {}", format_expr(value)),
         Expr::Await { value, .. } => format!("await {}", format_expr(value)),
+        Expr::Unary { op, value, .. } => format!("{} {}", format_unary_op(*op), format_expr(value)),
         Expr::Binary { lhs, op, rhs, .. } => format!(
             "{} {} {}",
             format_expr(lhs),
@@ -184,12 +186,20 @@ fn format_op(op: BinaryOp) -> &'static str {
         BinaryOp::Add => "+",
         BinaryOp::Sub => "-",
         BinaryOp::Mul => "*",
+        BinaryOp::And => "and",
+        BinaryOp::Or => "or",
         BinaryOp::Eq => "==",
         BinaryOp::Ne => "!=",
         BinaryOp::Lt => "<",
         BinaryOp::Le => "<=",
         BinaryOp::Gt => ">",
         BinaryOp::Ge => ">=",
+    }
+}
+
+fn format_unary_op(op: UnaryOp) -> &'static str {
+    match op {
+        UnaryOp::Not => "not",
     }
 }
 
@@ -233,6 +243,19 @@ mod tests {
         assert_eq!(
             formatted,
             "struct Point:\n    x: int\n    y: int\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.x + point.y\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_logical_operators() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn main()->bool:\n    return not false and true or false\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn main() -> bool:\n    return not false and true or false\n"
         );
     }
 }

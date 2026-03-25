@@ -118,6 +118,11 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
+    Unary {
+        op: UnaryOp,
+        value: Box<Expr>,
+        span: Span,
+    },
     Binary {
         lhs: Box<Expr>,
         op: BinaryOp,
@@ -131,12 +136,19 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mul,
+    And,
+    Or,
     Eq,
     Ne,
     Lt,
     Le,
     Gt,
     Ge,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub enum UnaryOp {
+    Not,
 }
 
 pub fn parse(cst: &CstModule) -> Result<Module, Diagnostics> {
@@ -425,6 +437,54 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_expr(&mut self) -> Expr {
+        self.parse_or()
+    }
+
+    fn parse_or(&mut self) -> Expr {
+        let mut expr = self.parse_and();
+
+        while self.matches(TokenDiscriminant::Or) {
+            let rhs = self.parse_and();
+            let span = Span::new(expr.span().line, expr.span().column, rhs.span().end_column);
+            expr = Expr::Binary {
+                lhs: Box::new(expr),
+                op: BinaryOp::Or,
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+
+        expr
+    }
+
+    fn parse_and(&mut self) -> Expr {
+        let mut expr = self.parse_not();
+
+        while self.matches(TokenDiscriminant::And) {
+            let rhs = self.parse_not();
+            let span = Span::new(expr.span().line, expr.span().column, rhs.span().end_column);
+            expr = Expr::Binary {
+                lhs: Box::new(expr),
+                op: BinaryOp::And,
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+
+        expr
+    }
+
+    fn parse_not(&mut self) -> Expr {
+        if self.matches(TokenDiscriminant::Not) {
+            let start = self.previous().span;
+            let value = self.parse_not();
+            return Expr::Unary {
+                op: UnaryOp::Not,
+                span: Span::new(start.line, start.column, value.span().end_column),
+                value: Box::new(value),
+            };
+        }
+
         self.parse_comparison()
     }
 
@@ -779,6 +839,7 @@ impl Expr {
             | Expr::Index { span, .. }
             | Expr::Go { span, .. }
             | Expr::Await { span, .. }
+            | Expr::Unary { span, .. }
             | Expr::Binary { span, .. } => *span,
         }
     }
@@ -794,6 +855,9 @@ enum TokenDiscriminant {
     While,
     Go,
     Await,
+    And,
+    Or,
+    Not,
     Return,
     Mut,
     LParen,
@@ -832,6 +896,9 @@ impl TokenDiscriminant {
                 | (Self::While, TokenKind::While)
                 | (Self::Go, TokenKind::Go)
                 | (Self::Await, TokenKind::Await)
+                | (Self::And, TokenKind::And)
+                | (Self::Or, TokenKind::Or)
+                | (Self::Not, TokenKind::Not)
                 | (Self::Return, TokenKind::Return)
                 | (Self::Mut, TokenKind::Mut)
                 | (Self::LParen, TokenKind::LParen)
@@ -869,6 +936,9 @@ impl TokenDiscriminant {
             Self::While => "`while`",
             Self::Go => "`go`",
             Self::Await => "`await`",
+            Self::And => "`and`",
+            Self::Or => "`or`",
+            Self::Not => "`not`",
             Self::Return => "`return`",
             Self::Mut => "`mut`",
             Self::LParen => "`(`",
@@ -910,7 +980,7 @@ fn token_debug_name(kind: &TokenKind) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Expr, Stmt, parse};
+    use super::{BinaryOp, Expr, Stmt, parse};
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
@@ -1054,6 +1124,27 @@ mod tests {
                 _
             ) if matches!(lhs.as_ref(), Expr::Field { field, .. } if field == "x")
                 && matches!(rhs.as_ref(), Expr::Field { field, .. } if field == "y")
+        ));
+    }
+
+    #[test]
+    fn parses_logical_operators_with_precedence() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> bool:\n    return not false and true or false\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[0],
+            Stmt::Return(
+                Expr::Binary {
+                    op: BinaryOp::Or,
+                    lhs,
+                    ..
+                },
+                _
+            ) if matches!(lhs.as_ref(), Expr::Binary { op: BinaryOp::And, .. })
         ));
     }
 }

@@ -1,4 +1,4 @@
-use crate::ast::BinaryOp;
+use crate::ast::{BinaryOp, UnaryOp};
 use crate::typed_hir::{Type, TypedExpr, TypedExprKind, TypedFunction, TypedModule, TypedStmt};
 use serde::Serialize;
 
@@ -71,6 +71,11 @@ pub enum MirInstruction {
     Await {
         dest: usize,
         task: usize,
+    },
+    Unary {
+        dest: usize,
+        op: UnaryOp,
+        value: usize,
     },
     Binary {
         dest: usize,
@@ -295,6 +300,16 @@ impl MirBuilder {
                 let task = self.lower_expr(value);
                 let dest = self.alloc();
                 self.instructions.push(MirInstruction::Await { dest, task });
+                dest
+            }
+            TypedExprKind::Unary { op, value } => {
+                let value = self.lower_expr(value);
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::Unary {
+                    dest,
+                    op: *op,
+                    value,
+                });
                 dest
             }
             TypedExprKind::Binary { lhs, op, rhs } => {

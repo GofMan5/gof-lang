@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, Function, Module, Param, Stmt, StructDecl};
+use crate::ast::{BinaryOp, Expr, Function, Module, Param, Stmt, StructDecl, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
 use std::collections::HashMap;
@@ -571,23 +571,113 @@ fn eval_expr(
                 .with_source_path(source_path.to_path_buf()),
             ])),
         },
-        Expr::Await { value, span } => match eval_expr(value, scopes, functions, structs, source_path)? {
-            Value::Task(task) => task.await_value(),
-            _ => Err(Diagnostics(vec![
-                Diagnostic::error(
-                    "GOF3009",
-                    "`await` requires a task value",
-                    "only values produced by `go` can currently be awaited in the bootstrap evaluator",
-                    *span,
-                )
-                .with_fix_it("store `go some_function(...)` in a binding and await that task")
-                .with_source_path(source_path.to_path_buf()),
-            ])),
-        },
+        Expr::Await { value, span } => {
+            match eval_expr(value, scopes, functions, structs, source_path)? {
+                Value::Task(task) => task.await_value(),
+                _ => Err(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3009",
+                        "`await` requires a task value",
+                        "only values produced by `go` can currently be awaited in the bootstrap evaluator",
+                        *span,
+                    )
+                    .with_fix_it("store `go some_function(...)` in a binding and await that task")
+                    .with_source_path(source_path.to_path_buf()),
+                ])),
+            }
+        }
+        Expr::Unary { op, value, span } => {
+            let value = eval_expr(value, scopes, functions, structs, source_path)?;
+            eval_unary(*op, value, *span, source_path)
+        }
         Expr::Binary { lhs, op, rhs, span } => {
+            if matches!(op, BinaryOp::And | BinaryOp::Or) {
+                let lhs = eval_expr(lhs, scopes, functions, structs, source_path)?;
+                return eval_logical(
+                    lhs,
+                    *op,
+                    rhs,
+                    scopes,
+                    functions,
+                    structs,
+                    *span,
+                    source_path,
+                );
+            }
+
             let lhs = eval_expr(lhs, scopes, functions, structs, source_path)?;
             let rhs = eval_expr(rhs, scopes, functions, structs, source_path)?;
             eval_binary(lhs, *op, rhs, *span, source_path)
+        }
+    }
+}
+
+fn eval_unary(
+    op: UnaryOp,
+    value: Value,
+    span: Span,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
+    match (op, value) {
+        (UnaryOp::Not, Value::Bool(value)) => Ok(Value::Bool(!value)),
+        (UnaryOp::Not, other) => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3026",
+                "`not` requires a `bool` operand",
+                format!("this operand resolves to `{}`", value_name(&other)),
+                span,
+            )
+            .with_fix_it("apply `not` only to boolean expressions")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
+fn eval_logical(
+    lhs: Value,
+    op: BinaryOp,
+    rhs: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    structs: &StructTable,
+    span: Span,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
+    let Value::Bool(lhs) = lhs else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3025",
+                "logical operators require `bool` operands",
+                "the left operand must resolve to `bool`",
+                span,
+            )
+            .with_fix_it("use `and` and `or` only with boolean expressions")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    match (op, lhs) {
+        (BinaryOp::And, false) => Ok(Value::Bool(false)),
+        (BinaryOp::Or, true) => Ok(Value::Bool(true)),
+        _ => {
+            let rhs = eval_expr(rhs, scopes, functions, structs, source_path)?;
+            match rhs {
+                Value::Bool(rhs) => Ok(Value::Bool(match op {
+                    BinaryOp::And => lhs && rhs,
+                    BinaryOp::Or => lhs || rhs,
+                    _ => unreachable!("eval_logical only handles `and` and `or`"),
+                })),
+                other => Err(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3025",
+                        "logical operators require `bool` operands",
+                        format!("the right operand resolves to `{}`", value_name(&other)),
+                        span,
+                    )
+                    .with_fix_it("use `and` and `or` only with boolean expressions")
+                    .with_source_path(source_path.to_path_buf()),
+                ])),
+            }
         }
     }
 }
@@ -909,5 +999,12 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(21));
+    }
+
+    #[test]
+    fn evaluates_logical_operators() {
+        let value = run_source("fn main() -> bool:\n    return not false and true or false\n")
+            .expect("program should run");
+        assert_eq!(value, Value::Bool(true));
     }
 }

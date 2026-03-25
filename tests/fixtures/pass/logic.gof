@@ -1,0 +1,2 @@
+fn main() -> bool:
+    return not false and true or false

@@ -22,6 +22,7 @@ What is already real:
 - immutable bindings by default, `mut` for reassignment
 - `if` / `else`
 - `while`
+- logical operators `and`, `or`, `not`
 - lists, indexing, builtin `len(...)`
 - task spawning through `go`
 - waiting on tasks through `await`
@@ -87,6 +88,28 @@ Run a fixture:
 cargo run -q -p gof-cli --bin gof -- run tests/fixtures/pass/hello.gof
 ```
 
+Install the latest released `gof` binary on Unix-like systems:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.sh | bash
+```
+
+Install the latest released `gof` binary on Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.ps1 | iex
+```
+
+Run the same installer command later to update to the newest release.
+
+Install a specific tagged release on Unix-like systems:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.sh | bash -s -- v0.1.0
+```
+
+The installer places the binary in `$HOME/.gof/bin` by default and updates your shell path.
+
 Run an example:
 
 ```bash
@@ -139,6 +162,7 @@ The current bootstrap subset supports:
 - integer, string, and boolean literals
 - list literals
 - arithmetic with `+`, `-`, `*`
+- logical operators with short-circuit semantics
 - comparisons with `==`, `!=`, `<`, `<=`, `>`, `>=`
 - top-level function calls
 - struct constructors
@@ -183,3 +207,17 @@ Current priority order:
 2. minimal useful standard library
 3. production-grade concurrency model
 4. package system and native backend hardening
+
+## CI and Release Automation
+
+The repository now includes:
+
+- CI on every push and on every pull request
+- formatting checks
+- full workspace tests on Linux and Windows
+- benchmark harness smoke builds
+- example smoke runs
+- release-package smoke builds on Linux, Windows, and macOS for every push and pull request
+- release packaging workflows for Linux, Windows, and macOS
+
+Release artifacts are built automatically from version tags and can be consumed by the install scripts in `scripts/install.sh` and `scripts/install.ps1`.

@@ -2,58 +2,63 @@
 
 ## North Star
 
-`gof` должен стать языком с Python-like читаемостью, Go-like concurrency и Rust-grade инженерной строгостью, но без архитектурной грязи, непредсказуемого runtime и медленного пути развития.
+`gof` is intended to become a language with Python-like readability, Go-like concurrency, and Rust-grade engineering discipline without architectural mud, runtime chaos, or a slow path to production quality.
 
-Главная цель не в количестве фич, а в том, чтобы каждая стадия развития языка:
+The real goal is not feature count. Every phase of language development must:
 
-- увеличивала реальную полезность языка
-- сохраняла оптимизируемость
-- не вносила костыли в syntax, semantics или runtime
-- оставляла чистую траекторию к нативному backend и production-grade toolchain
+- increase real usefulness
+- preserve optimizability
+- avoid hacks in syntax, semantics, tooling, or runtime
+- keep a clean path toward native code generation and a production-grade toolchain
 
 ## Development Rules
 
-- Каждая крупная языковая фича обязана пройти через: spec -> parser -> type layer -> runtime/path execution -> tests -> examples -> diagnostics -> roadmap sync.
-- Нельзя перескакивать через фундаментальные слои ради красивой surface feature.
-- Нельзя начинать сложный runtime/perf-hardening до стабилизации соответствующей семантики языка.
-- Каждая milestone закрывается только при выполнении exit criteria.
+- Every major language feature must move through: spec -> parser -> type layer -> execution path -> tests -> examples -> diagnostics -> roadmap sync.
+- No surface-level feature is allowed to skip foundational layers.
+- Runtime or performance hardening cannot move ahead of semantic stability for the corresponding feature set.
+- A milestone is closed only when its exit criteria are met.
 
 ## Status Legend
 
 - `[x]` done
 - `[~]` in progress
 - `[ ]` planned
-- `[!]` blocked or deferred pending architecture
+- `[!]` blocked or intentionally deferred
 
 ## Active Focus
 
-- `[~]` M3: richer control-flow and data modeling baseline
-- Ближайший обязательный результат: `enum` + безопасное ветвление по состояниям
-- Второй ближайший результат: минимальный stdlib slice для реальной полезности CLI-программ
+- `[~]` M3: richer control flow and data modeling
+- Immediate mandatory result: `enum` with explicit variant semantics
+- Second mandatory result: `match` with safe branching and an exhaustiveness baseline
+- Parallel operational result: release and install ergonomics that make `gof` easy to build, package, install, and update
 
 ## Milestone Map
 
-### M0. Governance and Quality Baseline
+### M0. Governance, Quality, and Distribution Baseline
 
-- `[x]` Repository structure, spec, RFC, ADR, governance skeleton
-- `[x]` Unified CLI: `build`, `run`, `test`, `fmt`, `mod`, `doc`, `bench`
+- `[x]` Repository structure, spec, RFC, ADR, and governance skeleton
+- `[x]` Unified CLI with `build`, `run`, `test`, `fmt`, `mod`, `doc`, `bench`
 - `[x]` Diagnostics contract and fixture-based conformance harness
-- `[x]` AGENTS rules for SSS+ quality, tests, architecture discipline
+- `[x]` Local AGENTS rules for SSS+ quality, tests, and architectural discipline
 - `[x]` Public community standards files
+- `[x]` CI validation on push and pull request
+- `[x]` Release packaging workflow baseline
+- `[x]` Cross-platform install scripts for released binaries
+- `[x]` Packaging smoke builds on CI for Linux, Windows, and macOS
 - Exit criteria:
 - governance docs exist
 - quality rules are explicit
-- test/fmt/bench commands are wired
+- test, format, bench, package, and install paths are wired and documented
 
 ### M1. Frontend Baseline
 
 - `[x]` indentation-aware lexer
-- `[x]` parser for functions, bindings, calls, control flow
+- `[x]` parser for functions, bindings, calls, imports, structs, and control flow
 - `[x]` deterministic formatter
 - `[x]` module graph for same-directory imports
 - `[x]` file-aware diagnostics in imported modules
 - Exit criteria:
-- lexer/parser/formatter/module loading are deterministic
+- lexer, parser, formatter, and module loading are deterministic
 - positive and negative fixtures cover the supported syntax
 
 ### M2. Typed Execution Baseline
@@ -66,21 +71,22 @@
 - `[x]` struct declarations, typed fields, constructors, field access
 - Exit criteria:
 - typed HIR reflects real language contracts
-- interpreter semantics match compile-time contracts for supported subset
+- interpreter semantics match compile-time contracts for the supported subset
 
 ### M3. Data Model and Control Flow Expansion
 
-- `[x]` structs as first user-defined aggregate type
-- `[ ]` enums with clear variant model
+- `[x]` structs as the first user-defined aggregate type
+- `[x]` logical operators with short-circuit behavior
+- `[ ]` enums with a clear variant model
 - `[ ]` branching over states with `match`
-- `[ ]` logical operators with short-circuit behavior
-- `[ ]` richer comparison/equality rules with explicit semantics
-- `[ ]` methods or equivalent clean receiver story
+- `[ ]` richer equality and comparison rules with explicit semantics
+- `[ ]` methods or an equivalent clean receiver story
 - Checkpoints:
-- `[x]` CP-M3-1: structs with constructor + field access + imports
-- `[ ]` CP-M3-2: enums with unit variants, equality, type annotations, diagnostics
-- `[ ]` CP-M3-3: `match` over enum values with exhaustiveness baseline
-- `[ ]` CP-M3-4: receiver/method model without namespace hacks
+- `[x]` CP-M3-1: structs with constructor, field access, and imports
+- `[x]` CP-M3-2: boolean logic with strict type checking and short-circuit behavior
+- `[ ]` CP-M3-3: enums with unit variants, equality, type annotations, and diagnostics
+- `[ ]` CP-M3-4: `match` over enum values with an exhaustiveness baseline
+- `[ ]` CP-M3-5: receiver or method model without namespace hacks
 - Exit criteria:
 - user-defined data types can model real domain states
 - branching over state is explicit and safe
@@ -92,7 +98,7 @@
 - `[ ]` basic string helpers
 - `[ ]` basic list helpers that do not hide allocations
 - `[ ]` predictable numeric and conversion utilities
-- `[ ]` minimal testing/assert helpers inside language surface
+- `[ ]` minimal testing and assert helpers inside the language surface
 - Checkpoints:
 - `[ ]` CP-M4-1: I/O baseline for CLI apps
 - `[ ]` CP-M4-2: zero-surprise helper APIs for strings and lists
@@ -100,26 +106,26 @@
 - Exit criteria:
 - small but real CLI-style programs are possible without compiler-internal hacks
 
-### M5. Concurrency That Deserves Comparison to Go
+### M5. Concurrency Worth Comparing to Go
 
 - `[x]` task spawning baseline via `go`
 - `[x]` typed `await`
 - `[ ]` typed channels
 - `[ ]` `select`
 - `[ ]` cancellation contract
-- `[ ]` panic/error propagation contract across tasks
+- `[ ]` panic and error propagation across tasks
 - `[ ]` scheduler stress and concurrency benchmarks
 - Checkpoints:
 - `[ ]` CP-M5-1: channels with explicit semantics
-- `[ ]` CP-M5-2: select semantics and diagnostics
-- `[ ]` CP-M5-3: cancellation + propagation rules
+- `[ ]` CP-M5-2: `select` semantics and diagnostics
+- `[ ]` CP-M5-3: cancellation and propagation rules
 - Exit criteria:
-- concurrency model is useful, typed, testable and benchmarked
+- concurrency is useful, typed, testable, and benchmarked
 - no hidden global lock or accidental shared mutable-state semantics
 
 ### M6. Packages and Modular Growth
 
-- `[ ]` stronger import rules and namespacing strategy
+- `[ ]` stronger import rules and namespacing
 - `[ ]` manifest-resolved package model
 - `[ ]` lockfile and deterministic resolution
 - `[ ]` registry design without arbitrary code execution
@@ -132,25 +138,26 @@
 
 ### M7. Native Backend and Runtime Hardening
 
-- `[ ]` backend transition from SSA JSON artifact to real codegen
+- `[ ]` transition from SSA JSON artifact to real codegen
 - `[ ]` runtime allocation model formalization
 - `[ ]` debug info and ABI smoke tests
-- `[ ]` performance baselines for startup, memory, throughput and binary size
+- `[ ]` performance baselines for startup, memory, throughput, and binary size
+- `[ ]` release quality gates based on benchmarks, not marketing
 - Checkpoints:
 - `[ ]` CP-M7-1: backend IR contract stabilization
 - `[ ]` CP-M7-2: first real native artifact path
-- `[ ]` CP-M7-3: perf regression gates
+- `[ ]` CP-M7-3: performance regression gates
 - Exit criteria:
 - `gof build` emits real executable artifacts
-- performance work is benchmark-backed, not marketing-backed
+- performance work is benchmark-backed and operationally visible
 
-### M8. Reliability, Tooling and Production Discipline
+### M8. Reliability, Tooling, and Production Discipline
 
 - `[ ]` richer diagnostics coverage
-- `[ ]` fuzzing for parser/resolver/type layer
+- `[ ]` fuzzing for parser, resolver, and type layer
 - `[ ]` stress harness for runtime and concurrency
 - `[ ]` golden tests for compiler outputs
-- `[ ]` observability/debuggability improvements
+- `[ ]` observability and debuggability improvements
 - Exit criteria:
 - production engineering quality is visible in tooling, not just language design
 
@@ -160,8 +167,8 @@
 - top-level enum declarations
 - variant references
 - enum names in type annotations
-- imported enums through module graph
-- diagnostics for duplicate/unknown variants
+- imported enums through the module graph
+- diagnostics for duplicate and unknown variants
 
 2. `[ ]` Implement `match` baseline:
 - syntax
@@ -174,6 +181,11 @@
 - tests and examples
 - no hidden global runtime magic
 
+4. `[ ]` Harden developer distribution flow:
+- tagged releases documented in README
+- install and update path verified on all supported release targets
+- release workflow stays aligned with packaged asset naming
+
 ## Current Non-Goals
 
 - macros
@@ -181,10 +193,10 @@
 - Python compatibility hacks
 - dynamic monkey patching
 - package scripts with arbitrary execution
-- premature JIT/VM detours
+- premature JIT or VM detours
 - heavy FFI before language contracts stabilize
 
-## Definition of Done For Any Checkpoint
+## Definition of Done for Any Checkpoint
 
 - code is implemented end-to-end
 - tests exist and pass

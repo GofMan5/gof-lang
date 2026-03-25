@@ -70,6 +70,20 @@ fn gof_run_executes_geometry_example() {
 }
 
 #[test]
+fn gof_run_executes_health_gate_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("health_gate.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1"));
+}
+
+#[test]
 fn gof_run_executes_list_sum_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

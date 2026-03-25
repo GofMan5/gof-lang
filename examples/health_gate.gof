@@ -1,0 +1,8 @@
+fn is_ready(workers: int, queue: int, draining: bool) -> bool:
+    return not draining and workers > 1 and queue < 10
+
+fn main() -> int:
+    if is_ready(3, 4, false) or is_ready(1, 20, false):
+        return 1
+    else:
+        return 0

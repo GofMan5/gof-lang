@@ -1,0 +1,2 @@
+fn main() -> bool:
+    return 1 and true

@@ -1,4 +1,4 @@
-use crate::ast::BinaryOp;
+use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{HirExpr, HirFunction, HirModule, HirStmt, HirStruct, HirTypeRef};
 use crate::source::Span;
@@ -139,6 +139,10 @@ pub enum TypedExprKind {
         args: Vec<TypedExpr>,
     },
     Await {
+        value: Box<TypedExpr>,
+    },
+    Unary {
+        op: UnaryOp,
         value: Box<TypedExpr>,
     },
     Binary {
@@ -1059,6 +1063,27 @@ fn lower_expr(
                 span: *span,
             }
         }
+        HirExpr::Unary { op, value, span } => {
+            let value = lower_expr(
+                value,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
+            validate_unary_expr(*op, &value, diagnostics, source_path);
+            let ty = infer_unary_type(*op, &value.ty);
+            TypedExpr {
+                kind: TypedExprKind::Unary {
+                    op: *op,
+                    value: Box::new(value),
+                },
+                ty,
+                span: *span,
+            }
+        }
         HirExpr::Binary { lhs, op, rhs, span } => {
             let lhs = lower_expr(
                 lhs,
@@ -1078,6 +1103,7 @@ fn lower_expr(
                 diagnostics,
                 source_path,
             );
+            validate_binary_expr(*op, &lhs, &rhs, diagnostics, source_path);
             let ty = infer_binary_type(&lhs.ty, *op, &rhs.ty);
             TypedExpr {
                 kind: TypedExprKind::Binary {
@@ -1259,10 +1285,74 @@ fn call_return_type(
     }
 }
 
+fn validate_unary_expr(
+    op: UnaryOp,
+    value: &TypedExpr,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if matches!(op, UnaryOp::Not) && !matches!(value.ty, Type::Bool | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3026",
+                "`not` requires a `bool` operand",
+                format!("this operand resolves to `{}`", value.ty.display_name()),
+                value.span,
+            )
+            .with_fix_it("apply `not` only to boolean expressions")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn infer_unary_type(op: UnaryOp, value: &Type) -> Type {
+    match (op, value) {
+        (UnaryOp::Not, Type::Bool) => Type::Bool,
+        (UnaryOp::Not, Type::Unknown) => Type::Unknown,
+        _ => Type::Unknown,
+    }
+}
+
+fn validate_binary_expr(
+    op: BinaryOp,
+    lhs: &TypedExpr,
+    rhs: &TypedExpr,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if matches!(op, BinaryOp::And | BinaryOp::Or) {
+        if !matches!(lhs.ty, Type::Bool | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3025",
+                    "logical operators require `bool` operands",
+                    format!("the left operand resolves to `{}`", lhs.ty.display_name()),
+                    lhs.span,
+                )
+                .with_fix_it("use `and` and `or` only with boolean expressions")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+        if !matches!(rhs.ty, Type::Bool | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3025",
+                    "logical operators require `bool` operands",
+                    format!("the right operand resolves to `{}`", rhs.ty.display_name()),
+                    rhs.span,
+                )
+                .with_fix_it("use `and` and `or` only with boolean expressions")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+}
+
 fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
     match (lhs, op, rhs) {
         (Type::Int, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul, Type::Int) => Type::Int,
         (Type::String, BinaryOp::Add, Type::String) => Type::String,
+        (Type::Bool, BinaryOp::And | BinaryOp::Or, Type::Bool) => Type::Bool,
         (
             Type::Int,
             BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge,
@@ -1807,5 +1897,29 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3023"]);
+    }
+
+    #[test]
+    fn supports_logical_operators() {
+        let module = lower_source("fn main() -> bool:\n    return not false and true or false\n")
+            .expect("typing should succeed");
+
+        assert_eq!(module.functions[0].return_type, Type::Bool);
+    }
+
+    #[test]
+    fn rejects_non_bool_logical_operands() {
+        let diagnostics = lower_source("fn main() -> bool:\n    return 1 and true\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3025"]);
+    }
+
+    #[test]
+    fn rejects_non_bool_not_operand() {
+        let diagnostics =
+            lower_source("fn main() -> bool:\n    return not 1\n").expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3026"]);
     }
 }

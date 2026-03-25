@@ -237,4 +237,34 @@ mod tests {
                 .any(|value| matches!(value.instruction, SsaInstruction::LoadField { .. }))
         );
     }
+
+    #[test]
+    fn pipeline_supports_logical_operators() {
+        let source = SourceFile::new(
+            "logic.gof",
+            "fn main() -> bool:\n    return not false and true or false\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Bool);
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Unary { .. }))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    value.instruction,
+                    SsaInstruction::Binary {
+                        op: crate::ast::BinaryOp::And | crate::ast::BinaryOp::Or,
+                        ..
+                    }
+                ))
+        );
+    }
 }

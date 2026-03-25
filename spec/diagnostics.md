@@ -43,3 +43,5 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3022`: unknown field on a struct value
 - `GOF3023`: duplicate field inside one struct declaration
 - `GOF3024`: field access on a non-struct value
+- `GOF3025`: non-boolean operand for `and` or `or`
+- `GOF3026`: non-boolean operand for `not`

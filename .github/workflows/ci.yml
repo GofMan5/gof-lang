@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run workspace tests
+        run: cargo test --workspace
+
+  bench-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build benchmark harness
+        run: cargo bench -p gof-bench --no-run
+
+  example-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run geometry example
+        run: cargo run -q -p gof-cli --bin gof -- run examples/geometry.gof
+      - name: Run health gate example
+        run: cargo run -q -p gof-cli --bin gof -- run examples/health_gate.gof
+      - name: Run portfolio example
+        run: cargo run -q -p gof-cli --bin gof -- run examples/portfolio/main.gof
+      - name: Run records example
+        run: cargo run -q -p gof-cli --bin gof -- run examples/records/main.gof
+
+  package-smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            shell: bash
+            command: bash ./scripts/package-release.sh ci-smoke
+          - os: windows-latest
+            shell: pwsh
+            command: ./scripts/package-release.ps1 -Version ci-smoke
+          - os: macos-14
+            shell: bash
+            command: bash ./scripts/package-release.sh ci-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release package
+        shell: ${{ matrix.shell }}
+        run: ${{ matrix.command }}

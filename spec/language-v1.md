@@ -60,6 +60,7 @@ The bootstrap compiler in this repository currently supports:
 - boolean literals through `true` / `false`
 - list literals through `[expr, ...]`
 - identifiers
+- logical operators through `and`, `or`, and `not`
 - additive and multiplicative expressions
 - comparison expressions
 - named function calls
@@ -86,6 +87,8 @@ The bootstrap compiler in this repository currently supports:
 - function calls currently target only top-level named functions
 - struct constructors currently use positional field order from the declaration
 - field access currently requires a struct target and a known field name
+- `and` and `or` currently require boolean operands and preserve short-circuit evaluation
+- `not` currently requires a boolean operand
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires a list target and an integer index

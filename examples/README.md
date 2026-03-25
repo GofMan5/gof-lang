@@ -13,6 +13,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `factorial.gof`: `while`, `if`, typed locals, control-flow return contract
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `geometry.gof`: `struct`, typed fields, constructor calls, field access
+- `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow
 - `list_sum.gof`: lists, indexing, `len`, looping over data
 - `string_metrics.gof`: list of strings, indexing to string, `len(string)`
 - `parallel_report.gof`: lists plus task fan-out and aggregation
@@ -26,6 +27,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `factorial.gof` -> `120`
 - `concurrent_squares.gof` -> `225`
 - `geometry.gof` -> `42`
+- `health_gate.gof` -> `1`
 - `list_sum.gof` -> `108`
 - `string_metrics.gof` -> `10`
 - `parallel_report.gof` -> `104`

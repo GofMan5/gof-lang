@@ -1,4 +1,4 @@
-use crate::ast::BinaryOp;
+use crate::ast::{BinaryOp, UnaryOp};
 use crate::mir::{MirFunction, MirInstruction, MirModule};
 use crate::typed_hir::Type;
 use serde::Serialize;
@@ -57,6 +57,10 @@ pub enum SsaInstruction {
     },
     Await {
         task: String,
+    },
+    Unary {
+        op: UnaryOp,
+        value: String,
     },
     Binary {
         lhs: String,
@@ -182,6 +186,13 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::Await {
                 task: format!("%{task}"),
+            },
+        },
+        MirInstruction::Unary { dest, op, value } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::Unary {
+                op: *op,
+                value: format!("%{value}"),
             },
         },
         MirInstruction::Binary { dest, lhs, op, rhs } => SsaValue {
