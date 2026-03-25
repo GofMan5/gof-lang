@@ -210,4 +210,31 @@ mod tests {
         assert_eq!(compiled.typed_hir.functions[0].name, "square");
         assert_eq!(compiled.typed_hir.functions[1].name, "main");
     }
+
+    #[test]
+    fn pipeline_supports_structs_and_fields() {
+        let source = SourceFile::new(
+            "structs.gof",
+            "struct Point:\n    x: int\n    y: int\n\nfn main() -> int:\n    point: Point = Point(3, 5)\n    return point.x + point.y\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.ast.structs.len(), 1);
+        assert_eq!(compiled.hir.structs.len(), 1);
+        assert_eq!(compiled.typed_hir.structs[0].name, "Point");
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Int);
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::BuildStruct { .. }))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::LoadField { .. }))
+        );
+    }
 }

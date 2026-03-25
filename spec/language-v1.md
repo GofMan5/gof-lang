@@ -40,6 +40,7 @@
 The bootstrap compiler in this repository currently supports:
 
 - local same-directory imports through `import name`
+- top-level `struct`
 - top-level `fn`
 - function parameters with optional builtin type annotations
 - explicit function return type annotations through `fn name(...) -> type:`
@@ -62,23 +63,29 @@ The bootstrap compiler in this repository currently supports:
 - additive and multiplicative expressions
 - comparison expressions
 - named function calls
+- struct constructor calls through `TypeName(...)`
+- field access through `value.field`
 - indexing through `list_expr[index_expr]`
 - builtin `len(...)` for lists and strings
 
 ## Bootstrap binding rules
 
 - `name = expr` creates an immutable local if `name` does not exist yet
-- `name: type = expr` creates an immutable local constrained by the declared builtin type
+- `name: type = expr` creates an immutable local constrained by the declared builtin type or struct type
 - `mut name = expr` creates a mutable local
-- `mut name: type = expr` creates a mutable local constrained by the declared builtin type
+- `mut name: type = expr` creates a mutable local constrained by the declared builtin type or struct type
 - reassigning an immutable local is a compile error
-- function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `task`, and `unit`
-- function return types can currently be annotated with the same builtin types
+- function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `task`, `unit`, and known struct names
+- function return types can currently be annotated with the same builtin types and known struct names
 - local bindings and return contracts can currently use the builtin `list` annotation
-- `import name` currently resolves `name.gof` next to the importing source file and merges top-level functions into one bootstrap module graph
+- `import name` currently resolves `name.gof` next to the importing source file and merges top-level functions and structs into one bootstrap module graph
 - import cycles are rejected during module graph loading
 - duplicate top-level function names across the module graph are rejected
+- duplicate struct names across the module graph are rejected
+- struct and function names cannot conflict at top level because constructor calls must stay unambiguous
 - function calls currently target only top-level named functions
+- struct constructors currently use positional field order from the declaration
+- field access currently requires a struct target and a known field name
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires a list target and an integer index

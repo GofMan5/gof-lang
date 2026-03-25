@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, Function, Module, Param, Stmt};
+use crate::ast::{BinaryOp, Expr, Function, Module, Param, Stmt, StructDecl};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
 use std::collections::HashMap;
@@ -8,12 +8,14 @@ use std::path::Path;
 use std::sync::{Arc, Condvar, Mutex};
 
 type FunctionTable = Arc<HashMap<String, Function>>;
+type StructTable = Arc<HashMap<String, StructDecl>>;
 
 #[derive(Clone)]
 pub enum Value {
     Int(i64),
     String(String),
     Bool(bool),
+    Struct(StructValue),
     List(Vec<Value>),
     Task(TaskValue),
     Unit,
@@ -25,6 +27,7 @@ impl Debug for Value {
             Self::Int(value) => f.debug_tuple("Int").field(value).finish(),
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
             Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            Self::Struct(value) => f.debug_tuple("Struct").field(value).finish(),
             Self::List(values) => f.debug_tuple("List").field(values).finish(),
             Self::Task(_) => f.write_str("Task(<pending-or-completed>)"),
             Self::Unit => f.write_str("Unit"),
@@ -38,6 +41,7 @@ impl PartialEq for Value {
             (Self::Int(lhs), Self::Int(rhs)) => lhs == rhs,
             (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
+            (Self::Struct(lhs), Self::Struct(rhs)) => lhs == rhs,
             (Self::List(lhs), Self::List(rhs)) => lhs == rhs,
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
             (Self::Unit, Self::Unit) => true,
@@ -54,6 +58,7 @@ impl Value {
             Self::Int(value) => Some(value.to_string()),
             Self::String(value) => Some(value.clone()),
             Self::Bool(value) => Some(value.to_string()),
+            Self::Struct(value) => Some(value.cli_text()),
             Self::List(values) => Some(format!(
                 "[{}]",
                 values
@@ -65,6 +70,37 @@ impl Value {
             Self::Task(_) => Some("<task>".to_string()),
             Self::Unit => None,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructValue {
+    name: String,
+    fields: Vec<(String, Value)>,
+}
+
+impl StructValue {
+    fn field(&self, name: &str) -> Option<&Value> {
+        self.fields
+            .iter()
+            .find_map(|(field_name, value)| (field_name == name).then_some(value))
+    }
+
+    fn cli_text(&self) -> String {
+        format!(
+            "{}({})",
+            self.name,
+            self.fields
+                .iter()
+                .map(|(field, value)| {
+                    format!(
+                        "{field}: {}",
+                        value.cli_text().unwrap_or_else(|| "unit".to_string())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -192,6 +228,13 @@ pub fn run(module: &Module) -> Result<Value, Diagnostics> {
             .map(|function| (function.name.clone(), function.clone()))
             .collect::<HashMap<_, _>>(),
     );
+    let structs = Arc::new(
+        module
+            .structs
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.clone()))
+            .collect::<HashMap<_, _>>(),
+    );
 
     let main = functions.get("main").cloned().ok_or_else(|| {
         Diagnostics(vec![
@@ -217,13 +260,14 @@ pub fn run(module: &Module) -> Result<Value, Diagnostics> {
         ]));
     }
 
-    eval_function(&main, &[], &functions)
+    eval_function(&main, &[], &functions, &structs)
 }
 
 fn eval_function(
     function: &Function,
     args: &[Value],
     functions: &FunctionTable,
+    structs: &StructTable,
 ) -> Result<Value, Diagnostics> {
     if function.params.len() != args.len() {
         return Err(Diagnostics(vec![
@@ -246,6 +290,7 @@ fn eval_function(
         &function.body,
         &mut scopes,
         functions,
+        structs,
         false,
         &function.source_path,
     )? {
@@ -259,6 +304,7 @@ fn eval_block(
     stmts: &[Stmt],
     scopes: &mut ScopeStack,
     functions: &FunctionTable,
+    structs: &StructTable,
     nested_scope: bool,
     source_path: &Path,
 ) -> Result<Option<Value>, Diagnostics> {
@@ -267,7 +313,7 @@ fn eval_block(
     }
 
     for stmt in stmts {
-        if let Some(value) = eval_stmt(stmt, scopes, functions, source_path)? {
+        if let Some(value) = eval_stmt(stmt, scopes, functions, structs, source_path)? {
             if nested_scope {
                 scopes.pop();
             }
@@ -286,10 +332,17 @@ fn eval_stmt(
     stmt: &Stmt,
     scopes: &mut ScopeStack,
     functions: &FunctionTable,
+    structs: &StructTable,
     source_path: &Path,
 ) -> Result<Option<Value>, Diagnostics> {
     match stmt {
-        Stmt::Return(expr, _) => Ok(Some(eval_expr(expr, scopes, functions, source_path)?)),
+        Stmt::Return(expr, _) => Ok(Some(eval_expr(
+            expr,
+            scopes,
+            functions,
+            structs,
+            source_path,
+        )?)),
         Stmt::Bind {
             name,
             mutable,
@@ -306,7 +359,7 @@ fn eval_stmt(
                 )]));
             }
 
-            let value = eval_expr(value, scopes, functions, source_path)?;
+            let value = eval_expr(value, scopes, functions, structs, source_path)?;
             scopes.define_current(
                 name.clone(),
                 Binding {
@@ -317,7 +370,7 @@ fn eval_stmt(
             Ok(None)
         }
         Stmt::Assign { name, value, span } => {
-            let value = eval_expr(value, scopes, functions, source_path)?;
+            let value = eval_expr(value, scopes, functions, structs, source_path)?;
             if let Some(existing) = scopes.get_mut(name) {
                 if !existing.mutable {
                     return Err(Diagnostics(vec![
@@ -349,10 +402,14 @@ fn eval_stmt(
             else_body,
             ..
         } => {
-            let condition = eval_expr(condition, scopes, functions, source_path)?;
+            let condition = eval_expr(condition, scopes, functions, structs, source_path)?;
             match condition {
-                Value::Bool(true) => eval_block(then_body, scopes, functions, true, source_path),
-                Value::Bool(false) => eval_block(else_body, scopes, functions, true, source_path),
+                Value::Bool(true) => {
+                    eval_block(then_body, scopes, functions, structs, true, source_path)
+                }
+                Value::Bool(false) => {
+                    eval_block(else_body, scopes, functions, structs, true, source_path)
+                }
                 _ => Err(Diagnostics(vec![
                     Diagnostic::error(
                         "GOF3007",
@@ -369,11 +426,11 @@ fn eval_stmt(
             condition, body, ..
         } => {
             loop {
-                let value = eval_expr(condition, scopes, functions, source_path)?;
+                let value = eval_expr(condition, scopes, functions, structs, source_path)?;
                 match value {
                     Value::Bool(true) => {
                         if let Some(result) =
-                            eval_block(body, scopes, functions, true, source_path)?
+                            eval_block(body, scopes, functions, structs, true, source_path)?
                         {
                             return Ok(Some(result));
                         }
@@ -396,7 +453,7 @@ fn eval_stmt(
             Ok(None)
         }
         Stmt::Expr(expr, _) => {
-            let _ = eval_expr(expr, scopes, functions, source_path)?;
+            let _ = eval_expr(expr, scopes, functions, structs, source_path)?;
             Ok(None)
         }
     }
@@ -406,6 +463,7 @@ fn eval_expr(
     expr: &Expr,
     scopes: &ScopeStack,
     functions: &FunctionTable,
+    structs: &StructTable,
     source_path: &Path,
 ) -> Result<Value, Diagnostics> {
     match expr {
@@ -415,7 +473,7 @@ fn eval_expr(
         Expr::List { items, .. } => {
             let values = items
                 .iter()
-                .map(|item| eval_expr(item, scopes, functions, source_path))
+                .map(|item| eval_expr(item, scopes, functions, structs, source_path))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Value::List(values))
         }
@@ -436,7 +494,15 @@ fn eval_expr(
             }),
         Expr::Call { callee, args, span } => {
             if callee == "len" {
-                return eval_len_builtin(args, scopes, functions, source_path, *span);
+                return eval_len_builtin(args, scopes, functions, structs, source_path, *span);
+            }
+
+            if let Some(decl) = structs.get(callee) {
+                let values = args
+                    .iter()
+                    .map(|arg| eval_expr(arg, scopes, functions, structs, source_path))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return eval_struct_constructor(decl, values, *span, source_path);
             }
 
             let function = functions.get(callee).cloned().ok_or_else(|| {
@@ -453,26 +519,46 @@ fn eval_expr(
             })?;
             let values = args
                 .iter()
-                .map(|arg| eval_expr(arg, scopes, functions, source_path))
+                .map(|arg| eval_expr(arg, scopes, functions, structs, source_path))
                 .collect::<Result<Vec<_>, _>>()?;
-            eval_function(&function, &values, functions)
+            eval_function(&function, &values, functions, structs)
+        }
+        Expr::Field {
+            target,
+            field,
+            span,
+        } => {
+            let target = eval_expr(target, scopes, functions, structs, source_path)?;
+            eval_field_access(target, field, *span, source_path)
         }
         Expr::Index {
             target,
             index,
             span,
         } => {
-            let target = eval_expr(target, scopes, functions, source_path)?;
-            let index = eval_expr(index, scopes, functions, source_path)?;
+            let target = eval_expr(target, scopes, functions, structs, source_path)?;
+            let index = eval_expr(index, scopes, functions, structs, source_path)?;
             eval_index(target, index, *span, source_path)
         }
         Expr::Go { value, span } => match value.as_ref() {
             Expr::Call { callee, args, span } => {
+                if structs.contains_key(callee) {
+                    return Err(Diagnostics(vec![
+                        Diagnostic::error(
+                            "GOF3008",
+                            "`go` currently requires a named function call",
+                            "the bootstrap concurrency model only supports `go some_fn(...)` for top-level functions",
+                            *span,
+                        )
+                        .with_fix_it("replace this expression with `go some_function(...)`")
+                        .with_source_path(source_path.to_path_buf()),
+                    ]));
+                }
                 let values = args
                     .iter()
-                    .map(|arg| eval_expr(arg, scopes, functions, source_path))
+                    .map(|arg| eval_expr(arg, scopes, functions, structs, source_path))
                     .collect::<Result<Vec<_>, _>>()?;
-                spawn_task(callee, values, *span, functions, source_path)
+                spawn_task(callee, values, *span, functions, structs, source_path)
             }
             _ => Err(Diagnostics(vec![
                 Diagnostic::error(
@@ -485,7 +571,7 @@ fn eval_expr(
                 .with_source_path(source_path.to_path_buf()),
             ])),
         },
-        Expr::Await { value, span } => match eval_expr(value, scopes, functions, source_path)? {
+        Expr::Await { value, span } => match eval_expr(value, scopes, functions, structs, source_path)? {
             Value::Task(task) => task.await_value(),
             _ => Err(Diagnostics(vec![
                 Diagnostic::error(
@@ -499,8 +585,8 @@ fn eval_expr(
             ])),
         },
         Expr::Binary { lhs, op, rhs, span } => {
-            let lhs = eval_expr(lhs, scopes, functions, source_path)?;
-            let rhs = eval_expr(rhs, scopes, functions, source_path)?;
+            let lhs = eval_expr(lhs, scopes, functions, structs, source_path)?;
+            let rhs = eval_expr(rhs, scopes, functions, structs, source_path)?;
             eval_binary(lhs, *op, rhs, *span, source_path)
         }
     }
@@ -511,6 +597,7 @@ fn spawn_task(
     args: Vec<Value>,
     span: Span,
     functions: &FunctionTable,
+    structs: &StructTable,
     source_path: &Path,
 ) -> Result<Value, Diagnostics> {
     let function = functions.get(callee).cloned().ok_or_else(|| {
@@ -530,10 +617,11 @@ fn spawn_task(
     let task_handle = Arc::clone(&task);
     let function_name = callee.to_string();
     let functions = Arc::clone(functions);
+    let structs = Arc::clone(structs);
 
     std::thread::spawn(move || {
         let result = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-            eval_function(&function, &args, &functions)
+            eval_function(&function, &args, &functions, &structs)
         })) {
             Ok(result) => result,
             Err(_) => Err(Diagnostics(vec![
@@ -551,6 +639,72 @@ fn spawn_task(
     });
 
     Ok(Value::Task(TaskValue(task)))
+}
+
+fn eval_struct_constructor(
+    decl: &StructDecl,
+    args: Vec<Value>,
+    span: Span,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
+    if decl.fields.len() != args.len() {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{}`", decl.name),
+                format!(
+                    "expected {} field value(s), got {}",
+                    decl.fields.len(),
+                    args.len()
+                ),
+                span,
+            )
+            .with_fix_it("pass one argument for each struct field in declaration order")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    Ok(Value::Struct(StructValue {
+        name: decl.name.clone(),
+        fields: decl
+            .fields
+            .iter()
+            .map(|field| field.name.clone())
+            .zip(args)
+            .collect(),
+    }))
+}
+
+fn eval_field_access(
+    target: Value,
+    field: &str,
+    span: Span,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
+    match target {
+        Value::Struct(value) => value.field(field).cloned().ok_or_else(|| {
+            Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3022",
+                    format!("unknown field `{field}` on `{}`", value.name),
+                    "field access must reference a field declared on the target struct",
+                    span,
+                )
+                .with_fix_it("use one of the fields declared on the struct")
+                .with_source_path(source_path.to_path_buf()),
+            ])
+        }),
+        other => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3024",
+                "field access requires a struct value",
+                format!("this target resolves to `{}`", value_name(&other)),
+                span,
+            )
+            .with_fix_it("access fields only on struct values")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
 }
 
 fn eval_binary(
@@ -575,12 +729,14 @@ fn eval_binary(
         (Value::String(lhs), BinaryOp::Ne, Value::String(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Bool(lhs), BinaryOp::Eq, Value::Bool(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Bool(lhs), BinaryOp::Ne, Value::Bool(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::Struct(lhs), BinaryOp::Eq, Value::Struct(rhs)) => Ok(Value::Bool(lhs == rhs)),
+        (Value::Struct(lhs), BinaryOp::Ne, Value::Struct(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::List(lhs), BinaryOp::Eq, Value::List(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::List(lhs), BinaryOp::Ne, Value::List(rhs)) => Ok(Value::Bool(lhs != rhs)),
         _ => Err(Diagnostics(vec![Diagnostic::error(
             "GOF3001",
             "unsupported expression in bootstrap evaluator",
-            "the current evaluator only supports int arithmetic, comparisons, and string/bool equality",
+            "the current evaluator supports int arithmetic, comparisons, and equality for strings, bools, lists, and structs",
             span,
         )
         .with_source_path(source_path.to_path_buf())])),
@@ -591,6 +747,7 @@ fn eval_len_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
     functions: &FunctionTable,
+    structs: &StructTable,
     source_path: &Path,
     span: Span,
 ) -> Result<Value, Diagnostics> {
@@ -607,7 +764,7 @@ fn eval_len_builtin(
         ]));
     }
 
-    let value = eval_expr(&args[0], scopes, functions, source_path)?;
+    let value = eval_expr(&args[0], scopes, functions, structs, source_path)?;
     match value {
         Value::List(values) => Ok(Value::Int(values.len() as i64)),
         Value::String(value) => Ok(Value::Int(value.chars().count() as i64)),
@@ -691,6 +848,7 @@ fn value_name(value: &Value) -> &'static str {
         Value::Int(_) => "int",
         Value::String(_) => "string",
         Value::Bool(_) => "bool",
+        Value::Struct(_) => "struct",
         Value::List(_) => "list",
         Value::Task(_) => "task",
         Value::Unit => "unit",
@@ -742,5 +900,14 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(7));
+    }
+
+    #[test]
+    fn evaluates_struct_construction_and_field_access() {
+        let value = run_source(
+            "struct Point:\n    x: int\n    y: int\n\nfn total(point: Point) -> int:\n    return point.x + point.y\n\nfn main() -> int:\n    point = Point(8, 13)\n    return total(point)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(21));
     }
 }

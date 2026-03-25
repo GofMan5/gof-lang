@@ -1,0 +1,10 @@
+struct Point:
+    x: int
+    y: int
+
+fn area_hint(point: Point) -> int:
+    return point.x * point.y
+
+fn main() -> int:
+    card: Point = Point(7, 6)
+    return area_hint(card)

@@ -33,9 +33,19 @@ pub enum MirInstruction {
         dest: usize,
         items: Vec<usize>,
     },
+    BuildStruct {
+        dest: usize,
+        name: String,
+        fields: Vec<usize>,
+    },
     LoadLocal {
         dest: usize,
         name: String,
+    },
+    LoadField {
+        dest: usize,
+        target: usize,
+        field: String,
     },
     StoreLocal {
         name: String,
@@ -213,11 +223,34 @@ impl MirBuilder {
                     .push(MirInstruction::BuildList { dest, items });
                 dest
             }
+            TypedExprKind::StructInit { name, args } => {
+                let fields = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg))
+                    .collect::<Vec<_>>();
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::BuildStruct {
+                    dest,
+                    name: name.clone(),
+                    fields,
+                });
+                dest
+            }
             TypedExprKind::Local(name) => {
                 let dest = self.alloc();
                 self.instructions.push(MirInstruction::LoadLocal {
                     dest,
                     name: name.clone(),
+                });
+                dest
+            }
+            TypedExprKind::Field { target, field } => {
+                let target = self.lower_expr(target);
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::LoadField {
+                    dest,
+                    target,
+                    field: field.clone(),
                 });
                 dest
             }

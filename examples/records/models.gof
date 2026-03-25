@@ -1,0 +1,6 @@
+struct Invoice:
+    total: int
+    discount: int
+
+fn gross(invoice: Invoice) -> int:
+    return invoice.total + invoice.discount

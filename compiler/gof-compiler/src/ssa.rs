@@ -28,7 +28,15 @@ pub enum SsaInstruction {
     ConstString(String),
     ConstBool(bool),
     BuildList(Vec<String>),
+    BuildStruct {
+        name: String,
+        fields: Vec<String>,
+    },
     LoadLocal(String),
+    LoadField {
+        target: String,
+        field: String,
+    },
     StoreLocal {
         name: String,
         src: String,
@@ -109,9 +117,27 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
                 items.iter().map(|item| format!("%{item}")).collect(),
             ),
         },
+        MirInstruction::BuildStruct { dest, name, fields } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::BuildStruct {
+                name: name.clone(),
+                fields: fields.iter().map(|field| format!("%{field}")).collect(),
+            },
+        },
         MirInstruction::LoadLocal { dest, name } => SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::LoadLocal(name.clone()),
+        },
+        MirInstruction::LoadField {
+            dest,
+            target,
+            field,
+        } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::LoadField {
+                target: format!("%{target}"),
+                field: field.clone(),
+            },
         },
         MirInstruction::StoreLocal {
             name,

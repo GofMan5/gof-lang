@@ -1,0 +1,7 @@
+struct Point:
+    x: int
+    x: int
+
+fn main() -> int:
+    point = Point(1, 2)
+    return point.x

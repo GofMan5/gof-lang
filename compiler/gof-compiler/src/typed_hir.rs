@@ -1,9 +1,9 @@
 use crate::ast::BinaryOp;
 use crate::diagnostics::{Diagnostic, Diagnostics};
-use crate::hir::{HirExpr, HirFunction, HirModule, HirStmt, HirTypeRef};
+use crate::hir::{HirExpr, HirFunction, HirModule, HirStmt, HirStruct, HirTypeRef};
 use crate::source::Span;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -11,6 +11,7 @@ pub enum Type {
     Int,
     String,
     Bool,
+    Struct(String),
     List(Box<Type>),
     Task(Box<Type>),
     Unknown,
@@ -35,6 +36,7 @@ impl Type {
             Self::Int => "int".to_string(),
             Self::String => "string".to_string(),
             Self::Bool => "bool".to_string(),
+            Self::Struct(name) => name.clone(),
             Self::List(inner) => format!("list[{}]", inner.display_name()),
             Self::Task(inner) => format!("task[{}]", inner.display_name()),
             Self::Unknown => "unknown".to_string(),
@@ -45,6 +47,7 @@ impl Type {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedModule {
+    pub structs: Vec<TypedStruct>,
     pub functions: Vec<TypedFunction>,
 }
 
@@ -55,6 +58,18 @@ pub struct TypedFunction {
     pub params: Vec<TypedParam>,
     pub return_type: Type,
     pub body: Vec<TypedStmt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedStruct {
+    pub name: String,
+    pub fields: Vec<TypedStructField>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedStructField {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -107,6 +122,14 @@ pub enum TypedExprKind {
         callee: String,
         args: Vec<TypedExpr>,
     },
+    StructInit {
+        name: String,
+        args: Vec<TypedExpr>,
+    },
+    Field {
+        target: Box<TypedExpr>,
+        field: String,
+    },
     Index {
         target: Box<TypedExpr>,
         index: Box<TypedExpr>,
@@ -131,6 +154,17 @@ struct FunctionSignature {
     param_types: Vec<Type>,
     declared_return_type: Option<Type>,
     return_type: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructSignature {
+    fields: Vec<StructFieldSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StructFieldSignature {
+    name: String,
+    ty: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -207,14 +241,38 @@ struct ReturnAccumulator {
     incompatible: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallKind {
+    BuiltinLen,
+    Function,
+    Struct,
+    Unknown,
+}
+
 pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
     let mut diagnostics = Diagnostics::default();
+    let known_structs = module
+        .structs
+        .iter()
+        .map(|decl| decl.name.clone())
+        .collect::<HashSet<_>>();
+    let struct_signatures = module
+        .structs
+        .iter()
+        .map(|decl| {
+            (
+                decl.name.clone(),
+                lower_struct_signature(decl, &known_structs, &mut diagnostics),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     let mut signatures = module
         .functions
         .iter()
         .map(|function| {
             let declared_return_type = resolve_type_annotation(
                 function.return_type.as_ref(),
+                &known_structs,
                 &function.source_path,
                 &mut diagnostics,
             );
@@ -233,6 +291,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                         .map(|param| {
                             resolve_type_annotation(
                                 param.ty.as_ref(),
+                                &known_structs,
                                 &function.source_path,
                                 &mut diagnostics,
                             )
@@ -249,7 +308,15 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         let typed_functions = module
             .functions
             .iter()
-            .map(|function| lower_function(function, &signatures, &mut Diagnostics::default()))
+            .map(|function| {
+                lower_function(
+                    function,
+                    &signatures,
+                    &known_structs,
+                    &struct_signatures,
+                    &mut Diagnostics::default(),
+                )
+            })
             .collect::<Vec<_>>();
 
         let mut changed = false;
@@ -268,14 +335,27 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         }
     }
 
+    let structs = module
+        .structs
+        .iter()
+        .map(|decl| lower_struct(decl, &struct_signatures))
+        .collect::<Vec<_>>();
     let functions = module
         .functions
         .iter()
-        .map(|function| lower_function(function, &signatures, &mut diagnostics))
+        .map(|function| {
+            lower_function(
+                function,
+                &signatures,
+                &known_structs,
+                &struct_signatures,
+                &mut diagnostics,
+            )
+        })
         .collect::<Vec<_>>();
 
     if diagnostics.is_empty() {
-        Ok(TypedModule { functions })
+        Ok(TypedModule { structs, functions })
     } else {
         Err(diagnostics)
     }
@@ -284,6 +364,8 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
 fn lower_function(
     function: &HirFunction,
     signatures: &HashMap<String, FunctionSignature>,
+    known_structs: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
     diagnostics: &mut Diagnostics,
 ) -> TypedFunction {
     let signature = signatures
@@ -303,6 +385,8 @@ fn lower_function(
         &function.body,
         &mut scopes,
         signatures,
+        known_structs,
+        struct_signatures,
         diagnostics,
         false,
         &function.source_path,
@@ -345,10 +429,70 @@ fn lower_function(
     }
 }
 
+fn lower_struct_signature(
+    decl: &HirStruct,
+    known_structs: &HashSet<String>,
+    diagnostics: &mut Diagnostics,
+) -> StructSignature {
+    let mut seen_fields = HashSet::new();
+    StructSignature {
+        fields: decl
+            .fields
+            .iter()
+            .map(|field| {
+                if !seen_fields.insert(field.name.clone()) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3023",
+                            format!("duplicate field `{}` on `{}`", field.name, decl.name),
+                            "each struct field name must be unique within its declaration",
+                            field.span,
+                        )
+                        .with_fix_it("rename or remove the duplicate field")
+                        .with_source_path(decl.source_path.clone()),
+                    );
+                }
+
+                StructFieldSignature {
+                    name: field.name.clone(),
+                    ty: resolve_type_annotation(
+                        Some(&field.ty),
+                        known_structs,
+                        &decl.source_path,
+                        diagnostics,
+                    ),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn lower_struct(
+    decl: &HirStruct,
+    struct_signatures: &HashMap<String, StructSignature>,
+) -> TypedStruct {
+    let signature = struct_signatures
+        .get(&decl.name)
+        .expect("typed struct lowering requires a matching struct signature");
+    TypedStruct {
+        name: decl.name.clone(),
+        fields: signature
+            .fields
+            .iter()
+            .map(|field| TypedStructField {
+                name: field.name.clone(),
+                ty: field.ty.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn lower_block(
     stmts: &[HirStmt],
     scopes: &mut ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
+    known_structs: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
     diagnostics: &mut Diagnostics,
     nested_scope: bool,
     source_path: &Path,
@@ -359,7 +503,17 @@ fn lower_block(
 
     let body = stmts
         .iter()
-        .map(|stmt| lower_stmt(stmt, scopes, signatures, diagnostics, source_path))
+        .map(|stmt| {
+            lower_stmt(
+                stmt,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            )
+        })
         .collect::<Vec<_>>();
 
     if nested_scope {
@@ -373,6 +527,8 @@ fn lower_stmt(
     stmt: &HirStmt,
     scopes: &mut ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
+    known_structs: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> TypedStmt {
@@ -381,6 +537,8 @@ fn lower_stmt(
             expr,
             scopes,
             signatures,
+            known_structs,
+            struct_signatures,
             diagnostics,
             source_path,
         )),
@@ -404,8 +562,17 @@ fn lower_stmt(
                 );
             }
 
-            let value = lower_expr(value, scopes, signatures, diagnostics, source_path);
-            let declared_type = resolve_type_annotation(ty.as_ref(), source_path, diagnostics);
+            let value = lower_expr(
+                value,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
+            let declared_type =
+                resolve_type_annotation(ty.as_ref(), known_structs, source_path, diagnostics);
             if ty.is_some() {
                 ensure_type_compatibility(
                     &declared_type,
@@ -437,7 +604,15 @@ fn lower_stmt(
             }
         }
         HirStmt::Assign { name, value, span } => {
-            let value = lower_expr(value, scopes, signatures, diagnostics, source_path);
+            let value = lower_expr(
+                value,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
             if let Some(existing) = scopes.get_mut(name) {
                 if !existing.mutable {
                     diagnostics.push(
@@ -492,12 +667,22 @@ fn lower_stmt(
             else_body,
             span: _,
         } => {
-            let condition = lower_expr(condition, scopes, signatures, diagnostics, source_path);
+            let condition = lower_expr(
+                condition,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
             ensure_bool_condition(&condition, diagnostics, source_path);
             let then_body = lower_block(
                 then_body,
                 scopes,
                 signatures,
+                known_structs,
+                struct_signatures,
                 diagnostics,
                 true,
                 source_path,
@@ -506,6 +691,8 @@ fn lower_stmt(
                 else_body,
                 scopes,
                 signatures,
+                known_structs,
+                struct_signatures,
                 diagnostics,
                 true,
                 source_path,
@@ -521,15 +708,34 @@ fn lower_stmt(
             body,
             span: _,
         } => {
-            let condition = lower_expr(condition, scopes, signatures, diagnostics, source_path);
+            let condition = lower_expr(
+                condition,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
             ensure_bool_condition(&condition, diagnostics, source_path);
-            let body = lower_block(body, scopes, signatures, diagnostics, true, source_path);
+            let body = lower_block(
+                body,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                true,
+                source_path,
+            );
             TypedStmt::While { condition, body }
         }
         HirStmt::Expr(expr, _) => TypedStmt::Expr(lower_expr(
             expr,
             scopes,
             signatures,
+            known_structs,
+            struct_signatures,
             diagnostics,
             source_path,
         )),
@@ -555,6 +761,8 @@ fn lower_expr(
     expr: &HirExpr,
     scopes: &ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
+    known_structs: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> TypedExpr {
@@ -577,7 +785,17 @@ fn lower_expr(
         HirExpr::List { items, span } => {
             let typed_items = items
                 .iter()
-                .map(|item| lower_expr(item, scopes, signatures, diagnostics, source_path))
+                .map(|item| {
+                    lower_expr(
+                        item,
+                        scopes,
+                        signatures,
+                        known_structs,
+                        struct_signatures,
+                        diagnostics,
+                        source_path,
+                    )
+                })
                 .collect::<Vec<_>>();
             let element_type = infer_list_element_type(&typed_items, diagnostics, source_path);
             TypedExpr {
@@ -612,31 +830,76 @@ fn lower_expr(
         HirExpr::Call { callee, args, span } => {
             let typed_args = args
                 .iter()
-                .map(|arg| lower_expr(arg, scopes, signatures, diagnostics, source_path))
+                .map(|arg| {
+                    lower_expr(
+                        arg,
+                        scopes,
+                        signatures,
+                        known_structs,
+                        struct_signatures,
+                        diagnostics,
+                        source_path,
+                    )
+                })
                 .collect::<Vec<_>>();
+            let call_kind = resolve_call_kind(callee, signatures, struct_signatures);
             validate_call(
                 callee,
                 &typed_args,
                 *span,
+                call_kind,
                 signatures,
+                struct_signatures,
                 diagnostics,
                 source_path,
             );
-            let return_type = function_return_type(
-                callee,
-                &typed_args,
-                signatures,
-                diagnostics,
-                *span,
-                source_path,
-            );
+            let return_type = call_return_type(callee, call_kind, signatures, struct_signatures);
 
             TypedExpr {
-                kind: TypedExprKind::Call {
-                    callee: callee.clone(),
-                    args: typed_args,
+                kind: match call_kind {
+                    CallKind::Function | CallKind::BuiltinLen | CallKind::Unknown => {
+                        TypedExprKind::Call {
+                            callee: callee.clone(),
+                            args: typed_args,
+                        }
+                    }
+                    CallKind::Struct => TypedExprKind::StructInit {
+                        name: callee.clone(),
+                        args: typed_args,
+                    },
                 },
                 ty: return_type,
+                span: *span,
+            }
+        }
+        HirExpr::Field {
+            target,
+            field,
+            span,
+        } => {
+            let target = lower_expr(
+                target,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
+            let ty = infer_field_type(
+                &target,
+                field,
+                diagnostics,
+                *span,
+                struct_signatures,
+                source_path,
+            );
+            TypedExpr {
+                kind: TypedExprKind::Field {
+                    target: Box::new(target),
+                    field: field.clone(),
+                },
+                ty,
                 span: *span,
             }
         }
@@ -645,8 +908,24 @@ fn lower_expr(
             index,
             span,
         } => {
-            let target = lower_expr(target, scopes, signatures, diagnostics, source_path);
-            let index = lower_expr(index, scopes, signatures, diagnostics, source_path);
+            let target = lower_expr(
+                target,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
+            let index = lower_expr(
+                index,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
 
             let ty = infer_index_type(&target, &index, diagnostics, *span, source_path);
             TypedExpr {
@@ -666,24 +945,43 @@ fn lower_expr(
             } => {
                 let typed_args = args
                     .iter()
-                    .map(|arg| lower_expr(arg, scopes, signatures, diagnostics, source_path))
+                    .map(|arg| {
+                        lower_expr(
+                            arg,
+                            scopes,
+                            signatures,
+                            known_structs,
+                            struct_signatures,
+                            diagnostics,
+                            source_path,
+                        )
+                    })
                     .collect::<Vec<_>>();
+                let call_kind = resolve_call_kind(callee, signatures, struct_signatures);
+                if !matches!(call_kind, CallKind::Function | CallKind::Unknown) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3008",
+                            "`go` currently requires a named function call",
+                            "the bootstrap concurrency model only supports `go some_fn(...)` for top-level functions",
+                            *span,
+                        )
+                        .with_fix_it("replace this expression with `go some_function(...)`")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
                 validate_call(
                     callee,
                     &typed_args,
                     *call_span,
+                    call_kind,
                     signatures,
+                    struct_signatures,
                     diagnostics,
                     source_path,
                 );
-                let return_type = function_return_type(
-                    callee,
-                    &typed_args,
-                    signatures,
-                    diagnostics,
-                    *call_span,
-                    source_path,
-                );
+                let return_type =
+                    call_return_type(callee, call_kind, signatures, struct_signatures);
 
                 TypedExpr {
                     kind: TypedExprKind::Spawn {
@@ -695,7 +993,15 @@ fn lower_expr(
                 }
             }
             other => {
-                let typed_value = lower_expr(other, scopes, signatures, diagnostics, source_path);
+                let typed_value = lower_expr(
+                    other,
+                    scopes,
+                    signatures,
+                    known_structs,
+                    struct_signatures,
+                    diagnostics,
+                    source_path,
+                );
                 diagnostics.push(
                     Diagnostic::error(
                         "GOF3008",
@@ -718,7 +1024,15 @@ fn lower_expr(
             }
         },
         HirExpr::Await { value, span } => {
-            let value = lower_expr(value, scopes, signatures, diagnostics, source_path);
+            let value = lower_expr(
+                value,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
             let ty = match &value.ty {
                 Type::Task(inner) => inner.as_ref().clone(),
                 Type::Unknown => Type::Unknown,
@@ -746,8 +1060,24 @@ fn lower_expr(
             }
         }
         HirExpr::Binary { lhs, op, rhs, span } => {
-            let lhs = lower_expr(lhs, scopes, signatures, diagnostics, source_path);
-            let rhs = lower_expr(rhs, scopes, signatures, diagnostics, source_path);
+            let lhs = lower_expr(
+                lhs,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
+            let rhs = lower_expr(
+                rhs,
+                scopes,
+                signatures,
+                known_structs,
+                struct_signatures,
+                diagnostics,
+                source_path,
+            );
             let ty = infer_binary_type(&lhs.ty, *op, &rhs.ty);
             TypedExpr {
                 kind: TypedExprKind::Binary {
@@ -766,60 +1096,97 @@ fn validate_call(
     callee: &str,
     args: &[TypedExpr],
     span: Span,
+    call_kind: CallKind,
     signatures: &HashMap<String, FunctionSignature>,
+    struct_signatures: &HashMap<String, StructSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
-    if callee == "len" {
-        validate_len_call(args, span, diagnostics, source_path);
-        return;
-    }
+    match call_kind {
+        CallKind::BuiltinLen => {
+            validate_len_call(args, span, diagnostics, source_path);
+        }
+        CallKind::Function => match signatures.get(callee) {
+            Some(signature) if signature.arity == args.len() => {
+                for (index, (expected, actual)) in
+                    signature.param_types.iter().zip(args.iter()).enumerate()
+                {
+                    ensure_type_compatibility(
+                        expected,
+                        &actual.ty,
+                        actual.span,
+                        diagnostics,
+                        format!("argument {} for `{callee}` has incompatible type", index + 1),
+                        format!(
+                            "parameter expects `{}`, but the argument resolves to `{}`",
+                            expected.display_name(),
+                            actual.ty.display_name()
+                        ),
+                        source_path,
+                    );
+                }
+            }
+            Some(signature) => diagnostics.push(
+                Diagnostic::error(
+                    "GOF3005",
+                    format!("wrong number of arguments for `{callee}`"),
+                    format!("expected {} argument(s), got {}", signature.arity, args.len()),
+                    span,
+                )
+                .with_fix_it("pass the exact number of parameters declared by the function")
+                .with_source_path(source_path.to_path_buf()),
+            ),
+            None => unreachable!("function call kind requires a matching signature"),
+        },
+        CallKind::Struct => {
+            let signature = struct_signatures
+                .get(callee)
+                .expect("struct call kind requires a matching signature");
+            if signature.fields.len() != args.len() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3005",
+                        format!("wrong number of arguments for `{callee}`"),
+                        format!(
+                            "expected {} field value(s), got {}",
+                            signature.fields.len(),
+                            args.len()
+                        ),
+                        span,
+                    )
+                    .with_fix_it("pass one argument for each struct field in declaration order")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return;
+            }
 
-    match signatures.get(callee) {
-        Some(signature) if signature.arity == args.len() => {
             for (index, (expected, actual)) in
-                signature.param_types.iter().zip(args.iter()).enumerate()
+                signature.fields.iter().zip(args.iter()).enumerate()
             {
                 ensure_type_compatibility(
-                    expected,
+                    &expected.ty,
                     &actual.ty,
                     actual.span,
                     diagnostics,
+                    format!("field {} for `{callee}` has incompatible type", index + 1),
                     format!(
-                        "argument {} for `{callee}` has incompatible type",
-                        index + 1
-                    ),
-                    format!(
-                        "parameter expects `{}`, but the argument resolves to `{}`",
-                        expected.display_name(),
+                        "field `{}` expects `{}`, but the argument resolves to `{}`",
+                        expected.name,
+                        expected.ty.display_name(),
                         actual.ty.display_name()
                     ),
                     source_path,
                 );
             }
         }
-        Some(signature) => diagnostics.push(
-            Diagnostic::error(
-                "GOF3005",
-                format!("wrong number of arguments for `{callee}`"),
-                format!(
-                    "expected {} argument(s), got {}",
-                    signature.arity,
-                    args.len()
-                ),
-                span,
-            )
-            .with_fix_it("pass the exact number of parameters declared by the function")
-            .with_source_path(source_path.to_path_buf()),
-        ),
-        None => diagnostics.push(
+        CallKind::Unknown => diagnostics.push(
             Diagnostic::error(
                 "GOF3004",
-                format!("unknown function `{callee}`"),
-                "only top-level named functions can be called in the bootstrap compiler",
+                format!("unknown function or struct `{callee}`"),
+                "calls currently resolve only to top-level functions, builtin `len`, or struct constructors",
                 span,
             )
-            .with_fix_it("define the function before calling it")
+            .with_fix_it("define the function or struct before calling it")
             .with_source_path(source_path.to_path_buf()),
         ),
     }
@@ -827,6 +1194,7 @@ fn validate_call(
 
 fn resolve_type_annotation(
     ty: Option<&HirTypeRef>,
+    known_structs: &HashSet<String>,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
 ) -> Type {
@@ -841,15 +1209,16 @@ fn resolve_type_annotation(
         "list" => Type::list(Type::Unknown),
         "task" => Type::task(Type::Unknown),
         "unit" => Type::Unit,
+        name if known_structs.contains(name) => Type::Struct(name.to_string()),
         _ => {
             diagnostics.push(
                 Diagnostic::error(
                     "GOF3012",
                     format!("unknown type annotation `{}`", ty.name),
-                    "the bootstrap type system currently supports only `int`, `string`, `bool`, `list`, `task`, and `unit` annotations",
+                    "the bootstrap type system currently supports builtin annotations plus known struct names from the loaded module graph",
                     ty.span,
                 )
-                .with_fix_it("replace the annotation with a supported builtin type")
+                .with_fix_it("replace the annotation with a supported builtin type or a known struct name")
                 .with_source_path(source_path.to_path_buf()),
             );
             Type::Unknown
@@ -857,22 +1226,37 @@ fn resolve_type_annotation(
     }
 }
 
-fn function_return_type(
+fn resolve_call_kind(
     callee: &str,
-    _args: &[TypedExpr],
     signatures: &HashMap<String, FunctionSignature>,
-    _diagnostics: &mut Diagnostics,
-    _span: Span,
-    _source_path: &Path,
-) -> Type {
+    struct_signatures: &HashMap<String, StructSignature>,
+) -> CallKind {
     if callee == "len" {
-        return Type::Int;
+        CallKind::BuiltinLen
+    } else if signatures.contains_key(callee) {
+        CallKind::Function
+    } else if struct_signatures.contains_key(callee) {
+        CallKind::Struct
+    } else {
+        CallKind::Unknown
     }
+}
 
-    signatures
-        .get(callee)
-        .map(|signature| signature.return_type.clone())
-        .unwrap_or(Type::Unknown)
+fn call_return_type(
+    callee: &str,
+    call_kind: CallKind,
+    signatures: &HashMap<String, FunctionSignature>,
+    _struct_signatures: &HashMap<String, StructSignature>,
+) -> Type {
+    match call_kind {
+        CallKind::BuiltinLen => Type::Int,
+        CallKind::Function => signatures
+            .get(callee)
+            .map(|signature| signature.return_type.clone())
+            .unwrap_or(Type::Unknown),
+        CallKind::Struct => Type::Struct(callee.to_string()),
+        CallKind::Unknown => Type::Unknown,
+    }
 }
 
 fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
@@ -886,7 +1270,67 @@ fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
         ) => Type::Bool,
         (Type::String, BinaryOp::Eq | BinaryOp::Ne, Type::String) => Type::Bool,
         (Type::Bool, BinaryOp::Eq | BinaryOp::Ne, Type::Bool) => Type::Bool,
+        (Type::List(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::List(rhs))
+            if types_compatible(lhs, rhs) =>
+        {
+            Type::Bool
+        }
+        (Type::Struct(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Struct(rhs)) if lhs == rhs => {
+            Type::Bool
+        }
         _ => Type::Unknown,
+    }
+}
+
+fn infer_field_type(
+    target: &TypedExpr,
+    field: &str,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+    struct_signatures: &HashMap<String, StructSignature>,
+    source_path: &Path,
+) -> Type {
+    match &target.ty {
+        Type::Struct(name) => {
+            let Some(signature) = struct_signatures.get(name) else {
+                return Type::Unknown;
+            };
+
+            match signature
+                .fields
+                .iter()
+                .find(|candidate| candidate.name == field)
+            {
+                Some(field_signature) => field_signature.ty.clone(),
+                None => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3022",
+                            format!("unknown field `{field}` on `{name}`"),
+                            "field access must reference a field declared on the target struct",
+                            span,
+                        )
+                        .with_fix_it("use one of the fields declared on the struct")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                    Type::Unknown
+                }
+            }
+        }
+        Type::Unknown => Type::Unknown,
+        other => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3024",
+                    "field access requires a struct value",
+                    format!("this target resolves to `{}`", other.display_name()),
+                    span,
+                )
+                .with_fix_it("access fields only on struct values")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            Type::Unknown
+        }
     }
 }
 
@@ -1318,5 +1762,50 @@ mod tests {
             .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3019"]);
+    }
+
+    #[test]
+    fn supports_struct_contracts_and_field_access() {
+        let module = lower_source(
+            "struct Point:\n    x: int\n    y: int\n\nfn magnitude(point: Point) -> int:\n    return point.x + point.y\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return magnitude(point)\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(module.structs.len(), 1);
+        assert_eq!(module.structs[0].name, "Point");
+        assert_eq!(module.structs[0].fields[0].ty, Type::Int);
+        assert_eq!(
+            module.functions[0].params[0].ty,
+            Type::Struct("Point".to_string())
+        );
+        assert_eq!(module.functions[1].return_type, Type::Int);
+    }
+
+    #[test]
+    fn rejects_unknown_struct_field_access() {
+        let diagnostics = lower_source(
+            "struct Point:\n    x: int\n\nfn main() -> int:\n    point = Point(3)\n    return point.y\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3022"]);
+    }
+
+    #[test]
+    fn rejects_field_access_on_non_struct() {
+        let diagnostics = lower_source("fn main() -> int:\n    return 42.value\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3024"]);
+    }
+
+    #[test]
+    fn rejects_duplicate_struct_fields() {
+        let diagnostics = lower_source(
+            "struct Point:\n    x: int\n    x: int\n\nfn main() -> int:\n    point = Point(1, 2)\n    return point.x\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3023"]);
     }
 }

@@ -1,0 +1,10 @@
+struct Point:
+    x: int
+    y: int
+
+fn total(point: Point) -> int:
+    return point.x + point.y
+
+fn main() -> int:
+    point: Point = Point(9, 4)
+    return total(point)

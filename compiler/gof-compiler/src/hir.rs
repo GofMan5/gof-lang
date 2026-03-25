@@ -1,10 +1,11 @@
-use crate::ast::{BinaryOp, Expr, Module, Param, Stmt, TypeRef};
+use crate::ast::{BinaryOp, Expr, Module, Param, Stmt, StructDecl, StructField, TypeRef};
 use crate::source::Span;
 use serde::Serialize;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HirModule {
+    pub structs: Vec<HirStruct>,
     pub functions: Vec<HirFunction>,
 }
 
@@ -16,6 +17,20 @@ pub struct HirFunction {
     pub return_type: Option<HirTypeRef>,
     pub body: Vec<HirStmt>,
     pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirStruct {
+    pub name: String,
+    pub fields: Vec<HirStructField>,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirStructField {
+    pub name: String,
+    pub ty: HirTypeRef,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +90,11 @@ pub enum HirExpr {
         args: Vec<HirExpr>,
         span: Span,
     },
+    Field {
+        target: Box<HirExpr>,
+        field: String,
+        span: Span,
+    },
     Index {
         target: Box<HirExpr>,
         index: Box<HirExpr>,
@@ -98,6 +118,7 @@ pub enum HirExpr {
 
 pub fn lower(module: &Module) -> HirModule {
     HirModule {
+        structs: module.structs.iter().map(lower_struct).collect(),
         functions: module
             .functions
             .iter()
@@ -111,6 +132,22 @@ pub fn lower(module: &Module) -> HirModule {
                 source_path: function.source_path.clone(),
             })
             .collect(),
+    }
+}
+
+fn lower_struct(decl: &StructDecl) -> HirStruct {
+    HirStruct {
+        name: decl.name.clone(),
+        fields: decl.fields.iter().map(lower_struct_field).collect(),
+        source_path: decl.source_path.clone(),
+    }
+}
+
+fn lower_struct_field(field: &StructField) -> HirStructField {
+    HirStructField {
+        name: field.name.clone(),
+        ty: lower_type_ref(&field.ty),
+        span: field.span,
     }
 }
 
@@ -189,6 +226,15 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             args: args.iter().map(lower_expr).collect(),
             span: *span,
         },
+        Expr::Field {
+            target,
+            field,
+            span,
+        } => HirExpr::Field {
+            target: Box::new(lower_expr(target)),
+            field: field.clone(),
+            span: *span,
+        },
         Expr::Index {
             target,
             index,
@@ -224,6 +270,7 @@ impl HirExpr {
             | HirExpr::Local(_, span)
             | HirExpr::List { span, .. }
             | HirExpr::Call { span, .. }
+            | HirExpr::Field { span, .. }
             | HirExpr::Index { span, .. }
             | HirExpr::Go { span, .. }
             | HirExpr::Await { span, .. }

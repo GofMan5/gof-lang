@@ -173,6 +173,13 @@ fn lex_line(
                 ));
                 index += 1;
             }
+            '.' => {
+                tokens.push(Token::new(
+                    TokenKind::Dot,
+                    Span::new(line_number, column, column + 1),
+                ));
+                index += 1;
+            }
             ':' => {
                 tokens.push(Token::new(
                     TokenKind::Colon,

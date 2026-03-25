@@ -18,6 +18,9 @@ pub fn parse_single_source(source: &SourceFile) -> Result<Module, Diagnostics> {
     let cst = CstModule::new(tokens);
     let mut module =
         parse(&cst).map_err(|diagnostics| diagnostics.with_source_path(source.path()))?;
+    for decl in &mut module.structs {
+        decl.source_path = source.path().to_path_buf();
+    }
     for function in &mut module.functions {
         function.source_path = source.path().to_path_buf();
     }
@@ -35,11 +38,12 @@ pub fn load_module_graph(source: &SourceFile) -> Result<Module, Diagnostics> {
         .get(&root_path)
         .map(|module| module.imports.clone())
         .unwrap_or_default();
-    let functions = resolver.collect_functions(&mut diagnostics);
+    let (structs, functions) = resolver.collect_items(&mut diagnostics);
 
     if diagnostics.is_empty() {
         Ok(Module {
             imports: root_imports,
+            structs,
             functions,
         })
     } else {
@@ -132,8 +136,13 @@ impl ModuleResolver {
         Ok(())
     }
 
-    fn collect_functions(&self, diagnostics: &mut Diagnostics) -> Vec<crate::ast::Function> {
+    fn collect_items(
+        &self,
+        diagnostics: &mut Diagnostics,
+    ) -> (Vec<crate::ast::StructDecl>, Vec<crate::ast::Function>) {
+        let mut seen_structs = HashMap::<String, (PathBuf, crate::source::Span)>::new();
         let mut seen = HashMap::<String, (PathBuf, crate::source::Span)>::new();
+        let mut structs = Vec::new();
         let mut functions = Vec::new();
 
         for path in &self.load_order {
@@ -141,7 +150,77 @@ impl ModuleResolver {
                 .modules
                 .get(path)
                 .expect("loaded module should exist in resolver cache");
+            for decl in &module.structs {
+                if let Some((original_path, original_span)) = seen_structs.get(&decl.name).cloned()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3020",
+                            format!("duplicate struct `{}` in module graph", decl.name),
+                            format!(
+                                "first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it("rename one of the structs or remove the conflicting import")
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                if let Some((original_path, original_span)) = seen.get(&decl.name).cloned() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!("top-level name `{}` conflicts between a struct and a function", decl.name),
+                            format!(
+                                "the function was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it("rename either the struct or the function so constructors stay unambiguous")
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                seen_structs.insert(decl.name.clone(), (path.clone(), decl.span));
+                structs.push(decl.clone());
+            }
+
             for function in &module.functions {
+                if let Some((original_path, original_span)) =
+                    seen_structs.get(&function.name).cloned()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between a function and a struct",
+                                function.name
+                            ),
+                            format!(
+                                "the struct was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            function.span,
+                        )
+                        .with_fix_it(
+                            "rename either the function or the struct so calls stay unambiguous",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
                 if let Some((original_path, original_span)) = seen.get(&function.name).cloned() {
                     diagnostics.push(
                         Diagnostic::error(
@@ -166,7 +245,7 @@ impl ModuleResolver {
             }
         }
 
-        functions
+        (structs, functions)
     }
 }
 
@@ -272,5 +351,31 @@ mod tests {
                 .expect_err("cycle should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3015"]);
+    }
+
+    #[test]
+    fn loads_structs_from_local_imports() {
+        let temp = tempdir().expect("tempdir should exist");
+        let helper_path = temp.path().join("geometry.gof");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(
+            &helper_path,
+            "struct Point:\n    x: int\n    y: int\n\nfn total(point: Point) -> int:\n    return point.x + point.y\n",
+        )
+        .expect("helper module should be written");
+        fs::write(
+            &main_path,
+            "import geometry\n\nfn main() -> int:\n    point: Point = Point(2, 7)\n    return total(point)\n",
+        )
+        .expect("main module should be written");
+
+        let module =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
+                .expect("module graph should load");
+
+        assert_eq!(module.structs.len(), 1);
+        assert_eq!(module.structs[0].name, "Point");
+        assert_eq!(module.functions.len(), 2);
     }
 }

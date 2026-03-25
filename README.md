@@ -1,329 +1,185 @@
-<div align="center">
-
 # gof
 
-### Язык программирования с читаемостью Python, архитектурной строгостью системного языка и курсом на нативную производительность
+`gof` is a new programming language project that aims for:
 
-<p>
-  <strong>Статус:</strong> bootstrap-этап, активная разработка<br/>
-  <strong>Курс:</strong> AOT-компиляция, строгий compiler pipeline, надежный runtime, развитие без костылей
-</p>
+- Python-like readability and low ceremony
+- Go-like concurrency and operational practicality
+- Rust-grade engineering discipline and reliability
+- a clean path to native performance without semantic chaos
 
-</div>
+This repository currently contains a bootstrap compiler, formatter, evaluator, test harness, and language specification for the actively supported subset of `gof`.
 
----
+## Status
 
-## Что такое `gof`
+`gof` is in active bootstrap development.
 
-`gof` создается как новый язык программирования, в котором:
+What is already real:
 
-- код читается легко и быстро
-- синтаксис остается компактным и человеческим
-- поведение языка контролируется строгой архитектурой
-- эволюция языка идет через спецификации, тесты, RFC и ADR, а не через хаотичные хаки
+- indentation-aware syntax
+- top-level functions
+- same-directory imports
+- typed parameters and return contracts
+- immutable bindings by default, `mut` for reassignment
+- `if` / `else`
+- `while`
+- lists, indexing, builtin `len(...)`
+- task spawning through `go`
+- waiting on tasks through `await`
+- user-defined `struct` types with typed fields
+- struct constructors like `Point(3, 4)`
+- field access like `point.x`
+- deterministic formatter
+- fixture-based conformance tests
+- compiler pipeline through `Lexer -> CST -> AST -> HIR -> Typed HIR -> MIR -> SSA -> backend artifact`
 
-Идея простая: взять ощущение легкости, которое нравится в Python, и совместить его с инженерной дисциплиной, предсказуемостью и скоростным потенциалом системного стека.
+What is not finished yet:
 
-## Ключевой принцип
+- native machine-code backend
+- enums and `match`
+- channels and `select`
+- real standard library
+- package registry and full resolver
+- production-grade runtime
 
-> `gof` не пытается быть Python-совместимой средой исполнения.  
-> Он берет понятный стиль кода, но строится как отдельный язык с собственной моделью типов, компиляции и runtime.
+Important: `gof build` still emits a structured SSA/backend artifact, not a final native executable.
 
----
+## Design Principles
 
-## Состояние проекта на 2026
+- `gof` is not a Python compatibility layer
+- readability must not destroy optimizability
+- safety and predictability beat surface-level convenience
+- bootstrap shortcuts are not allowed to become permanent architecture
+- new features must land with tests, diagnostics, examples, and spec updates
 
-Сейчас в репозитории уже не пустой каркас, а рабочий bootstrap языка и toolchain.
+Project operating rules are documented in:
 
-### Уже реализовано
+- [AGENTS.md](./AGENTS.md) for local agent rules
+- [roadmap.md](./roadmap.md) for milestones and checkpoints
+- [spec/language-v1.md](./spec/language-v1.md) for the current language contract
+- [spec/diagnostics.md](./spec/diagnostics.md) for the diagnostics contract
 
-| Область | Что есть сейчас |
-|---|---|
-| CLI | `gof build`, `gof run`, `gof test`, `gof fmt`, `gof mod init`, `gof doc`, `gof bench` |
-| Лексер | чувствительность к отступам, `INDENT` / `DEDENT`, базовые токены языка |
-| Парсер | функции, параметры с optional type annotations, биндинги, typed bindings, присваивания, вызовы функций, арифметика, `go`, `await` |
-| Семантика | проверки неизвестных локалов, immutable reassignment, unknown function, wrong arity, duplicate binding, bool conditions, корректность `go/await`, вывод возвращаемых типов функций, проверки type annotations |
-| Formatter | детерминированное форматирование bootstrap-подмножества языка |
-| Pipeline | `Lexer -> CST -> AST -> HIR -> Typed HIR -> MIR -> SSA -> backend artifact` |
-| Исполнение | bootstrap evaluator для запуска программ через `gof run`, включая `if/else`, `while` и первый task-based concurrency slice |
-| Тесты | unit, integration, fixture-based conformance, benchmark harness |
-
-### Что пока еще не реализовано
-
-| Область | Статус |
-|---|---|
-| Нативный machine code backend | еще нет |
-| Импорты и модульная система как рабочая user-facing фича | еще нет |
-| `struct`, `enum`, `protocol`, `match`, `async`, `select`, `defer`, `unsafe` | зарезервированы в направлении языка, но пока не реализованы |
-| Реальный stdlib | еще нет |
-| Полноценный package resolver и registry | еще нет |
-| Производственный runtime с GC/scheduler/FFI | еще нет |
-
-Важно: `gof build` сейчас выпускает **SSA JSON artifact**, а не финальный нативный бинарь. Это осознанный этап развития, а не имитация готового backend.
-
----
-
-## Как выглядит код на `gof`
+## Example
 
 ```gof
-fn add(a: int, b: int) -> int:
-    return a + b
+struct Point:
+    x: int
+    y: int
+
+fn score(point: Point) -> int:
+    return point.x + point.y
 
 fn main() -> int:
-    base: int = 40
-    mut total: int = add(base, 1)
-    total = total + 1
-    return total
+    point: Point = Point(20, 22)
+    return score(point)
 ```
 
-При запуске:
+Running this program prints:
 
 ```text
 42
 ```
 
----
+## Quick Start
 
-## Что умеет язык прямо сейчас
-
-Текущее bootstrap-подмножество поддерживает:
-
-- top-level `fn`
-- параметры функций
-- optional builtin type annotations у параметров
-- explicit builtin return type annotations через `fn name(...) -> type:`
-- local same-directory imports через `import name`
-- блоки через отступы
-- `return`
-- `if` / `else`
-- `while`
-- list literals `[1, 2, 3]`
-- indexing `values[0]`
-- builtin `len(values)`
-- `go some_function(...)`
-- `await task`
-- local module graph resolution для sibling `.gof` файлов
-- вывод возвращаемых типов функций по `return`-выражениям на уровне модуля
-- immutable binding через `name = expr`
-- typed immutable binding через `name: type = expr`
-- mutable binding через `mut name = expr`
-- typed mutable binding через `mut name: type = expr`
-- повторное присваивание только mutable-переменным
-- целочисленные литералы
-- булевы литералы `true` / `false`
-- строковые литералы
-- идентификаторы
-- `+`, `-`, `*`
-- сравнения `==`, `!=`, `<`, `<=`, `>`, `>=`
-- вызовы top-level функций по имени
-
-### Правила биндингов
-
-- `name = expr` создает новую immutable-переменную, если такого имени еще нет
-- `name: type = expr` создает immutable binding с явным builtin-типом
-- `mut name = expr` создает mutable-переменную
-- `mut name: type = expr` создает mutable binding с явным builtin-типом
-- попытка изменить immutable binding приводит к диагностике компилятора
-- параметры и bindings сейчас поддерживают builtin-annotations: `int`, `string`, `bool`, `task`, `unit`
-- `list` теперь тоже входит в bootstrap builtin annotations
-- функции сейчас поддерживают явный return contract через `-> int`, `-> string`, `-> bool`, `-> list`, `-> task`, `-> unit`
-- `import name` сейчас ищет `name.gof` рядом с текущим файлом и подключает его top-level функции в bootstrap module graph
-- list literals сейчас должны оставаться однородными по типу элементов
-- indexing сейчас работает только для list values и integer indices
-- `len(...)` сейчас работает для list и string значений
-- вызовы функций в bootstrap-режиме разрешены только для top-level функций
-- compiler пытается вывести один стабильный return type для каждой функции
-- если у функции есть явный return type, тело обязано ему соответствовать
-- все `return` внутри одной функции должны быть совместимыми по типу
-- циклы imports и duplicate top-level functions между модулями сейчас запрещены диагностикой
-- `go` в bootstrap-режиме пока разрешен только для top-level именованных функций
-- task-значение несет тип результата вызываемой функции, если он уже выводится компилятором
-- `await` работает только с task-значениями, созданными через `go`
-
----
-
-## Быстрый старт
-
-### Требования
-
-- Rust toolchain, совместимый с [`rust-toolchain.toml`](./rust-toolchain.toml)
-
-### Запуск примера
+Run a fixture:
 
 ```bash
 cargo run -q -p gof-cli --bin gof -- run tests/fixtures/pass/hello.gof
 ```
 
-### Сборка SSA artifact
+Run an example:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- build tests/fixtures/pass/hello.gof
+cargo run -q -p gof-cli --bin gof -- run examples/geometry.gof
 ```
 
-### Форматирование файла
+Format a file:
 
 ```bash
 cargo run -q -p gof-cli --bin gof -- fmt path/to/file.gof
 ```
 
-### Проверка форматирования без перезаписи
+Check formatting without rewriting:
 
 ```bash
 cargo run -q -p gof-cli --bin gof -- fmt path/to/file.gof --check
 ```
 
-### Прогон fixture-набора языка
+Run the fixture suite:
 
 ```bash
 cargo run -q -p gof-cli --bin gof -- test tests/fixtures
 ```
 
-### Инициализация модуля
+Build the current backend artifact:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- mod init example/app --dir .
+cargo run -q -p gof-cli --bin gof -- build examples/geometry.gof
 ```
 
-### Полный прогон тестов
+Run all workspace tests:
 
 ```bash
 cargo test --workspace
 ```
 
-### Сборка benchmark harness
+## Current Language Surface
 
-```bash
-cargo bench -p gof-bench --no-run
-```
+The current bootstrap subset supports:
 
----
+- `import name`
+- `struct`
+- `fn`
+- typed parameters
+- explicit return annotations
+- `return`
+- `if` / `else`
+- `while`
+- immutable and mutable bindings
+- integer, string, and boolean literals
+- list literals
+- arithmetic with `+`, `-`, `*`
+- comparisons with `==`, `!=`, `<`, `<=`, `>`, `>=`
+- top-level function calls
+- struct constructors
+- field access
+- list indexing
+- builtin `len(...)`
+- `go` and `await`
 
-## CLI
+See [examples/README.md](./examples/README.md) for runnable examples.
 
-Текущая командная поверхность:
+## Repository Layout
 
-- `gof build <file.gof>`
-- `gof run <file.gof>`
-- `gof test [fixtures-dir]`
-- `gof fmt <file.gof> [--check]`
-- `gof mod init <module> [--edition <edition>] [--dir <path>]`
-- `gof doc`
-- `gof bench`
+- `compiler/` - language frontend, typing, IR lowering, and bootstrap evaluator
+- `runtime/` - runtime contracts and runtime-facing code
+- `stdlib/` - future standard library home
+- `tools/` - CLI toolchain
+- `tests/` - conformance tests and fixtures
+- `benchmarks/` - benchmark harness
+- `spec/` - language and diagnostics contracts
+- `rfcs/` - language evolution proposals
+- `adrs/` - architecture decisions
 
----
+## Quality Bar
 
-## Архитектура компилятора
+The project targets:
 
-`gof` строится не вокруг одной монолитной фазы, а через строгую последовательность представлений:
+- explicit architectural layering
+- strong diagnostics
+- 100% coverage target for deterministic compiler/runtime/tooling code
+- benchmark-backed performance work
+- no public hacks and no fake-complete features
 
-1. `Lexer`
-2. `CST`
-3. `AST`
-4. `HIR`
-5. `Typed HIR`
-6. `MIR`
-7. `SSA`
-8. `Backend Artifact`
+If a feature is not specified, tested, and integrated through the pipeline, it is not considered done.
 
-Это сделано намеренно. Такой pipeline:
+## Roadmap
 
-- изолирует ответственность каждой стадии
-- не дает синтаксическим упрощениям протекать в lower-level архитектуру
-- позволяет развивать оптимизации без разрушения frontend
-- защищает проект от типичного сценария "временно захардкодим, потом перепишем"
+The active roadmap is maintained in [roadmap.md](./roadmap.md).
 
----
+Current priority order:
 
-## Диагностика
-
-Компилятор уже выдает детерминированные диагностики с кодами и fix-it hints.
-
-Текущие bootstrap-диагностики включают:
-
-- неизвестный локальный binding
-- попытку изменить immutable binding
-- вызов неизвестной функции
-- неверное число аргументов
-- повторное объявление binding в одной функции
-- небулевы условия в `if` и `while`
-- некорректную цель для `go`
-- попытку `await` не-task значения
-- несовместимые `return`-типы внутри одной функции
-- неизвестные type annotations
-- несовместимость между annotation и реальным типом выражения
-
-См.:
-
-- [`spec/language-v1.md`](./spec/language-v1.md)
-- [`spec/diagnostics.md`](./spec/diagnostics.md)
-
----
-
-## Структура репозитория
-
-| Путь | Назначение |
-|---|---|
-| `spec/` | спецификации языка, editions, diagnostics, package contracts |
-| `rfcs/` | предложения, меняющие публичное поведение |
-| `adrs/` | архитектурные решения по компилятору, runtime и границам проекта |
-| `compiler/` | компилятор и все его внутренние фазы |
-| `runtime/` | runtime contracts и будущее runtime-ядро |
-| `stdlib/` | roadmap стандартной библиотеки |
-| `tools/` | пользовательские инструменты, включая CLI `gof` |
-| `tests/` | conformance fixtures и integration tests |
-| `benchmarks/` | performance baseline и benchmark harness |
-
----
-
-## Правила развития проекта
-
-Проект изначально строится жестко и дисциплинированно.
-
-### Базовые правила
-
-- ни одна публичная языковая фича не должна появляться без обновления `spec/`
-- нельзя ломать семантику без тестов и conformance fixtures
-- нельзя хранить undocumented IR invariants
-- нельзя тащить hidden feature flags в публичное поведение
-- нельзя размазывать архитектурные решения по "временным" обходным путям
-- каждый новый исходный файл должен иметь тесты, fixtures или оба слоя сразу
-- цель проекта для deterministic compiler/runtime code: 100% line и branch coverage
-- деградации производительности считаются блокером до объяснения и исправления
-- скорость, стабильность и качество оптимизаций выше удобной халтуры
-
-### Если меняется язык, обычно должны измениться и эти области
-
-- `spec/`
-- `rfcs/`
-- `adrs/`
-- `tests/fixtures/`
-- unit/integration tests компилятора
-
----
-
-## Roadmap 2026
-
-Следующие большие шаги для `gof`:
-
-- imports и module loading
-- `if`, циклы и расширение statement/expression surface
-- более сильный type inference за пределами текущих builtin annotations и return inference
-- typed bindings и richer semantic analysis
-- реальный package resolver
-- backend ниже уровня SSA JSON
-- подъем runtime и stdlib
-- дальнейшее движение к AOT-native исполнению
-
----
-
-## Проверенный baseline
-
-Текущее состояние репозитория уже подтверждается:
-
-- unit-тестами компилятора
-- CLI integration tests
-- fixture-based conformance tests
-- formatter checks
-- сборкой benchmark harness
-
-Это и есть минимальный качественный фундамент, на котором можно дальше строить настоящий язык, а не бесконечный набор идей без реализации.
+1. richer data modeling and control flow
+2. minimal useful standard library
+3. production-grade concurrency model
+4. package system and native backend hardening

@@ -38,3 +38,8 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3017`: incompatible element types inside one list literal
 - `GOF3018`: invalid list indexing operation
 - `GOF3019`: invalid operand for builtin `len`
+- `GOF3020`: duplicate top-level struct across the local module graph
+- `GOF3021`: conflicting top-level name between a struct and a function
+- `GOF3022`: unknown field on a struct value
+- `GOF3023`: duplicate field inside one struct declaration
+- `GOF3024`: field access on a non-struct value

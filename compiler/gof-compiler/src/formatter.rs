@@ -1,4 +1,6 @@
-use crate::ast::{BinaryOp, Expr, Function, Import, Module, Param, Stmt, TypeRef};
+use crate::ast::{
+    BinaryOp, Expr, Function, Import, Module, Param, Stmt, StructDecl, StructField, TypeRef,
+};
 
 pub fn format_module(module: &Module) -> String {
     let mut sections = Vec::new();
@@ -9,6 +11,17 @@ pub fn format_module(module: &Module) -> String {
                 .imports
                 .iter()
                 .map(format_import)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    if !module.structs.is_empty() {
+        sections.push(
+            module
+                .structs
+                .iter()
+                .map(format_struct)
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -30,6 +43,21 @@ pub fn format_module(module: &Module) -> String {
 
 fn format_import(import: &Import) -> String {
     format!("import {}", import.module)
+}
+
+fn format_struct(decl: &StructDecl) -> String {
+    let fields = decl
+        .fields
+        .iter()
+        .map(|field| format_struct_field(field, 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("struct {}:\n{fields}", decl.name)
+}
+
+fn format_struct_field(field: &StructField, indent_level: usize) -> String {
+    let indent = "    ".repeat(indent_level);
+    format!("{indent}{}: {}", field.name, format_type_ref(&field.ty))
 }
 
 fn format_function(function: &Function) -> String {
@@ -136,6 +164,7 @@ fn format_expr(expr: &Expr) -> String {
             "{callee}({})",
             args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
         ),
+        Expr::Field { target, field, .. } => format!("{}.{}", format_expr(target), field),
         Expr::Index { target, index, .. } => {
             format!("{}[{}]", format_expr(target), format_expr(index))
         }
@@ -191,6 +220,19 @@ mod tests {
         assert_eq!(
             formatted,
             "import worker\n\nfn work(x: int) -> int:\n    return x * x\n\nfn main() -> int:\n    values = [1, 2, 3]\n    task: task = go work(values[1])\n    return await task + len(values)\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_structs_and_fields() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "struct Point:\n    x:int\n    y:int\n\nfn main()->int:\n    point:Point=Point(3,4)\n    return point.x+point.y\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "struct Point:\n    x: int\n    y: int\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.x + point.y\n"
         );
     }
 }

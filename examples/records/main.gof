@@ -1,0 +1,8 @@
+import models
+
+fn net(invoice: Invoice) -> int:
+    return gross(invoice) - invoice.discount
+
+fn main() -> int:
+    invoice: Invoice = Invoice(140, 15)
+    return net(invoice)

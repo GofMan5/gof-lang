@@ -8,6 +8,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize)]
 pub struct Module {
     pub imports: Vec<Import>,
+    pub structs: Vec<StructDecl>,
     pub functions: Vec<Function>,
 }
 
@@ -25,6 +26,21 @@ pub struct Function {
     pub body: Vec<Stmt>,
     pub span: Span,
     pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructDecl {
+    pub name: String,
+    pub fields: Vec<StructField>,
+    pub span: Span,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StructField {
+    pub name: String,
+    pub ty: TypeRef,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -82,6 +98,11 @@ pub enum Expr {
     Call {
         callee: String,
         args: Vec<Expr>,
+        span: Span,
+    },
+    Field {
+        target: Box<Expr>,
+        field: String,
         span: Span,
     },
     Index {
@@ -145,6 +166,7 @@ impl<'a> Parser<'a> {
 
     fn parse_module(&mut self) -> Module {
         let mut imports = Vec::new();
+        let mut structs = Vec::new();
         let mut functions = Vec::new();
         while !self.at_end() {
             self.skip_newlines();
@@ -153,11 +175,17 @@ impl<'a> Parser<'a> {
             }
             if self.check(TokenDiscriminant::Import) {
                 imports.push(self.parse_import());
+            } else if self.check(TokenDiscriminant::Struct) {
+                structs.push(self.parse_struct());
             } else {
                 functions.push(self.parse_function());
             }
         }
-        Module { imports, functions }
+        Module {
+            imports,
+            structs,
+            functions,
+        }
     }
 
     fn parse_import(&mut self) -> Import {
@@ -199,6 +227,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_struct(&mut self) -> StructDecl {
+        let start = self.expect(
+            TokenDiscriminant::Struct,
+            "expected `struct` to start a struct",
+        );
+        let name = self.expect_ident("expected a struct name after `struct`");
+        self.expect(
+            TokenDiscriminant::Colon,
+            "expected `:` after struct declaration",
+        );
+        let fields =
+            self.parse_struct_fields("expected an indented block after struct declaration");
+
+        StructDecl {
+            name,
+            fields,
+            span: Span::new(start.line, start.column, start.end_column),
+            source_path: PathBuf::new(),
+        }
+    }
+
     fn parse_params(&mut self) -> Vec<Param> {
         let mut params = Vec::new();
         if self.check(TokenDiscriminant::RParen) {
@@ -219,6 +268,42 @@ impl<'a> Parser<'a> {
         let span = self.previous().span;
         let ty = self.parse_optional_type_ref();
         Param { name, ty, span }
+    }
+
+    fn parse_struct_fields(&mut self, message: &'static str) -> Vec<StructField> {
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline before a struct body",
+        );
+        self.expect(TokenDiscriminant::Indent, message);
+
+        let mut fields = Vec::new();
+        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
+            fields.push(self.parse_struct_field());
+        }
+
+        self.expect(TokenDiscriminant::Dedent, "expected a struct body dedent");
+        fields
+    }
+
+    fn parse_struct_field(&mut self) -> StructField {
+        let name = self.expect_ident("expected a field name");
+        let span = self.previous().span;
+        self.expect(TokenDiscriminant::Colon, "expected `:` after field name");
+        let ty_name = self.expect_ident("expected a type name after `:`");
+        let ty_span = self.previous().span;
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline after struct field",
+        );
+        StructField {
+            name,
+            ty: TypeRef {
+                name: ty_name,
+                span: ty_span,
+            },
+            span,
+        }
     }
 
     fn parse_stmt(&mut self) -> Stmt {
@@ -472,6 +557,18 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.matches(TokenDiscriminant::Dot) {
+                let field = self.expect_ident("expected a field name after `.`");
+                let end = self.previous().span;
+                let start = expr.span();
+                expr = Expr::Field {
+                    target: Box::new(expr),
+                    field,
+                    span: Span::new(start.line, start.column, end.end_column),
+                };
+                continue;
+            }
+
             if self.matches(TokenDiscriminant::LBracket) {
                 let start = expr.span();
                 let index = self.parse_expr();
@@ -678,6 +775,7 @@ impl Expr {
             | Expr::Ident(_, span)
             | Expr::List { span, .. }
             | Expr::Call { span, .. }
+            | Expr::Field { span, .. }
             | Expr::Index { span, .. }
             | Expr::Go { span, .. }
             | Expr::Await { span, .. }
@@ -689,6 +787,7 @@ impl Expr {
 #[derive(Debug, Clone, Copy)]
 enum TokenDiscriminant {
     Import,
+    Struct,
     Fn,
     If,
     Else,
@@ -701,6 +800,7 @@ enum TokenDiscriminant {
     RParen,
     LBracket,
     RBracket,
+    Dot,
     Colon,
     Comma,
     Equal,
@@ -725,6 +825,7 @@ impl TokenDiscriminant {
         matches!(
             (self, kind),
             (Self::Import, TokenKind::Import)
+                | (Self::Struct, TokenKind::Struct)
                 | (Self::Fn, TokenKind::Fn)
                 | (Self::If, TokenKind::If)
                 | (Self::Else, TokenKind::Else)
@@ -737,6 +838,7 @@ impl TokenDiscriminant {
                 | (Self::RParen, TokenKind::RParen)
                 | (Self::LBracket, TokenKind::LBracket)
                 | (Self::RBracket, TokenKind::RBracket)
+                | (Self::Dot, TokenKind::Dot)
                 | (Self::Colon, TokenKind::Colon)
                 | (Self::Comma, TokenKind::Comma)
                 | (Self::Equal, TokenKind::Equal)
@@ -760,6 +862,7 @@ impl TokenDiscriminant {
     fn as_hint(self) -> &'static str {
         match self {
             Self::Import => "`import`",
+            Self::Struct => "`struct`",
             Self::Fn => "`fn`",
             Self::If => "`if`",
             Self::Else => "`else`",
@@ -772,6 +875,7 @@ impl TokenDiscriminant {
             Self::RParen => "`)`",
             Self::LBracket => "`[`",
             Self::RBracket => "`]`",
+            Self::Dot => "`.`",
             Self::Colon => "`:`",
             Self::Comma => "`,`",
             Self::Equal => "`=`",
@@ -818,6 +922,7 @@ mod tests {
         let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
         assert_eq!(module.imports.len(), 1);
         assert_eq!(module.imports[0].module, "math");
+        assert!(module.structs.is_empty());
         assert_eq!(module.functions.len(), 1);
         assert_eq!(module.functions[0].name, "main");
     }
@@ -922,6 +1027,33 @@ mod tests {
         assert!(matches!(
             &module.functions[0].body[1],
             Stmt::Return(Expr::Index { .. }, _)
+        ));
+    }
+
+    #[test]
+    fn parses_structs_and_field_access() {
+        let source = SourceFile::new(
+            "test.gof",
+            "struct Point:\n    x: int\n    y: int\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.x + point.y\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert_eq!(module.structs.len(), 1);
+        assert_eq!(module.structs[0].name, "Point");
+        assert_eq!(module.structs[0].fields.len(), 2);
+        assert_eq!(module.structs[0].fields[0].name, "x");
+        assert_eq!(module.structs[0].fields[0].ty.name, "int");
+        assert!(matches!(
+            &module.functions[0].body[1],
+            Stmt::Return(
+                Expr::Binary {
+                    lhs,
+                    rhs,
+                    ..
+                },
+                _
+            ) if matches!(lhs.as_ref(), Expr::Field { field, .. } if field == "x")
+                && matches!(rhs.as_ref(), Expr::Field { field, .. } if field == "y")
         ));
     }
 }

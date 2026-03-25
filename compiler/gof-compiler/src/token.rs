@@ -30,6 +30,7 @@ pub enum TokenKind {
     RParen,
     LBracket,
     RBracket,
+    Dot,
     Colon,
     Comma,
     Equal,

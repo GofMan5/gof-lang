@@ -56,6 +56,20 @@ fn gof_run_executes_factorial_example() {
 }
 
 #[test]
+fn gof_run_executes_geometry_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("geometry.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("42"));
+}
+
+#[test]
 fn gof_run_executes_list_sum_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")
@@ -124,6 +138,21 @@ fn gof_run_executes_portfolio_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("160"));
+}
+
+#[test]
+fn gof_run_executes_records_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("records")
+        .join("main.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("140"));
 }
 
 #[test]
