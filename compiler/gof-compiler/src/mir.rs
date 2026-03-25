@@ -25,6 +25,10 @@ pub enum MirInstruction {
         dest: usize,
         value: String,
     },
+    ConstBool {
+        dest: usize,
+        value: bool,
+    },
     LoadLocal {
         dest: usize,
         name: String,
@@ -46,6 +50,15 @@ pub enum MirInstruction {
         op: BinaryOp,
         rhs: usize,
     },
+    BeginIf {
+        condition: usize,
+    },
+    Else,
+    EndIf,
+    BeginWhile {
+        condition: usize,
+    },
+    EndWhile,
     Eval {
         value: usize,
     },
@@ -62,41 +75,7 @@ pub fn lower(module: &TypedModule) -> MirModule {
 
 fn lower_function(function: &TypedFunction) -> MirFunction {
     let mut builder = MirBuilder::default();
-
-    for stmt in &function.body {
-        match stmt {
-            TypedStmt::Return(expr) => {
-                let value = builder.lower_expr(expr);
-                builder.instructions.push(MirInstruction::Return { value });
-            }
-            TypedStmt::Bind {
-                name,
-                mutable,
-                value,
-            } => {
-                let src = builder.lower_expr(value);
-                builder.instructions.push(MirInstruction::StoreLocal {
-                    name: name.clone(),
-                    src,
-                    mutable: *mutable,
-                    declare: true,
-                });
-            }
-            TypedStmt::Assign { name, value } => {
-                let src = builder.lower_expr(value);
-                builder.instructions.push(MirInstruction::StoreLocal {
-                    name: name.clone(),
-                    src,
-                    mutable: true,
-                    declare: false,
-                });
-            }
-            TypedStmt::Expr(expr) => {
-                let value = builder.lower_expr(expr);
-                builder.instructions.push(MirInstruction::Eval { value });
-            }
-        }
-    }
+    builder.lower_block(&function.body);
 
     MirFunction {
         name: function.name.clone(),
@@ -113,6 +92,69 @@ struct MirBuilder {
 }
 
 impl MirBuilder {
+    fn lower_block(&mut self, body: &[TypedStmt]) {
+        for stmt in body {
+            self.lower_stmt(stmt);
+        }
+    }
+
+    fn lower_stmt(&mut self, stmt: &TypedStmt) {
+        match stmt {
+            TypedStmt::Return(expr) => {
+                let value = self.lower_expr(expr);
+                self.instructions.push(MirInstruction::Return { value });
+            }
+            TypedStmt::Bind {
+                name,
+                mutable,
+                value,
+            } => {
+                let src = self.lower_expr(value);
+                self.instructions.push(MirInstruction::StoreLocal {
+                    name: name.clone(),
+                    src,
+                    mutable: *mutable,
+                    declare: true,
+                });
+            }
+            TypedStmt::Assign { name, value } => {
+                let src = self.lower_expr(value);
+                self.instructions.push(MirInstruction::StoreLocal {
+                    name: name.clone(),
+                    src,
+                    mutable: true,
+                    declare: false,
+                });
+            }
+            TypedStmt::If {
+                condition,
+                then_body,
+                else_body,
+            } => {
+                let condition = self.lower_expr(condition);
+                self.instructions
+                    .push(MirInstruction::BeginIf { condition });
+                self.lower_block(then_body);
+                if !else_body.is_empty() {
+                    self.instructions.push(MirInstruction::Else);
+                    self.lower_block(else_body);
+                }
+                self.instructions.push(MirInstruction::EndIf);
+            }
+            TypedStmt::While { condition, body } => {
+                let condition = self.lower_expr(condition);
+                self.instructions
+                    .push(MirInstruction::BeginWhile { condition });
+                self.lower_block(body);
+                self.instructions.push(MirInstruction::EndWhile);
+            }
+            TypedStmt::Expr(expr) => {
+                let value = self.lower_expr(expr);
+                self.instructions.push(MirInstruction::Eval { value });
+            }
+        }
+    }
+
     fn lower_expr(&mut self, expr: &TypedExpr) -> usize {
         match &expr.kind {
             TypedExprKind::Int(value) => {
@@ -128,6 +170,14 @@ impl MirBuilder {
                 self.instructions.push(MirInstruction::ConstString {
                     dest,
                     value: value.clone(),
+                });
+                dest
+            }
+            TypedExprKind::Bool(value) => {
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::ConstBool {
+                    dest,
+                    value: *value,
                 });
                 dest
             }

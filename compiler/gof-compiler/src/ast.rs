@@ -31,6 +31,17 @@ pub enum Stmt {
         value: Expr,
         span: Span,
     },
+    If {
+        condition: Expr,
+        then_body: Vec<Stmt>,
+        else_body: Vec<Stmt>,
+        span: Span,
+    },
+    While {
+        condition: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     Expr(Expr, Span),
 }
 
@@ -38,6 +49,7 @@ pub enum Stmt {
 pub enum Expr {
     Int(i64, Span),
     String(String, Span),
+    Bool(bool, Span),
     Ident(String, Span),
     Call {
         callee: String,
@@ -56,6 +68,13 @@ pub enum Expr {
 pub enum BinaryOp {
     Add,
     Sub,
+    Mul,
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
 }
 
 pub fn parse(cst: &CstModule) -> Result<Module, Diagnostics> {
@@ -111,24 +130,7 @@ impl<'a> Parser<'a> {
             TokenDiscriminant::Colon,
             "expected `:` after function signature",
         );
-        self.expect(
-            TokenDiscriminant::Newline,
-            "expected a newline after function signature",
-        );
-        self.expect(
-            TokenDiscriminant::Indent,
-            "expected an indented block after function signature",
-        );
-
-        let mut body = Vec::new();
-        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
-            body.push(self.parse_stmt());
-        }
-
-        self.expect(
-            TokenDiscriminant::Dedent,
-            "expected block dedent after function body",
-        );
+        let body = self.parse_block("expected an indented block after function signature");
 
         Function {
             name,
@@ -162,6 +164,43 @@ impl<'a> Parser<'a> {
                 "expected a newline after `return`",
             );
             return Stmt::Return(expr, span);
+        }
+
+        if self.matches(TokenDiscriminant::If) {
+            let span = self.previous().span;
+            let condition = self.parse_expr();
+            self.expect(
+                TokenDiscriminant::Colon,
+                "expected `:` after `if` condition",
+            );
+            let then_body = self.parse_block("expected an indented block after `if`");
+            let else_body = if self.matches(TokenDiscriminant::Else) {
+                self.expect(TokenDiscriminant::Colon, "expected `:` after `else`");
+                self.parse_block("expected an indented block after `else`")
+            } else {
+                Vec::new()
+            };
+            return Stmt::If {
+                condition,
+                then_body,
+                else_body,
+                span,
+            };
+        }
+
+        if self.matches(TokenDiscriminant::While) {
+            let span = self.previous().span;
+            let condition = self.parse_expr();
+            self.expect(
+                TokenDiscriminant::Colon,
+                "expected `:` after `while` condition",
+            );
+            let body = self.parse_block("expected an indented block after `while`");
+            return Stmt::While {
+                condition,
+                body,
+                span,
+            };
         }
 
         if self.matches(TokenDiscriminant::Mut) {
@@ -205,8 +244,62 @@ impl<'a> Parser<'a> {
         Stmt::Expr(expr, span)
     }
 
+    fn parse_block(&mut self, message: &'static str) -> Vec<Stmt> {
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline before a block",
+        );
+        self.expect(TokenDiscriminant::Indent, message);
+
+        let mut body = Vec::new();
+        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
+            body.push(self.parse_stmt());
+        }
+
+        self.expect(TokenDiscriminant::Dedent, "expected a block dedent");
+        body
+    }
+
     fn parse_expr(&mut self) -> Expr {
-        let mut expr = self.parse_call();
+        self.parse_comparison()
+    }
+
+    fn parse_comparison(&mut self) -> Expr {
+        let mut expr = self.parse_additive();
+
+        loop {
+            let op = if self.matches(TokenDiscriminant::EqualEqual) {
+                Some(BinaryOp::Eq)
+            } else if self.matches(TokenDiscriminant::BangEqual) {
+                Some(BinaryOp::Ne)
+            } else if self.matches(TokenDiscriminant::LessEqual) {
+                Some(BinaryOp::Le)
+            } else if self.matches(TokenDiscriminant::Less) {
+                Some(BinaryOp::Lt)
+            } else if self.matches(TokenDiscriminant::GreaterEqual) {
+                Some(BinaryOp::Ge)
+            } else if self.matches(TokenDiscriminant::Greater) {
+                Some(BinaryOp::Gt)
+            } else {
+                None
+            };
+
+            let Some(op) = op else { break };
+            let rhs = self.parse_additive();
+            let span = Span::new(expr.span().line, expr.span().column, rhs.span().end_column);
+            expr = Expr::Binary {
+                lhs: Box::new(expr),
+                op,
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+
+        expr
+    }
+
+    fn parse_additive(&mut self) -> Expr {
+        let mut expr = self.parse_multiplicative();
 
         while self.matches(TokenDiscriminant::Plus) || self.matches(TokenDiscriminant::Minus) {
             let operator = if self.previous_kind_matches(TokenDiscriminant::Plus) {
@@ -214,11 +307,28 @@ impl<'a> Parser<'a> {
             } else {
                 BinaryOp::Sub
             };
-            let rhs = self.parse_call();
+            let rhs = self.parse_multiplicative();
             let span = Span::new(expr.span().line, expr.span().column, rhs.span().end_column);
             expr = Expr::Binary {
                 lhs: Box::new(expr),
                 op: operator,
+                rhs: Box::new(rhs),
+                span,
+            };
+        }
+
+        expr
+    }
+
+    fn parse_multiplicative(&mut self) -> Expr {
+        let mut expr = self.parse_call();
+
+        while self.matches(TokenDiscriminant::Star) {
+            let rhs = self.parse_call();
+            let span = Span::new(expr.span().line, expr.span().column, rhs.span().end_column);
+            expr = Expr::Binary {
+                lhs: Box::new(expr),
+                op: BinaryOp::Mul,
                 rhs: Box::new(rhs),
                 span,
             };
@@ -281,6 +391,8 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenKind::IntLiteral(value) => Expr::Int(value, token.span),
             TokenKind::StringLiteral(value) => Expr::String(value, token.span),
+            TokenKind::True => Expr::Bool(true, token.span),
+            TokenKind::False => Expr::Bool(false, token.span),
             TokenKind::Ident(value) => Expr::Ident(value, token.span),
             TokenKind::LParen => {
                 let expr = self.parse_expr();
@@ -295,7 +407,7 @@ impl<'a> Parser<'a> {
                     Diagnostic::error(
                         "GOF2001",
                         "unexpected token in expression",
-                        "expected an identifier, literal, or grouped expression",
+                        "expected an identifier, literal, bool, or grouped expression",
                         token.span,
                     )
                     .with_fix_it("replace this token with a valid expression"),
@@ -401,6 +513,7 @@ impl Expr {
         match self {
             Expr::Int(_, span)
             | Expr::String(_, span)
+            | Expr::Bool(_, span)
             | Expr::Ident(_, span)
             | Expr::Call { span, .. }
             | Expr::Binary { span, .. } => *span,
@@ -411,6 +524,9 @@ impl Expr {
 #[derive(Debug, Clone, Copy)]
 enum TokenDiscriminant {
     Fn,
+    If,
+    Else,
+    While,
     Return,
     Mut,
     LParen,
@@ -418,8 +534,15 @@ enum TokenDiscriminant {
     Colon,
     Comma,
     Equal,
+    EqualEqual,
+    BangEqual,
+    Less,
+    LessEqual,
+    Greater,
+    GreaterEqual,
     Plus,
     Minus,
+    Star,
     Newline,
     Indent,
     Dedent,
@@ -431,6 +554,9 @@ impl TokenDiscriminant {
         matches!(
             (self, kind),
             (Self::Fn, TokenKind::Fn)
+                | (Self::If, TokenKind::If)
+                | (Self::Else, TokenKind::Else)
+                | (Self::While, TokenKind::While)
                 | (Self::Return, TokenKind::Return)
                 | (Self::Mut, TokenKind::Mut)
                 | (Self::LParen, TokenKind::LParen)
@@ -438,8 +564,15 @@ impl TokenDiscriminant {
                 | (Self::Colon, TokenKind::Colon)
                 | (Self::Comma, TokenKind::Comma)
                 | (Self::Equal, TokenKind::Equal)
+                | (Self::EqualEqual, TokenKind::EqualEqual)
+                | (Self::BangEqual, TokenKind::BangEqual)
+                | (Self::Less, TokenKind::Less)
+                | (Self::LessEqual, TokenKind::LessEqual)
+                | (Self::Greater, TokenKind::Greater)
+                | (Self::GreaterEqual, TokenKind::GreaterEqual)
                 | (Self::Plus, TokenKind::Plus)
                 | (Self::Minus, TokenKind::Minus)
+                | (Self::Star, TokenKind::Star)
                 | (Self::Newline, TokenKind::Newline)
                 | (Self::Indent, TokenKind::Indent)
                 | (Self::Dedent, TokenKind::Dedent)
@@ -450,6 +583,9 @@ impl TokenDiscriminant {
     fn as_hint(self) -> &'static str {
         match self {
             Self::Fn => "`fn`",
+            Self::If => "`if`",
+            Self::Else => "`else`",
+            Self::While => "`while`",
             Self::Return => "`return`",
             Self::Mut => "`mut`",
             Self::LParen => "`(`",
@@ -457,8 +593,15 @@ impl TokenDiscriminant {
             Self::Colon => "`:`",
             Self::Comma => "`,`",
             Self::Equal => "`=`",
+            Self::EqualEqual => "`==`",
+            Self::BangEqual => "`!=`",
+            Self::Less => "`<`",
+            Self::LessEqual => "`<=`",
+            Self::Greater => "`>`",
+            Self::GreaterEqual => "`>=`",
             Self::Plus => "`+`",
             Self::Minus => "`-`",
+            Self::Star => "`*`",
             Self::Newline => "a newline",
             Self::Indent => "an indented block",
             Self::Dedent => "a dedent",
@@ -472,6 +615,8 @@ fn token_debug_name(kind: &TokenKind) -> String {
         TokenKind::Ident(value) => format!("identifier `{value}`"),
         TokenKind::IntLiteral(value) => format!("int literal `{value}`"),
         TokenKind::StringLiteral(value) => format!("string literal `{value}`"),
+        TokenKind::True => "`true`".to_string(),
+        TokenKind::False => "`false`".to_string(),
         other => format!("{other:?}"),
     }
 }
@@ -509,5 +654,17 @@ mod tests {
             &module.functions[1].body[2],
             Stmt::Return(Expr::Ident(name, _), _) if name == "total"
         ));
+    }
+
+    #[test]
+    fn parses_if_else_and_while() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main():\n    mut x = 3\n    while x > 0:\n        x = x - 1\n    if x == 0:\n        return true\n    else:\n        return false\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(&module.functions[0].body[1], Stmt::While { .. }));
+        assert!(matches!(&module.functions[0].body[2], Stmt::If { .. }));
     }
 }

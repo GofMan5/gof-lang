@@ -7,6 +7,10 @@
 3. No cross-layer shortcuts between parser, typing, MIR, SSA, and backend.
 4. No hidden feature flags or unstable public APIs.
 5. No unsafe or FFI additions without a reviewed safe wrapper plan.
+6. Every new source file must ship with direct tests, fixture coverage, or both.
+7. Deterministic compiler/runtime code targets 100 percent line and branch coverage by policy.
+8. Performance regressions are release blockers unless explicitly justified and accepted.
+9. Stability, optimization quality, and execution speed take priority over convenience hacks.
 
 ## Change process
 
@@ -24,4 +28,4 @@
 - `cargo test --workspace`
 - `cargo bench -p gof-bench --no-run`
 
-New deterministic compiler/runtime modules should target full branch coverage and must not regress existing conformance fixtures.
+New deterministic compiler/runtime modules are expected to reach full coverage and must not regress existing conformance fixtures or benchmark baselines.

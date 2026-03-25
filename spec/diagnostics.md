@@ -25,3 +25,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3004`: unknown function call target
 - `GOF3005`: wrong argument count for function call
 - `GOF3006`: duplicate local binding in function scope
+- `GOF3007`: non-boolean control-flow condition

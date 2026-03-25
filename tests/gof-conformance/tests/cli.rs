@@ -28,6 +28,34 @@ fn gof_run_executes_bootstrap_main() {
 }
 
 #[test]
+fn gof_run_executes_calculator_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("calculator.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("107"));
+}
+
+#[test]
+fn gof_run_executes_factorial_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("factorial.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("120"));
+}
+
+#[test]
 fn gof_mod_init_writes_manifest() {
     let temp = tempdir().expect("tempdir should exist");
     gof_command()

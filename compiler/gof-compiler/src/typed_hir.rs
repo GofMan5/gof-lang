@@ -9,6 +9,7 @@ use std::collections::HashMap;
 pub enum Type {
     Int,
     String,
+    Bool,
     Unknown,
     Unit,
 }
@@ -39,6 +40,15 @@ pub enum TypedStmt {
         name: String,
         value: TypedExpr,
     },
+    If {
+        condition: TypedExpr,
+        then_body: Vec<TypedStmt>,
+        else_body: Vec<TypedStmt>,
+    },
+    While {
+        condition: TypedExpr,
+        body: Vec<TypedStmt>,
+    },
     Expr(TypedExpr),
 }
 
@@ -53,6 +63,7 @@ pub struct TypedExpr {
 pub enum TypedExprKind {
     Int(i64),
     String(String),
+    Bool(bool),
     Local(String),
     Call {
         callee: String,
@@ -69,6 +80,68 @@ pub enum TypedExprKind {
 struct LocalBinding {
     mutable: bool,
     ty: Type,
+}
+
+#[derive(Debug, Clone)]
+struct ScopeStack {
+    scopes: Vec<HashMap<String, LocalBinding>>,
+}
+
+impl ScopeStack {
+    fn new(params: &[String]) -> Self {
+        let root = params
+            .iter()
+            .cloned()
+            .map(|name| {
+                (
+                    name,
+                    LocalBinding {
+                        mutable: false,
+                        ty: Type::Unknown,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        Self { scopes: vec![root] }
+    }
+
+    fn push(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn define_current(&mut self, name: String, binding: LocalBinding) {
+        self.scopes
+            .last_mut()
+            .expect("scope stack should never be empty")
+            .insert(name, binding);
+    }
+
+    fn contains_in_current(&self, name: &str) -> bool {
+        self.scopes
+            .last()
+            .expect("scope stack should never be empty")
+            .contains_key(name)
+    }
+
+    fn get(&self, name: &str) -> Option<LocalBinding> {
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.get(name).copied())
+    }
+
+    fn get_mut(&mut self, name: &str) -> Option<&mut LocalBinding> {
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(name) {
+                return scope.get_mut(name);
+            }
+        }
+        None
+    }
 }
 
 pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
@@ -97,34 +170,9 @@ fn lower_function(
     signatures: &HashMap<String, usize>,
     diagnostics: &mut Diagnostics,
 ) -> TypedFunction {
-    let mut locals = function
-        .params
-        .iter()
-        .cloned()
-        .map(|name| {
-            (
-                name,
-                LocalBinding {
-                    mutable: false,
-                    ty: Type::Unknown,
-                },
-            )
-        })
-        .collect::<HashMap<_, _>>();
-
-    let body = function
-        .body
-        .iter()
-        .map(|stmt| lower_stmt(stmt, &mut locals, signatures, diagnostics))
-        .collect::<Vec<_>>();
-
-    let return_type = body
-        .iter()
-        .find_map(|stmt| match stmt {
-            TypedStmt::Return(expr) => Some(expr.ty),
-            TypedStmt::Bind { .. } | TypedStmt::Assign { .. } | TypedStmt::Expr(_) => None,
-        })
-        .unwrap_or(Type::Unit);
+    let mut scopes = ScopeStack::new(&function.params);
+    let body = lower_block(&function.body, &mut scopes, signatures, diagnostics, false);
+    let return_type = find_return_type(&body).unwrap_or(Type::Unit);
 
     TypedFunction {
         id: function.id,
@@ -135,15 +183,38 @@ fn lower_function(
     }
 }
 
+fn lower_block(
+    stmts: &[HirStmt],
+    scopes: &mut ScopeStack,
+    signatures: &HashMap<String, usize>,
+    diagnostics: &mut Diagnostics,
+    nested_scope: bool,
+) -> Vec<TypedStmt> {
+    if nested_scope {
+        scopes.push();
+    }
+
+    let body = stmts
+        .iter()
+        .map(|stmt| lower_stmt(stmt, scopes, signatures, diagnostics))
+        .collect::<Vec<_>>();
+
+    if nested_scope {
+        scopes.pop();
+    }
+
+    body
+}
+
 fn lower_stmt(
     stmt: &HirStmt,
-    locals: &mut HashMap<String, LocalBinding>,
+    scopes: &mut ScopeStack,
     signatures: &HashMap<String, usize>,
     diagnostics: &mut Diagnostics,
 ) -> TypedStmt {
     match stmt {
         HirStmt::Return(expr, _) => {
-            TypedStmt::Return(lower_expr(expr, locals, signatures, diagnostics))
+            TypedStmt::Return(lower_expr(expr, scopes, signatures, diagnostics))
         }
         HirStmt::Bind {
             name,
@@ -151,20 +222,20 @@ fn lower_stmt(
             value,
             span,
         } => {
-            if locals.contains_key(name) {
+            if scopes.contains_in_current(name) {
                 diagnostics.push(
                     Diagnostic::error(
                         "GOF3006",
                         format!("duplicate binding `{name}`"),
-                        "gof currently does not allow shadowing in the same function scope",
+                        "gof currently does not allow duplicate bindings in the same block scope",
                         *span,
                     )
                     .with_fix_it("rename this binding or reuse the existing one"),
                 );
             }
 
-            let value = lower_expr(value, locals, signatures, diagnostics);
-            locals.insert(
+            let value = lower_expr(value, scopes, signatures, diagnostics);
+            scopes.define_current(
                 name.clone(),
                 LocalBinding {
                     mutable: *mutable,
@@ -179,9 +250,8 @@ fn lower_stmt(
             }
         }
         HirStmt::Assign { name, value, span } => {
-            let value = lower_expr(value, locals, signatures, diagnostics);
-
-            if let Some(existing) = locals.get_mut(name) {
+            let value = lower_expr(value, scopes, signatures, diagnostics);
+            if let Some(existing) = scopes.get_mut(name) {
                 if !existing.mutable {
                     diagnostics.push(
                         Diagnostic::error(
@@ -201,7 +271,7 @@ fn lower_stmt(
                     value,
                 }
             } else {
-                locals.insert(
+                scopes.define_current(
                     name.clone(),
                     LocalBinding {
                         mutable: false,
@@ -215,15 +285,55 @@ fn lower_stmt(
                 }
             }
         }
-        HirStmt::Expr(expr, _) => {
-            TypedStmt::Expr(lower_expr(expr, locals, signatures, diagnostics))
+        HirStmt::If {
+            condition,
+            then_body,
+            else_body,
+            span: _,
+        } => {
+            let condition = lower_expr(condition, scopes, signatures, diagnostics);
+            ensure_bool_condition(&condition, diagnostics);
+            let then_body = lower_block(then_body, scopes, signatures, diagnostics, true);
+            let else_body = lower_block(else_body, scopes, signatures, diagnostics, true);
+            TypedStmt::If {
+                condition,
+                then_body,
+                else_body,
+            }
         }
+        HirStmt::While {
+            condition,
+            body,
+            span: _,
+        } => {
+            let condition = lower_expr(condition, scopes, signatures, diagnostics);
+            ensure_bool_condition(&condition, diagnostics);
+            let body = lower_block(body, scopes, signatures, diagnostics, true);
+            TypedStmt::While { condition, body }
+        }
+        HirStmt::Expr(expr, _) => {
+            TypedStmt::Expr(lower_expr(expr, scopes, signatures, diagnostics))
+        }
+    }
+}
+
+fn ensure_bool_condition(condition: &TypedExpr, diagnostics: &mut Diagnostics) {
+    if !matches!(condition.ty, Type::Bool | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3007",
+                "condition must evaluate to `bool`",
+                "control-flow conditions in gof currently require a boolean expression",
+                condition.span,
+            )
+            .with_fix_it("use a comparison like `x > 0` or a boolean literal"),
+        );
     }
 }
 
 fn lower_expr(
     expr: &HirExpr,
-    locals: &HashMap<String, LocalBinding>,
+    scopes: &ScopeStack,
     signatures: &HashMap<String, usize>,
     diagnostics: &mut Diagnostics,
 ) -> TypedExpr {
@@ -238,17 +348,22 @@ fn lower_expr(
             ty: Type::String,
             span: *span,
         },
+        HirExpr::Bool(value, span) => TypedExpr {
+            kind: TypedExprKind::Bool(*value),
+            ty: Type::Bool,
+            span: *span,
+        },
         HirExpr::Local(name, span) => {
-            let ty = locals
+            let ty = scopes
                 .get(name)
                 .map(|binding| binding.ty)
                 .unwrap_or(Type::Unknown);
-            if !locals.contains_key(name) {
+            if scopes.get(name).is_none() {
                 diagnostics.push(
                     Diagnostic::error(
                         "GOF3002",
                         format!("unknown local `{name}`"),
-                        "the identifier is not a parameter or a previously created binding",
+                        "the identifier is not a parameter or a previously created binding in scope",
                         *span,
                     )
                     .with_fix_it("define the binding before using it"),
@@ -263,7 +378,7 @@ fn lower_expr(
         HirExpr::Call { callee, args, span } => {
             let typed_args = args
                 .iter()
-                .map(|arg| lower_expr(arg, locals, signatures, diagnostics))
+                .map(|arg| lower_expr(arg, scopes, signatures, diagnostics))
                 .collect::<Vec<_>>();
             match signatures.get(callee) {
                 Some(expected) if *expected == typed_args.len() => {}
@@ -297,13 +412,9 @@ fn lower_expr(
             }
         }
         HirExpr::Binary { lhs, op, rhs, span } => {
-            let lhs = lower_expr(lhs, locals, signatures, diagnostics);
-            let rhs = lower_expr(rhs, locals, signatures, diagnostics);
-            let ty = match (lhs.ty, rhs.ty, op) {
-                (Type::Int, Type::Int, BinaryOp::Add | BinaryOp::Sub) => Type::Int,
-                (Type::String, Type::String, BinaryOp::Add) => Type::String,
-                _ => Type::Unknown,
-            };
+            let lhs = lower_expr(lhs, scopes, signatures, diagnostics);
+            let rhs = lower_expr(rhs, scopes, signatures, diagnostics);
+            let ty = infer_binary_type(lhs.ty, *op, rhs.ty);
             TypedExpr {
                 kind: TypedExprKind::Binary {
                     lhs: Box::new(lhs),
@@ -315,4 +426,45 @@ fn lower_expr(
             }
         }
     }
+}
+
+fn infer_binary_type(lhs: Type, op: BinaryOp, rhs: Type) -> Type {
+    match (lhs, op, rhs) {
+        (Type::Int, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul, Type::Int) => Type::Int,
+        (Type::String, BinaryOp::Add, Type::String) => Type::String,
+        (
+            Type::Int,
+            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge,
+            Type::Int,
+        ) => Type::Bool,
+        (Type::String, BinaryOp::Eq | BinaryOp::Ne, Type::String) => Type::Bool,
+        (Type::Bool, BinaryOp::Eq | BinaryOp::Ne, Type::Bool) => Type::Bool,
+        _ => Type::Unknown,
+    }
+}
+
+fn find_return_type(stmts: &[TypedStmt]) -> Option<Type> {
+    for stmt in stmts {
+        match stmt {
+            TypedStmt::Return(expr) => return Some(expr.ty),
+            TypedStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                if let Some(ty) =
+                    find_return_type(then_body).or_else(|| find_return_type(else_body))
+                {
+                    return Some(ty);
+                }
+            }
+            TypedStmt::While { body, .. } => {
+                if let Some(ty) = find_return_type(body) {
+                    return Some(ty);
+                }
+            }
+            TypedStmt::Bind { .. } | TypedStmt::Assign { .. } | TypedStmt::Expr(_) => {}
+        }
+    }
+    None
 }

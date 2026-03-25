@@ -106,6 +106,7 @@ fn run_file(args: FileInput) -> Result<()> {
     match value {
         gof_compiler::interpreter::Value::Int(value) => println!("{value}"),
         gof_compiler::interpreter::Value::String(value) => println!("{value}"),
+        gof_compiler::interpreter::Value::Bool(value) => println!("{value}"),
         gof_compiler::interpreter::Value::Unit => {}
     }
     Ok(())

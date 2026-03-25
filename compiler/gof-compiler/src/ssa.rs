@@ -26,6 +26,7 @@ pub struct SsaValue {
 pub enum SsaInstruction {
     ConstInt(i64),
     ConstString(String),
+    ConstBool(bool),
     LoadLocal(String),
     StoreLocal {
         name: String,
@@ -42,6 +43,15 @@ pub enum SsaInstruction {
         op: BinaryOp,
         rhs: String,
     },
+    BeginIf {
+        condition: String,
+    },
+    Else,
+    EndIf,
+    BeginWhile {
+        condition: String,
+    },
+    EndWhile,
     Eval(String),
     Return(String),
 }
@@ -77,6 +87,10 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::ConstString(value.clone()),
         },
+        MirInstruction::ConstBool { dest, value } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::ConstBool(*value),
+        },
         MirInstruction::LoadLocal { dest, name } => SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::LoadLocal(name.clone()),
@@ -109,6 +123,30 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
                 op: *op,
                 rhs: format!("%{rhs}"),
             },
+        },
+        MirInstruction::BeginIf { condition } => SsaValue {
+            name: "%if".to_string(),
+            instruction: SsaInstruction::BeginIf {
+                condition: format!("%{condition}"),
+            },
+        },
+        MirInstruction::Else => SsaValue {
+            name: "%else".to_string(),
+            instruction: SsaInstruction::Else,
+        },
+        MirInstruction::EndIf => SsaValue {
+            name: "%endif".to_string(),
+            instruction: SsaInstruction::EndIf,
+        },
+        MirInstruction::BeginWhile { condition } => SsaValue {
+            name: "%while".to_string(),
+            instruction: SsaInstruction::BeginWhile {
+                condition: format!("%{condition}"),
+            },
+        },
+        MirInstruction::EndWhile => SsaValue {
+            name: "%endwhile".to_string(),
+            instruction: SsaInstruction::EndWhile,
         },
         MirInstruction::Eval { value } => SsaValue {
             name: format!("%eval_{value}"),

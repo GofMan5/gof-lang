@@ -1,0 +1,15 @@
+fn factorial(n):
+    mut current = n
+    mut total = 1
+
+    while current > 1:
+        total = total * current
+        current = current - 1
+
+    if total == 120:
+        return true
+    else:
+        return false
+
+fn main():
+    return factorial(5)

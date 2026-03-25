@@ -27,3 +27,10 @@ Every diagnostic must define:
 - human-readable message
 - note or context
 - actionable fix-it when applicable
+
+## Quality and performance policy
+
+- The project targets 100 percent coverage for deterministic compiler and runtime code.
+- New files should not land without direct tests or fixture coverage.
+- Benchmark regressions require explicit investigation before merge.
+- Runtime speed, compile-time discipline, and stability outrank convenience shortcuts.

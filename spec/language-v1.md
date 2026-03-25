@@ -43,12 +43,16 @@ The bootstrap compiler in this repository currently supports:
 - function parameters
 - block indentation with `INDENT` / `DEDENT`
 - `return`
+- `if` / `else`
+- `while`
 - local bindings through `name = expr`
 - mutable bindings through `mut name = expr`
 - reassignment only for previously mutable bindings
 - integer and string literals
+- boolean literals through `true` / `false`
 - identifiers
-- additive binary expressions
+- additive and multiplicative expressions
+- comparison expressions
 - named function calls
 
 ## Bootstrap binding rules
@@ -57,5 +61,6 @@ The bootstrap compiler in this repository currently supports:
 - `mut name = expr` creates a mutable local
 - reassigning an immutable local is a compile error
 - function calls currently target only top-level named functions
+- control-flow conditions must evaluate to `bool`
 
 Everything else is specified as future work and intentionally blocked from pretending to be stable.

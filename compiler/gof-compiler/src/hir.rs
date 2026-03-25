@@ -29,6 +29,17 @@ pub enum HirStmt {
         value: HirExpr,
         span: Span,
     },
+    If {
+        condition: HirExpr,
+        then_body: Vec<HirStmt>,
+        else_body: Vec<HirStmt>,
+        span: Span,
+    },
+    While {
+        condition: HirExpr,
+        body: Vec<HirStmt>,
+        span: Span,
+    },
     Expr(HirExpr, Span),
 }
 
@@ -36,6 +47,7 @@ pub enum HirStmt {
 pub enum HirExpr {
     Int(i64, Span),
     String(String, Span),
+    Bool(bool, Span),
     Local(String, Span),
     Call {
         callee: String,
@@ -85,6 +97,26 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
             value: lower_expr(value),
             span: *span,
         },
+        Stmt::If {
+            condition,
+            then_body,
+            else_body,
+            span,
+        } => HirStmt::If {
+            condition: lower_expr(condition),
+            then_body: then_body.iter().map(lower_stmt).collect(),
+            else_body: else_body.iter().map(lower_stmt).collect(),
+            span: *span,
+        },
+        Stmt::While {
+            condition,
+            body,
+            span,
+        } => HirStmt::While {
+            condition: lower_expr(condition),
+            body: body.iter().map(lower_stmt).collect(),
+            span: *span,
+        },
         Stmt::Expr(expr, span) => HirStmt::Expr(lower_expr(expr), *span),
     }
 }
@@ -93,6 +125,7 @@ fn lower_expr(expr: &Expr) -> HirExpr {
     match expr {
         Expr::Int(value, span) => HirExpr::Int(*value, *span),
         Expr::String(value, span) => HirExpr::String(value.clone(), *span),
+        Expr::Bool(value, span) => HirExpr::Bool(*value, *span),
         Expr::Ident(value, span) => HirExpr::Local(value.clone(), *span),
         Expr::Call { callee, args, span } => HirExpr::Call {
             callee: callee.clone(),
@@ -113,6 +146,7 @@ impl HirExpr {
         match self {
             HirExpr::Int(_, span)
             | HirExpr::String(_, span)
+            | HirExpr::Bool(_, span)
             | HirExpr::Local(_, span)
             | HirExpr::Call { span, .. }
             | HirExpr::Binary { span, .. } => *span,

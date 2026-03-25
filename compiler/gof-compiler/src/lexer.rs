@@ -174,11 +174,69 @@ fn lex_line(
                 index += 1;
             }
             '=' => {
-                tokens.push(Token::new(
-                    TokenKind::Equal,
-                    Span::new(line_number, column, column + 1),
-                ));
-                index += 1;
+                if matches!(chars.get(index + 1), Some('=')) {
+                    tokens.push(Token::new(
+                        TokenKind::EqualEqual,
+                        Span::new(line_number, column, column + 2),
+                    ));
+                    index += 2;
+                } else {
+                    tokens.push(Token::new(
+                        TokenKind::Equal,
+                        Span::new(line_number, column, column + 1),
+                    ));
+                    index += 1;
+                }
+            }
+            '!' => {
+                if matches!(chars.get(index + 1), Some('=')) {
+                    tokens.push(Token::new(
+                        TokenKind::BangEqual,
+                        Span::new(line_number, column, column + 2),
+                    ));
+                    index += 2;
+                } else {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF2001",
+                            "unexpected character `!`",
+                            "use `!=` for inequality comparisons",
+                            Span::new(line_number, column, column + 1),
+                        )
+                        .with_fix_it("replace `!` with `!=` or remove it"),
+                    );
+                    return;
+                }
+            }
+            '<' => {
+                if matches!(chars.get(index + 1), Some('=')) {
+                    tokens.push(Token::new(
+                        TokenKind::LessEqual,
+                        Span::new(line_number, column, column + 2),
+                    ));
+                    index += 2;
+                } else {
+                    tokens.push(Token::new(
+                        TokenKind::Less,
+                        Span::new(line_number, column, column + 1),
+                    ));
+                    index += 1;
+                }
+            }
+            '>' => {
+                if matches!(chars.get(index + 1), Some('=')) {
+                    tokens.push(Token::new(
+                        TokenKind::GreaterEqual,
+                        Span::new(line_number, column, column + 2),
+                    ));
+                    index += 2;
+                } else {
+                    tokens.push(Token::new(
+                        TokenKind::Greater,
+                        Span::new(line_number, column, column + 1),
+                    ));
+                    index += 1;
+                }
             }
             '+' => {
                 tokens.push(Token::new(
@@ -190,6 +248,13 @@ fn lex_line(
             '-' => {
                 tokens.push(Token::new(
                     TokenKind::Minus,
+                    Span::new(line_number, column, column + 1),
+                ));
+                index += 1;
+            }
+            '*' => {
+                tokens.push(Token::new(
+                    TokenKind::Star,
                     Span::new(line_number, column, column + 1),
                 ));
                 index += 1;
@@ -225,6 +290,9 @@ fn lex_line(
                 let kind = match value.as_str() {
                     "module" => TokenKind::Module,
                     "fn" => TokenKind::Fn,
+                    "if" => TokenKind::If,
+                    "else" => TokenKind::Else,
+                    "while" => TokenKind::While,
                     "return" => TokenKind::Return,
                     "struct" => TokenKind::Struct,
                     "enum" => TokenKind::Enum,
@@ -236,6 +304,8 @@ fn lex_line(
                     "defer" => TokenKind::Defer,
                     "unsafe" => TokenKind::Unsafe,
                     "mut" => TokenKind::Mut,
+                    "true" => TokenKind::True,
+                    "false" => TokenKind::False,
                     _ => TokenKind::Ident(value),
                 };
                 tokens.push(Token::new(

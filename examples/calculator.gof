@@ -1,0 +1,14 @@
+fn add(a, b):
+    return a + b
+
+fn sub(a, b):
+    return a - b
+
+fn calculate():
+    base = add(120, 30)
+    mut total = sub(base, 50)
+    total = add(total, 7)
+    return total
+
+fn main():
+    return calculate()
