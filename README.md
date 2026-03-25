@@ -68,6 +68,7 @@ Project operating rules are documented in:
 - [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution workflow and quality gates
 - [roadmap.md](./roadmap.md) for milestones and checkpoints
 - [docs/book](./docs/book/) for the versioned learning path and language book
+- [Public book site](https://gofman5.github.io/gof-lang/) for the hosted GitHub Pages version
 - [spec/language-v1.md](./spec/language-v1.md) for the current language contract
 - [spec/diagnostics.md](./spec/diagnostics.md) for the diagnostics contract
 
@@ -171,6 +172,8 @@ Preview the learning book locally:
 cargo install mdbook
 mdbook serve docs/book
 ```
+
+Hosted docs are intended to publish automatically from `main` through GitHub Pages.
 
 Create or refresh the rolling snapshot prerelease from your local machine:
 
@@ -291,10 +294,14 @@ The repository now includes:
 - full workspace tests on Linux and Windows
 - benchmark harness smoke builds
 - example smoke runs
+- docs smoke builds for the `mdBook`
 - release-package smoke builds on Linux, Windows, and macOS for every push and pull request
 - release packaging workflows for Linux, Windows, and macOS
+- GitHub Pages deployment for the book from `docs/book`
 
 Release artifacts are built automatically from version tags and can be consumed by the install scripts in `scripts/install.sh` and `scripts/install.ps1`.
 Windows release assets now include both `gof-windows-x86_64.zip` and `gof-windows-x86_64-setup.exe`.
 
 For local maintainer workflows, `scripts/publish-snapshot.ps1` and `scripts/push-and-release.ps1` can also build the current commit and refresh the rolling `snapshot-main` prerelease directly through the GitHub Releases API.
+
+To activate hosted docs in repository settings, set GitHub Pages to use **GitHub Actions** as the build and deployment source.

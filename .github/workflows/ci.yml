@@ -84,3 +84,14 @@ jobs:
           name: ci-package-${{ matrix.os }}
           path: dist/*
           if-no-files-found: error
+
+  docs-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install mdBook
+        run: cargo install mdbook --locked
+      - name: Build book
+        run: mdbook build docs/book

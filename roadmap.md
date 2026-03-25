@@ -49,10 +49,12 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` Packaging smoke builds on CI for Linux, Windows, and macOS
 - `[x]` Local rolling snapshot publish script for every maintainer push
 - `[x]` Windows `Inno Setup` installer with PATH integration for user-level installs
+- `[x]` versioned learning book scaffold in `docs/book`
+- `[x]` GitHub Pages deployment path for hosted language docs
 - Exit criteria:
 - governance docs exist
 - quality rules are explicit
-- test, format, bench, package, and install paths are wired and documented
+- test, format, bench, package, install, and docs publish paths are wired and documented
 
 ### M1. Frontend Baseline
 
