@@ -21,7 +21,11 @@ New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
 try {
     Write-Host "Downloading $url"
     Invoke-WebRequest -Uri $url -OutFile $installerPath
-    Start-Process -FilePath $installerPath -ArgumentList "/Q" -Wait -NoNewWindow
+    $installerArgs = @("/quiet")
+    if (-not [string]::IsNullOrWhiteSpace($InstallRoot)) {
+        $installerArgs += "/installRoot=$InstallRoot"
+    }
+    Start-Process -FilePath $installerPath -ArgumentList $installerArgs -Wait -NoNewWindow
     Write-Host "Installed gof with the Windows installer package."
     Write-Host "Run the installer again later to update."
 } finally {

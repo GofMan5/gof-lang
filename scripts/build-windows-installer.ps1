@@ -81,6 +81,26 @@ var quiet = args.Any(arg =>
     string.Equals(arg, "-quiet", StringComparison.OrdinalIgnoreCase) ||
     string.Equals(arg, "/q", StringComparison.OrdinalIgnoreCase));
 
+string? installRoot = null;
+for (var index = 0; index < args.Length; index++)
+{
+    var arg = args[index];
+    if (arg.StartsWith("/installRoot=", StringComparison.OrdinalIgnoreCase) ||
+        arg.StartsWith("--install-root=", StringComparison.OrdinalIgnoreCase))
+    {
+        installRoot = arg.Split('=', 2)[1];
+        continue;
+    }
+
+    if ((string.Equals(arg, "/installRoot", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(arg, "--install-root", StringComparison.OrdinalIgnoreCase)) &&
+        index + 1 < args.Length)
+    {
+        installRoot = args[index + 1];
+        index++;
+    }
+}
+
 var tempRoot = Path.Combine(Path.GetTempPath(), "gof-installer-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(tempRoot);
 
@@ -114,6 +134,11 @@ try
     psi.ArgumentList.Add(installScript);
     psi.ArgumentList.Add("-Version");
     psi.ArgumentList.Add(Version);
+    if (!string.IsNullOrWhiteSpace(installRoot))
+    {
+        psi.ArgumentList.Add("-InstallRoot");
+        psi.ArgumentList.Add(installRoot);
+    }
     if (quiet)
     {
         psi.ArgumentList.Add("-Quiet");
