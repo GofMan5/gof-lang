@@ -1,0 +1,4 @@
+fn main() -> int:
+    select:
+        print("bad"):
+            return 1

@@ -104,6 +104,12 @@ pub enum MirInstruction {
         pattern: usize,
     },
     EndMatch,
+    BeginSelect,
+    SelectArm {
+        operation: usize,
+        binding: Option<String>,
+    },
+    EndSelect,
     Eval {
         value: usize,
     },
@@ -206,6 +212,26 @@ impl MirBuilder {
                     self.lower_block(&arm.body);
                 }
                 self.instructions.push(MirInstruction::EndMatch);
+            }
+            TypedStmt::Select { arms } => {
+                self.instructions.push(MirInstruction::BeginSelect);
+                for arm in arms {
+                    let operation = self.lower_expr(&arm.operation);
+                    self.instructions.push(MirInstruction::SelectArm {
+                        operation,
+                        binding: arm.binding.clone(),
+                    });
+                    if let Some(binding) = &arm.binding {
+                        self.instructions.push(MirInstruction::StoreLocal {
+                            name: binding.clone(),
+                            src: operation,
+                            mutable: false,
+                            declare: true,
+                        });
+                    }
+                    self.lower_block(&arm.body);
+                }
+                self.instructions.push(MirInstruction::EndSelect);
             }
             TypedStmt::Expr(expr) => {
                 let value = self.lower_expr(expr);

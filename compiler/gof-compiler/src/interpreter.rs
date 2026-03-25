@@ -1,10 +1,12 @@
 use crate::ast::{BinaryOp, EnumDecl, Expr, Function, Module, Param, Stmt, StructDecl, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::{Debug, Formatter};
+use std::fs;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex};
 
 type FunctionTable = Arc<HashMap<String, Function>>;
@@ -26,6 +28,8 @@ pub enum Value {
     Struct(StructValue),
     Enum(EnumValue),
     List(Vec<Value>),
+    Dict(DictValue),
+    Channel(ChannelValue),
     Task(TaskValue),
     Unit,
 }
@@ -39,6 +43,8 @@ impl Debug for Value {
             Self::Struct(value) => f.debug_tuple("Struct").field(value).finish(),
             Self::Enum(value) => f.debug_tuple("Enum").field(value).finish(),
             Self::List(values) => f.debug_tuple("List").field(values).finish(),
+            Self::Dict(value) => f.debug_tuple("Dict").field(value).finish(),
+            Self::Channel(_) => f.write_str("Channel(<open>)"),
             Self::Task(_) => f.write_str("Task(<pending-or-completed>)"),
             Self::Unit => f.write_str("Unit"),
         }
@@ -54,6 +60,8 @@ impl PartialEq for Value {
             (Self::Struct(lhs), Self::Struct(rhs)) => lhs == rhs,
             (Self::Enum(lhs), Self::Enum(rhs)) => lhs == rhs,
             (Self::List(lhs), Self::List(rhs)) => lhs == rhs,
+            (Self::Dict(lhs), Self::Dict(rhs)) => lhs == rhs,
+            (Self::Channel(lhs), Self::Channel(rhs)) => lhs.ptr_eq(rhs),
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
             (Self::Unit, Self::Unit) => true,
             _ => false,
@@ -79,6 +87,8 @@ impl Value {
                     .collect::<Vec<_>>()
                     .join(", ")
             )),
+            Self::Dict(value) => Some(value.cli_text()),
+            Self::Channel(_) => Some("<channel>".to_string()),
             Self::Task(_) => Some("<task>".to_string()),
             Self::Unit => None,
         }
@@ -86,9 +96,56 @@ impl Value {
 
     fn printable_text(&self) -> Option<String> {
         match self {
-            Self::Task(_) | Self::Unit => None,
+            Self::Channel(_) | Self::Task(_) | Self::Unit => None,
             _ => self.cli_text(),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DictValue {
+    entries: BTreeMap<String, Value>,
+}
+
+impl DictValue {
+    fn new() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+        }
+    }
+
+    fn insert(&self, key: String, value: Value) -> Self {
+        let mut entries = self.entries.clone();
+        entries.insert(key, value);
+        Self { entries }
+    }
+
+    fn get(&self, key: &str) -> Option<&Value> {
+        self.entries.get(key)
+    }
+
+    fn contains_key(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn cli_text(&self) -> String {
+        format!(
+            "{{{}}}",
+            self.entries
+                .iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{key:?}: {}",
+                        value.cli_text().unwrap_or_else(|| "unit".to_string())
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }
 
@@ -136,6 +193,27 @@ impl EnumValue {
 }
 
 #[derive(Clone)]
+pub struct ChannelValue(Arc<ChannelHandle>);
+
+impl ChannelValue {
+    fn ptr_eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
+    fn send(&self, value: Value, span: Span, source_path: &Path) -> Result<(), Diagnostics> {
+        self.0.send(value, span, source_path)
+    }
+
+    fn recv(&self, span: Span, source_path: &Path) -> Result<Value, Diagnostics> {
+        self.0.recv(span, source_path)
+    }
+
+    fn try_recv(&self, span: Span, source_path: &Path) -> Result<Option<Value>, Diagnostics> {
+        self.0.try_recv(span, source_path)
+    }
+}
+
+#[derive(Clone)]
 pub struct TaskValue(Arc<TaskHandle>);
 
 impl TaskValue {
@@ -151,6 +229,12 @@ impl TaskValue {
 #[derive(Debug)]
 struct TaskHandle {
     result: Arc<(Mutex<Option<Result<Value, Diagnostics>>>, Condvar)>,
+}
+
+#[derive(Debug)]
+struct ChannelHandle {
+    sender: Sender<Value>,
+    receiver: Mutex<Receiver<Value>>,
 }
 
 #[derive(Clone, Default)]
@@ -203,6 +287,74 @@ impl TaskHandle {
         slot.as_ref()
             .expect("task result should exist after wait")
             .clone()
+    }
+}
+
+impl ChannelHandle {
+    fn new() -> Self {
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            sender,
+            receiver: Mutex::new(receiver),
+        }
+    }
+
+    fn send(&self, value: Value, span: Span, source_path: &Path) -> Result<(), Diagnostics> {
+        self.sender.send(value).map_err(|_| {
+            Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3046",
+                    "failed to send on channel",
+                    "the bootstrap channel is no longer available for sending",
+                    span,
+                )
+                .with_fix_it("keep the channel alive until all sends complete")
+                .with_source_path(source_path.to_path_buf()),
+            ])
+        })
+    }
+
+    fn recv(&self, span: Span, source_path: &Path) -> Result<Value, Diagnostics> {
+        self.receiver
+            .lock()
+            .expect("channel receiver mutex should not be poisoned")
+            .recv()
+            .map_err(|_| {
+                Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3046",
+                        "failed to receive from channel",
+                        "the bootstrap channel was closed before a value arrived",
+                        span,
+                    )
+                    .with_fix_it(
+                        "ensure another task sends a value before all channel handles drop",
+                    )
+                    .with_source_path(source_path.to_path_buf()),
+                ])
+            })
+    }
+
+    fn try_recv(&self, span: Span, source_path: &Path) -> Result<Option<Value>, Diagnostics> {
+        match self
+            .receiver
+            .lock()
+            .expect("channel receiver mutex should not be poisoned")
+            .try_recv()
+        {
+            Ok(value) => Ok(Some(value)),
+            Err(TryRecvError::Empty) => Ok(None),
+            Err(TryRecvError::Disconnected) => Err(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3046",
+                    "failed to receive from channel",
+                    "the bootstrap channel was closed before a value arrived",
+                    span,
+                )
+                .with_fix_it("ensure another task sends a value before all channel handles drop")
+                .with_source_path(source_path.to_path_buf()),
+            ])),
+        }
     }
 }
 
@@ -705,6 +857,59 @@ fn eval_stmt(
 
             Ok(None)
         }
+        Stmt::Select { arms, span } => loop {
+            if arms.is_empty() {
+                return Err(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3047",
+                        "`select` requires at least one arm",
+                        "the bootstrap select model needs one or more `recv(channel)` arms",
+                        *span,
+                    )
+                    .with_fix_it("add at least one select arm like `value = recv(ch):`")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+
+            for arm in arms {
+                if let Some(received) = try_eval_select_operation(
+                    &arm.operation,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )? {
+                    scopes.push();
+                    if let Some(binding) = &arm.binding {
+                        scopes.define_current(
+                            binding.clone(),
+                            Binding {
+                                mutable: false,
+                                value: received,
+                            },
+                        );
+                    }
+                    let result = eval_block(
+                        &arm.body,
+                        scopes,
+                        functions,
+                        methods,
+                        structs,
+                        enums,
+                        output,
+                        false,
+                        source_path,
+                    )?;
+                    scopes.pop();
+                    return Ok(result);
+                }
+            }
+
+            std::thread::yield_now();
+        },
         Stmt::Expr(expr, _) => {
             let _ = eval_expr(
                 expr,
@@ -804,6 +1009,98 @@ fn eval_expr(
 
             if callee == "contains" {
                 return eval_contains_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "assert" {
+                return eval_assert_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "read_file" {
+                return eval_read_file_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "write_file" {
+                return eval_write_file_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "dict" {
+                return eval_dict_builtin(args, source_path, *span);
+            }
+
+            if callee == "insert" {
+                return eval_insert_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "channel" {
+                return eval_channel_builtin(args, source_path, *span);
+            }
+
+            if callee == "send" {
+                return eval_send_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "recv" {
+                return eval_recv_builtin(
                     args,
                     scopes,
                     functions,
@@ -1376,10 +1673,12 @@ fn eval_binary(
         (Value::Enum(lhs), BinaryOp::Ne, Value::Enum(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::List(lhs), BinaryOp::Eq, Value::List(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::List(lhs), BinaryOp::Ne, Value::List(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::Dict(lhs), BinaryOp::Eq, Value::Dict(rhs)) => Ok(Value::Bool(lhs == rhs)),
+        (Value::Dict(lhs), BinaryOp::Ne, Value::Dict(rhs)) => Ok(Value::Bool(lhs != rhs)),
         _ => Err(Diagnostics(vec![Diagnostic::error(
             "GOF3001",
             "unsupported expression in bootstrap evaluator",
-            "the current evaluator supports int arithmetic, comparisons, and equality for strings, bools, lists, structs, and enums",
+            "the current evaluator supports int arithmetic, comparisons, and equality for strings, bools, lists, dicts, structs, and enums",
             span,
         )
         .with_source_path(source_path.to_path_buf())])),
@@ -1422,15 +1721,16 @@ fn eval_len_builtin(
     )?;
     match value {
         Value::List(values) => Ok(Value::Int(values.len() as i64)),
+        Value::Dict(value) => Ok(Value::Int(value.len() as i64)),
         Value::String(value) => Ok(Value::Int(value.chars().count() as i64)),
         other => Err(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3019",
-                "`len` requires a list or string value",
+                "`len` requires a list, dict, or string value",
                 format!("this argument resolves to `{}`", value_name(&other)),
                 args[0].span(),
             )
-            .with_fix_it("pass a list literal, list binding, or string value to `len`")
+            .with_fix_it("pass a list, dict, or string value to `len`")
             .with_source_path(source_path.to_path_buf()),
         ])),
     }
@@ -1479,7 +1779,7 @@ fn eval_print_builtin(
                 format!("this argument resolves to `{}`", value_name(&value)),
                 args[0].span(),
             )
-            .with_fix_it("print ints, strings, bools, lists, structs, or enums instead")
+            .with_fix_it("print ints, strings, bools, lists, dicts, structs, or enums instead")
             .with_source_path(source_path.to_path_buf()),
         ]));
     };
@@ -1603,6 +1903,7 @@ fn eval_contains_builtin(
         (Value::List(values), needle) => {
             Ok(Value::Bool(values.iter().any(|value| value == &needle)))
         }
+        (Value::Dict(values), Value::String(key)) => Ok(Value::Bool(values.contains_key(&key))),
         (Value::String(_), needle) => Err(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3040",
@@ -1613,14 +1914,573 @@ fn eval_contains_builtin(
             .with_fix_it("pass a string as the second argument to `contains`")
             .with_source_path(source_path.to_path_buf()),
         ])),
+        (Value::Dict(_), needle) => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3040",
+                "`contains` requires a string key for dict haystacks",
+                format!("this needle resolves to `{}`", value_name(&needle)),
+                args[1].span(),
+            )
+            .with_fix_it("pass a string key as the second argument to `contains`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
         (other, _) => Err(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3040",
-                "`contains` requires a string or list haystack",
+                "`contains` requires a string, list, or dict haystack",
                 format!("this haystack resolves to `{}`", value_name(&other)),
                 args[0].span(),
             )
-            .with_fix_it("call `contains` with a string or list as the first argument")
+            .with_fix_it("call `contains` with a string, list, or dict as the first argument")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
+fn eval_assert_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if !(1..=2).contains(&args.len()) {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `assert`",
+                format!("expected 1 or 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `assert(condition)` or `assert(condition, \"message\")`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let condition = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let message = if args.len() == 2 {
+        Some(eval_expr(
+            &args[1],
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        )?)
+    } else {
+        None
+    };
+
+    let Value::Bool(condition) = condition else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3041",
+                "`assert` requires a boolean condition",
+                format!("this condition resolves to `{}`", value_name(&condition)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a boolean expression as the first argument to `assert`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    if let Some(message) = &message {
+        if !matches!(message, Value::String(_)) {
+            return Err(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3041",
+                    "`assert` requires a string message when a second argument is present",
+                    format!("this message resolves to `{}`", value_name(message)),
+                    args[1].span(),
+                )
+                .with_fix_it("pass a string as the second argument to `assert`")
+                .with_source_path(source_path.to_path_buf()),
+            ]));
+        }
+    }
+
+    if condition {
+        Ok(Value::Unit)
+    } else {
+        let detail = match message {
+            Some(Value::String(text)) => text,
+            _ => "assertion failed".to_string(),
+        };
+        Err(Diagnostics(vec![
+            Diagnostic::error("GOF3042", "assertion failed", detail, args[0].span())
+                .with_fix_it("adjust the asserted condition or the preceding logic")
+                .with_source_path(source_path.to_path_buf()),
+        ]))
+    }
+}
+
+fn eval_read_file_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 1 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `read_file`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `read_file(path)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let path_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::String(path_text) = path_value else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3043",
+                "`read_file` requires a string path",
+                format!("this path resolves to `{}`", value_name(&path_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a string path like `\"notes.txt\"` to `read_file`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    fs::read_to_string(&path_text)
+        .map(Value::String)
+        .map_err(|error| {
+            Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3044",
+                    format!("failed to read file `{path_text}`"),
+                    error.to_string(),
+                    args[0].span(),
+                )
+                .with_fix_it("ensure the file exists and is readable")
+                .with_source_path(source_path.to_path_buf()),
+            ])
+        })
+}
+
+fn eval_write_file_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 2 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `write_file`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `write_file(path, contents)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let path_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let contents_value = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::String(path_text) = path_value else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3043",
+                "`write_file` requires a string path",
+                format!("this path resolves to `{}`", value_name(&path_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a string path as the first argument to `write_file`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    let Value::String(contents) = contents_value else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3043",
+                "`write_file` requires string contents",
+                format!(
+                    "this contents value resolves to `{}`",
+                    value_name(&contents_value)
+                ),
+                args[1].span(),
+            )
+            .with_fix_it("pass a string as the second argument to `write_file`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    fs::write(&path_text, contents).map_err(|error| {
+        Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3044",
+                format!("failed to write file `{path_text}`"),
+                error.to_string(),
+                args[0].span(),
+            )
+            .with_fix_it("ensure the target path is writable")
+            .with_source_path(source_path.to_path_buf()),
+        ])
+    })?;
+    Ok(Value::Unit)
+}
+
+fn eval_dict_builtin(args: &[Expr], source_path: &Path, span: Span) -> Result<Value, Diagnostics> {
+    if !args.is_empty() {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `dict`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `dict()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    Ok(Value::Dict(DictValue::new()))
+}
+
+fn eval_insert_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 3 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `insert`",
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `insert(dict_value, \"key\", value)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let dict_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let key_value = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let inserted = eval_expr(
+        &args[2],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::Dict(dict_value) = dict_value else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3045",
+                "`insert` requires a dict as its first argument",
+                format!("this argument resolves to `{}`", value_name(&dict_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a dict value as the first argument to `insert`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    let Value::String(key) = key_value else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3045",
+                "`insert` requires a string key",
+                format!("this key resolves to `{}`", value_name(&key_value)),
+                args[1].span(),
+            )
+            .with_fix_it("pass a string as the second argument to `insert`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    Ok(Value::Dict(dict_value.insert(key, inserted)))
+}
+
+fn eval_channel_builtin(
+    args: &[Expr],
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if !args.is_empty() {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `channel`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `channel()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+    Ok(Value::Channel(ChannelValue(Arc::new(ChannelHandle::new()))))
+}
+
+fn eval_send_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 2 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `send`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `send(channel_value, item)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let channel_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let sent_value = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::Channel(channel_value) = channel_value else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3046",
+                "`send` requires a channel as its first argument",
+                format!("this argument resolves to `{}`", value_name(&channel_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a channel value as the first argument to `send`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    channel_value.send(sent_value, args[0].span(), source_path)?;
+    Ok(Value::Unit)
+}
+
+fn eval_recv_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 1 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `recv`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `recv(channel_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let channel_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::Channel(channel_value) = channel_value else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3046",
+                "`recv` requires a channel value",
+                format!("this argument resolves to `{}`", value_name(&channel_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a channel value to `recv`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    channel_value.recv(args[0].span(), source_path)
+}
+
+fn try_eval_select_operation(
+    operation: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> Result<Option<Value>, Diagnostics> {
+    match operation {
+        Expr::Call { callee, args, span } if callee == "recv" => {
+            if args.len() != 1 {
+                return Err(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3047",
+                        "`select` arms currently require `recv(channel)` operations",
+                        "each select arm must call `recv` with exactly one channel argument",
+                        *span,
+                    )
+                    .with_fix_it("rewrite the arm as `recv(channel):` or `value = recv(channel):`")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+
+            let channel_value = eval_expr(
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+            )?;
+            let Value::Channel(channel_value) = channel_value else {
+                return Err(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3047",
+                        "`select` arms require channel receives",
+                        format!(
+                            "this arm resolves to `{}` instead of a channel",
+                            value_name(&channel_value)
+                        ),
+                        args[0].span(),
+                    )
+                    .with_fix_it("pass a channel value to `recv` inside the select arm")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            };
+
+            channel_value.try_recv(args[0].span(), source_path)
+        }
+        Expr::Call { callee, .. } => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3047",
+                "`select` arms currently require `recv(channel)` operations",
+                format!("this arm uses `{callee}(...)` instead"),
+                operation.span(),
+            )
+            .with_fix_it("replace the arm operation with `recv(channel_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+        _ => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3047",
+                "`select` arms currently require `recv(channel)` operations",
+                "select arms must be written as `recv(channel):` or `value = recv(channel):`",
+                operation.span(),
+            )
+            .with_fix_it("replace this arm with a `recv(channel)` operation")
             .with_source_path(source_path.to_path_buf()),
         ])),
     }
@@ -1632,8 +2492,39 @@ fn eval_index(
     span: Span,
     source_path: &Path,
 ) -> Result<Value, Diagnostics> {
-    let Value::Int(index) = index else {
-        return Err(Diagnostics(vec![
+    match (target, index) {
+        (Value::List(values), Value::Int(index)) => {
+            if index < 0 {
+                return Err(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3018",
+                        "list indexing requires a non-negative index",
+                        "negative indices are not supported in the bootstrap evaluator",
+                        span,
+                    )
+                    .with_fix_it("use an index between `0` and `len(list) - 1`")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+
+            values.get(index as usize).cloned().ok_or_else(|| {
+                Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3018",
+                        "list index is out of bounds",
+                        format!(
+                            "the list length is {}, but the index is {}",
+                            values.len(),
+                            index
+                        ),
+                        span,
+                    )
+                    .with_fix_it("keep the index below `len(list)`")
+                    .with_source_path(source_path.to_path_buf()),
+                ])
+            })
+        }
+        (Value::List(_), index) => Err(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3018",
                 "list indexing requires an `int` index",
@@ -1642,47 +2533,37 @@ fn eval_index(
             )
             .with_fix_it("use an integer index like `values[0]`")
             .with_source_path(source_path.to_path_buf()),
-        ]));
-    };
-
-    if index < 0 {
-        return Err(Diagnostics(vec![
-            Diagnostic::error(
-                "GOF3018",
-                "list indexing requires a non-negative index",
-                "negative indices are not supported in the bootstrap evaluator",
-                span,
-            )
-            .with_fix_it("use an index between `0` and `len(list) - 1`")
-            .with_source_path(source_path.to_path_buf()),
-        ]));
-    }
-
-    match target {
-        Value::List(values) => values.get(index as usize).cloned().ok_or_else(|| {
+        ])),
+        (Value::Dict(values), Value::String(key)) => values.get(&key).cloned().ok_or_else(|| {
             Diagnostics(vec![
                 Diagnostic::error(
                     "GOF3018",
-                    "list index is out of bounds",
-                    format!(
-                        "the list length is {}, but the index is {}",
-                        values.len(),
-                        index
-                    ),
+                    format!("dict key `{key}` does not exist"),
+                    "dict indexing currently requires an existing string key",
                     span,
                 )
-                .with_fix_it("keep the index below `len(list)`")
+                .with_fix_it("insert the key first or check it with `contains(dict, key)`")
                 .with_source_path(source_path.to_path_buf()),
             ])
         }),
-        other => Err(Diagnostics(vec![
+        (Value::Dict(_), index) => Err(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3018",
-                "indexing requires a list value",
+                "dict indexing requires a `string` key",
+                format!("this index resolves to `{}`", value_name(&index)),
+                span,
+            )
+            .with_fix_it("use a string key like `values[\"name\"]`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+        (other, _) => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3018",
+                "indexing requires a list or dict value",
                 format!("this target resolves to `{}`", value_name(&other)),
                 span,
             )
-            .with_fix_it("index only list literals or list bindings")
+            .with_fix_it("index only list or dict values")
             .with_source_path(source_path.to_path_buf()),
         ])),
     }
@@ -1696,6 +2577,8 @@ fn value_name(value: &Value) -> &'static str {
         Value::Struct(_) => "struct",
         Value::Enum(_) => "enum",
         Value::List(_) => "list",
+        Value::Dict(_) => "dict",
+        Value::Channel(_) => "channel",
         Value::Task(_) => "task",
         Value::Unit => "unit",
     }
@@ -1715,6 +2598,7 @@ mod tests {
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
+    use tempfile::tempdir;
 
     fn run_source(text: &str) -> Result<Value, crate::diagnostics::Diagnostics> {
         let source = SourceFile::new("test.gof", text);
@@ -1764,6 +2648,43 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(9));
+    }
+
+    #[test]
+    fn evaluates_dict_assert_and_file_io() {
+        let temp = tempdir().expect("tempdir should exist");
+        let input_path = temp.path().join("in.txt");
+        let output_path = temp.path().join("out.txt");
+        std::fs::write(&input_path, "gof").expect("input file should be written");
+        let input = input_path.to_string_lossy().replace('\\', "\\\\");
+        let output = output_path.to_string_lossy().replace('\\', "\\\\");
+
+        let value = run_source(&format!(
+            "fn main() -> int:\n    path = \"{input}\"\n    out = \"{output}\"\n    mut data: dict = dict()\n    data = insert(data, \"size\", len(read_file(path)))\n    assert(contains(data, \"size\"), \"missing size\")\n    write_file(out, read_file(path))\n    return data[\"size\"]\n"
+        ))
+        .expect("program should run");
+
+        assert_eq!(value, Value::Int(3));
+        assert_eq!(
+            std::fs::read_to_string(&output_path).expect("output file should exist"),
+            "gof"
+        );
+    }
+
+    #[test]
+    fn evaluates_channels_and_select() {
+        let value = run_source(
+            "fn main() -> int:\n    left: channel = channel()\n    right: channel = channel()\n    send(right, 8)\n    select:\n        value = recv(left):\n            return 0\n        value = recv(right):\n            return value + 1\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(9));
+    }
+
+    #[test]
+    fn rejects_failed_assertions() {
+        let diagnostics = run_source("fn main() -> unit:\n    assert(false, \"boom\")\n")
+            .expect_err("assert should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3042"]);
     }
 
     #[test]

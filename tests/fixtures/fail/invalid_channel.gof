@@ -1,0 +1,2 @@
+fn main() -> unit:
+    return send(1, 2)

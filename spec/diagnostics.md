@@ -59,3 +59,10 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3038`: invalid operand for builtin `print`
 - `GOF3039`: invalid operand for builtin `append`
 - `GOF3040`: invalid operand for builtin `contains`
+- `GOF3041`: invalid operand for builtin `assert`
+- `GOF3042`: assertion failed at runtime
+- `GOF3043`: invalid operand for bootstrap file I/O builtins
+- `GOF3044`: bootstrap file I/O operation failed
+- `GOF3045`: invalid operand for bootstrap dict insert
+- `GOF3046`: invalid channel operation
+- `GOF3047`: invalid `select` contract or arm

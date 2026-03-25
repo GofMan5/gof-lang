@@ -1,0 +1,5 @@
+fn main() -> int:
+    mut store: dict = dict()
+    store = insert(store, "size", 3)
+    assert(contains(store, "size"), "missing size")
+    return store["size"] + len(store)

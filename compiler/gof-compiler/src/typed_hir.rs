@@ -1,7 +1,8 @@
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{
-    HirEnum, HirExpr, HirFunction, HirMatchArm, HirModule, HirStmt, HirStruct, HirTypeRef,
+    HirEnum, HirExpr, HirFunction, HirMatchArm, HirModule, HirSelectArm, HirStmt, HirStruct,
+    HirTypeRef,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -16,6 +17,8 @@ pub enum Type {
     Struct(String),
     Enum(String),
     List(Box<Type>),
+    Dict(Box<Type>),
+    Channel(Box<Type>),
     Task(Box<Type>),
     Unknown,
     Unit,
@@ -30,6 +33,14 @@ impl Type {
         Self::List(Box::new(inner))
     }
 
+    fn dict(inner: Type) -> Self {
+        Self::Dict(Box::new(inner))
+    }
+
+    fn channel(inner: Type) -> Self {
+        Self::Channel(Box::new(inner))
+    }
+
     fn is_unknown(&self) -> bool {
         matches!(self, Self::Unknown)
     }
@@ -42,6 +53,8 @@ impl Type {
             Self::Struct(name) => name.clone(),
             Self::Enum(name) => name.clone(),
             Self::List(inner) => format!("list[{}]", inner.display_name()),
+            Self::Dict(inner) => format!("dict[{}]", inner.display_name()),
+            Self::Channel(inner) => format!("channel[{}]", inner.display_name()),
             Self::Task(inner) => format!("task[{}]", inner.display_name()),
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
@@ -121,12 +134,22 @@ pub enum TypedStmt {
         value: TypedExpr,
         arms: Vec<TypedMatchArm>,
     },
+    Select {
+        arms: Vec<TypedSelectArm>,
+    },
     Expr(TypedExpr),
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedMatchArm {
     pub pattern: TypedExpr,
+    pub body: Vec<TypedStmt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedSelectArm {
+    pub binding: Option<String>,
+    pub operation: TypedExpr,
     pub body: Vec<TypedStmt>,
 }
 
@@ -301,6 +324,14 @@ enum CallKind {
     BuiltinPrint,
     BuiltinAppend,
     BuiltinContains,
+    BuiltinAssert,
+    BuiltinReadFile,
+    BuiltinWriteFile,
+    BuiltinDict,
+    BuiltinInsert,
+    BuiltinChannel,
+    BuiltinSend,
+    BuiltinRecv,
     Function,
     Struct,
     Enum,
@@ -1059,6 +1090,22 @@ fn lower_stmt(
             );
             TypedStmt::Match { value, arms }
         }
+        HirStmt::Select { arms, span } => {
+            let arms = lower_select_arms(
+                arms,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+                *span,
+            );
+            TypedStmt::Select { arms }
+        }
         HirStmt::Expr(expr, _) => TypedStmt::Expr(lower_expr(
             expr,
             scopes,
@@ -1158,6 +1205,98 @@ fn lower_match_arms(
     }
 
     typed_arms
+}
+
+fn lower_select_arms(
+    arms: &[HirSelectArm],
+    scopes: &mut ScopeStack,
+    signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+    span: Span,
+) -> Vec<TypedSelectArm> {
+    if arms.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3047",
+                "`select` requires at least one arm",
+                "the bootstrap select model needs one or more `recv(channel)` arms",
+                span,
+            )
+            .with_fix_it("add at least one select arm like `value = recv(ch):`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    arms.iter()
+        .map(|arm| {
+            let operation = lower_expr(
+                &arm.operation,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+            );
+            validate_select_operation(&operation, diagnostics, source_path);
+
+            let body = {
+                scopes.push();
+                if let Some(binding) = &arm.binding {
+                    if scopes.contains_in_current(binding) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3006",
+                                format!("duplicate binding `{binding}`"),
+                                "gof currently does not allow duplicate bindings in the same block scope",
+                                arm.span,
+                            )
+                            .with_fix_it("rename the select arm binding")
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    } else {
+                        scopes.define_current(
+                            binding.clone(),
+                            LocalBinding {
+                                mutable: false,
+                                ty: operation.ty.clone(),
+                            },
+                        );
+                    }
+                }
+                let body = lower_block(
+                    &arm.body,
+                    scopes,
+                    signatures,
+                    method_signatures,
+                    known_structs,
+                    known_enums,
+                    struct_signatures,
+                    enum_signatures,
+                    diagnostics,
+                    false,
+                    source_path,
+                );
+                scopes.pop();
+                body
+            };
+
+            TypedSelectArm {
+                binding: arm.binding.clone(),
+                operation,
+                body,
+            }
+        })
+        .collect()
 }
 
 fn validate_match_pattern(
@@ -1391,6 +1530,14 @@ fn lower_expr(
                     | CallKind::BuiltinPrint
                     | CallKind::BuiltinAppend
                     | CallKind::BuiltinContains
+                    | CallKind::BuiltinAssert
+                    | CallKind::BuiltinReadFile
+                    | CallKind::BuiltinWriteFile
+                    | CallKind::BuiltinDict
+                    | CallKind::BuiltinInsert
+                    | CallKind::BuiltinChannel
+                    | CallKind::BuiltinSend
+                    | CallKind::BuiltinRecv
                     | CallKind::Enum
                     | CallKind::Unknown => TypedExprKind::Call {
                         callee: callee.clone(),
@@ -1779,6 +1926,30 @@ fn validate_call(
         CallKind::BuiltinContains => {
             validate_contains_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinAssert => {
+            validate_assert_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinReadFile => {
+            validate_read_file_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinWriteFile => {
+            validate_write_file_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinDict => {
+            validate_dict_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinInsert => {
+            validate_insert_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinChannel => {
+            validate_channel_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinSend => {
+            validate_send_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinRecv => {
+            validate_recv_call(args, span, diagnostics, source_path);
+        }
         CallKind::Function => match signatures.get(callee) {
             Some(signature) if signature.arity == args.len() => {
                 for (index, (expected, actual)) in
@@ -1866,7 +2037,7 @@ fn validate_call(
             Diagnostic::error(
                 "GOF3004",
                 format!("unknown function or struct `{callee}`"),
-                "calls currently resolve only to top-level functions, builtin helpers like `len`, `print`, `append`, `contains`, or struct constructors; enums use `EnumName.Variant`",
+                "calls currently resolve only to top-level functions, builtin helpers like `len`, `print`, `append`, `contains`, `assert`, `read_file`, `write_file`, `dict`, `insert`, `channel`, `send`, `recv`, or struct constructors; enums use `EnumName.Variant`",
                 span,
             )
             .with_fix_it("define the function or struct before calling it")
@@ -1979,6 +2150,8 @@ fn resolve_type_annotation(
         "string" => Type::String,
         "bool" => Type::Bool,
         "list" => Type::list(Type::Unknown),
+        "dict" => Type::dict(Type::Unknown),
+        "channel" => Type::channel(Type::Unknown),
         "task" => Type::task(Type::Unknown),
         "unit" => Type::Unit,
         name if known_structs.contains(name) => Type::Struct(name.to_string()),
@@ -2013,6 +2186,22 @@ fn resolve_call_kind(
         CallKind::BuiltinAppend
     } else if callee == "contains" {
         CallKind::BuiltinContains
+    } else if callee == "assert" {
+        CallKind::BuiltinAssert
+    } else if callee == "read_file" {
+        CallKind::BuiltinReadFile
+    } else if callee == "write_file" {
+        CallKind::BuiltinWriteFile
+    } else if callee == "dict" {
+        CallKind::BuiltinDict
+    } else if callee == "insert" {
+        CallKind::BuiltinInsert
+    } else if callee == "channel" {
+        CallKind::BuiltinChannel
+    } else if callee == "send" {
+        CallKind::BuiltinSend
+    } else if callee == "recv" {
+        CallKind::BuiltinRecv
     } else if signatures.contains_key(callee) {
         CallKind::Function
     } else if struct_signatures.contains_key(callee) {
@@ -2036,6 +2225,14 @@ fn call_return_type(
         CallKind::BuiltinPrint => Type::Unit,
         CallKind::BuiltinAppend => infer_append_return_type(args),
         CallKind::BuiltinContains => Type::Bool,
+        CallKind::BuiltinAssert => Type::Unit,
+        CallKind::BuiltinReadFile => Type::String,
+        CallKind::BuiltinWriteFile => Type::Unit,
+        CallKind::BuiltinDict => Type::dict(Type::Unknown),
+        CallKind::BuiltinInsert => infer_insert_return_type(args),
+        CallKind::BuiltinChannel => Type::channel(Type::Unknown),
+        CallKind::BuiltinSend => Type::Unit,
+        CallKind::BuiltinRecv => infer_recv_return_type(args),
         CallKind::Function => signatures
             .get(callee)
             .map(|signature| signature.return_type.clone())
@@ -2122,6 +2319,11 @@ fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
         (Type::String, BinaryOp::Eq | BinaryOp::Ne, Type::String) => Type::Bool,
         (Type::Bool, BinaryOp::Eq | BinaryOp::Ne, Type::Bool) => Type::Bool,
         (Type::List(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::List(rhs))
+            if types_compatible(lhs, rhs) =>
+        {
+            Type::Bool
+        }
+        (Type::Dict(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Dict(rhs))
             if types_compatible(lhs, rhs) =>
         {
             Type::Bool
@@ -2275,6 +2477,17 @@ fn collect_return_types(
                     );
                 }
             }
+            TypedStmt::Select { arms } => {
+                for arm in arms {
+                    collect_return_types(
+                        function_name,
+                        &arm.body,
+                        returns,
+                        diagnostics,
+                        source_path,
+                    );
+                }
+            }
             TypedStmt::Bind { .. } | TypedStmt::Assign { .. } | TypedStmt::Expr(_) => {}
         }
     }
@@ -2348,6 +2561,12 @@ fn merge_return_types(current: &Type, candidate: &Type) -> Option<Type> {
         (Type::List(current), Type::List(candidate)) => {
             merge_return_types(current, candidate).map(Type::list)
         }
+        (Type::Dict(current), Type::Dict(candidate)) => {
+            merge_return_types(current, candidate).map(Type::dict)
+        }
+        (Type::Channel(current), Type::Channel(candidate)) => {
+            merge_return_types(current, candidate).map(Type::channel)
+        }
         (Type::Task(current), Type::Task(candidate)) => {
             merge_return_types(current, candidate).map(Type::task)
         }
@@ -2387,6 +2606,8 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
         (Type::Unknown, _) | (_, Type::Unknown) => true,
         (Type::List(expected), Type::List(actual)) => types_compatible(expected, actual),
+        (Type::Dict(expected), Type::Dict(actual)) => types_compatible(expected, actual),
+        (Type::Channel(expected), Type::Channel(actual)) => types_compatible(expected, actual),
         (Type::Task(expected), Type::Task(actual)) => types_compatible(expected, actual),
         (expected, actual) => expected == actual,
     }
@@ -2438,32 +2659,49 @@ fn infer_index_type(
 ) -> Type {
     let mut valid = true;
 
-    if !matches!(index.ty, Type::Int | Type::Unknown) {
-        diagnostics.push(
-            Diagnostic::error(
-                "GOF3018",
-                "list indexing requires an `int` index",
-                format!("this index resolves to `{}`", index.ty.display_name()),
-                index.span,
-            )
-            .with_fix_it("use an integer index like `values[0]`")
-            .with_source_path(source_path.to_path_buf()),
-        );
-        valid = false;
-    }
-
     let element_type = match &target.ty {
-        Type::List(inner) => inner.as_ref().clone(),
+        Type::List(inner) => {
+            if !matches!(index.ty, Type::Int | Type::Unknown) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3018",
+                        "list indexing requires an `int` index",
+                        format!("this index resolves to `{}`", index.ty.display_name()),
+                        index.span,
+                    )
+                    .with_fix_it("use an integer index like `values[0]`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                valid = false;
+            }
+            inner.as_ref().clone()
+        }
+        Type::Dict(inner) => {
+            if !matches!(index.ty, Type::String | Type::Unknown) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3018",
+                        "dict indexing requires a `string` key",
+                        format!("this index resolves to `{}`", index.ty.display_name()),
+                        index.span,
+                    )
+                    .with_fix_it("use a string key like `values[\"name\"]`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                valid = false;
+            }
+            inner.as_ref().clone()
+        }
         Type::Unknown => Type::Unknown,
         other => {
             diagnostics.push(
                 Diagnostic::error(
                     "GOF3018",
-                    "indexing requires a list value",
+                    "indexing requires a list or dict value",
                     format!("this target resolves to `{}`", other.display_name()),
                     span,
                 )
-                .with_fix_it("index only list literals or list bindings")
+                .with_fix_it("index only list or dict values")
                 .with_source_path(source_path.to_path_buf()),
             );
             valid = false;
@@ -2495,15 +2733,18 @@ fn validate_len_call(
     }
 
     let arg = &args[0];
-    if !matches!(arg.ty, Type::List(_) | Type::String | Type::Unknown) {
+    if !matches!(
+        arg.ty,
+        Type::List(_) | Type::Dict(_) | Type::String | Type::Unknown
+    ) {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3019",
-                "`len` requires a list or string value",
+                "`len` requires a list, dict, or string value",
                 format!("this argument resolves to `{}`", arg.ty.display_name()),
                 arg.span,
             )
-            .with_fix_it("pass a list literal, list binding, or string value to `len`")
+            .with_fix_it("pass a list, dict, or string value to `len`")
             .with_source_path(source_path.to_path_buf()),
         );
     }
@@ -2644,17 +2885,344 @@ fn validate_contains_call(
             ),
             source_path,
         ),
+        Type::Dict(_) => {
+            if !matches!(needle.ty, Type::String | Type::Unknown) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3040",
+                        "`contains` requires a string key for dict haystacks",
+                        format!("this needle resolves to `{}`", needle.ty.display_name()),
+                        needle.span,
+                    )
+                    .with_fix_it("pass a string key as the second argument to `contains`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+        }
         Type::Unknown => {}
         other => diagnostics.push(
             Diagnostic::error(
                 "GOF3040",
-                "`contains` requires a string or list haystack",
+                "`contains` requires a string, list, or dict haystack",
                 format!("this haystack resolves to `{}`", other.display_name()),
                 haystack.span,
             )
-            .with_fix_it("call `contains` with a string or list as the first argument")
+            .with_fix_it("call `contains` with a string, list, or dict as the first argument")
             .with_source_path(source_path.to_path_buf()),
         ),
+    }
+}
+
+fn validate_assert_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !(1..=2).contains(&args.len()) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `assert`",
+                format!("expected 1 or 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `assert(condition)` or `assert(condition, \"message\")`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Bool | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3041",
+                "`assert` requires a boolean condition",
+                format!("this condition resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a boolean expression as the first argument to `assert`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if args.len() == 2 && !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3041",
+                "`assert` requires a string message when a second argument is present",
+                format!("this message resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a string as the second argument to `assert`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_read_file_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `read_file`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `read_file(path)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3043",
+                "`read_file` requires a string path",
+                format!("this path resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string path like `\"notes.txt\"` to `read_file`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_write_file_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `write_file`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `write_file(path, contents)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3043",
+                "`write_file` requires a string path",
+                format!("this path resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string path as the first argument to `write_file`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3043",
+                "`write_file` requires string contents",
+                format!(
+                    "this contents value resolves to `{}`",
+                    args[1].ty.display_name()
+                ),
+                args[1].span,
+            )
+            .with_fix_it("pass a string as the second argument to `write_file`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_dict_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `dict`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `dict()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_insert_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 3 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `insert`",
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `insert(dict_value, \"key\", value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    match &args[0].ty {
+        Type::Dict(inner) => ensure_type_compatibility(
+            inner,
+            &args[2].ty,
+            args[2].span,
+            diagnostics,
+            "inserted value has an incompatible type".to_string(),
+            format!(
+                "the dict stores `{}`, but the inserted value resolves to `{}`",
+                inner.display_name(),
+                args[2].ty.display_name()
+            ),
+            source_path,
+        ),
+        Type::Unknown => {}
+        other => diagnostics.push(
+            Diagnostic::error(
+                "GOF3045",
+                "`insert` requires a dict as its first argument",
+                format!("this argument resolves to `{}`", other.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a dict value as the first argument to `insert`")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3045",
+                "`insert` requires a string key",
+                format!("this key resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a string as the second argument to `insert`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_channel_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `channel`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `channel()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_send_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `send`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `send(channel_value, item)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    match &args[0].ty {
+        Type::Channel(inner) => ensure_type_compatibility(
+            inner,
+            &args[1].ty,
+            args[1].span,
+            diagnostics,
+            "sent value has an incompatible channel type".to_string(),
+            format!(
+                "the channel carries `{}`, but the sent value resolves to `{}`",
+                inner.display_name(),
+                args[1].ty.display_name()
+            ),
+            source_path,
+        ),
+        Type::Unknown => {}
+        other => diagnostics.push(
+            Diagnostic::error(
+                "GOF3046",
+                "`send` requires a channel as its first argument",
+                format!("this argument resolves to `{}`", other.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a channel value as the first argument to `send`")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+}
+
+fn validate_recv_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `recv`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `recv(channel_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Channel(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3046",
+                "`recv` requires a channel value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a channel value to `recv`")
+            .with_source_path(source_path.to_path_buf()),
+        );
     }
 }
 
@@ -2672,13 +3240,71 @@ fn infer_append_return_type(args: &[TypedExpr]) -> Type {
     }
 }
 
+fn infer_insert_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 3 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::Dict(inner) => merge_return_types(inner, &args[2].ty)
+            .map(Type::dict)
+            .unwrap_or_else(|| Type::dict(inner.as_ref().clone())),
+        Type::Unknown => Type::dict(args[2].ty.clone()),
+        _ => Type::Unknown,
+    }
+}
+
+fn infer_recv_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::Channel(inner) => inner.as_ref().clone(),
+        _ => Type::Unknown,
+    }
+}
+
+fn validate_select_operation(
+    operation: &TypedExpr,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    match &operation.kind {
+        TypedExprKind::Call { callee, args } if callee == "recv" && args.len() == 1 => {}
+        TypedExprKind::Call { callee, .. } => diagnostics.push(
+            Diagnostic::error(
+                "GOF3047",
+                "`select` arms currently require `recv(channel)` operations",
+                format!("this arm uses `{callee}(...)` instead"),
+                operation.span,
+            )
+            .with_fix_it("replace the arm operation with `recv(channel_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+        _ => diagnostics.push(
+            Diagnostic::error(
+                "GOF3047",
+                "`select` arms currently require `recv(channel)` operations",
+                "select arms must be written as `recv(channel):` or `value = recv(channel):`",
+                operation.span,
+            )
+            .with_fix_it("replace this arm with a `recv(channel)` operation")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+}
+
 fn is_printable_type(ty: &Type) -> bool {
     match ty {
         Type::Int | Type::String | Type::Bool | Type::Struct(_) | Type::Enum(_) | Type::Unknown => {
             true
         }
-        Type::List(inner) => !matches!(inner.as_ref(), Type::Task(_) | Type::Unit),
-        Type::Task(_) | Type::Unit => false,
+        Type::List(inner) | Type::Dict(inner) => !matches!(
+            inner.as_ref(),
+            Type::Task(_) | Type::Unit | Type::Channel(_)
+        ),
+        Type::Channel(_) | Type::Task(_) | Type::Unit => false,
     }
 }
 
@@ -2857,6 +3483,46 @@ mod tests {
     }
 
     #[test]
+    fn supports_dict_assert_and_file_builtins() {
+        let module = lower_source(
+            "fn main() -> int:\n    mut store: dict = dict()\n    store = insert(store, \"size\", 3)\n    assert(contains(store, \"size\"), \"missing size\")\n    write_file(\"out.txt\", read_file(\"in.txt\"))\n    return store[\"size\"] + len(store)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Dict(Box::new(Type::Unknown)));
+            }
+            other => panic!("expected dict bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Assign { value, .. } => {
+                assert_eq!(value.ty, Type::Dict(Box::new(Type::Int)));
+            }
+            other => panic!("expected dict assign, got {other:?}"),
+        }
+
+        assert_eq!(module.functions[0].return_type, Type::Int);
+    }
+
+    #[test]
+    fn supports_channel_and_select_baseline() {
+        let module = lower_source(
+            "fn main() -> int:\n    ch: channel = channel()\n    send(ch, 7)\n    select:\n        value = recv(ch):\n            return value + 1\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[2] {
+            TypedStmt::Select { arms } => {
+                assert_eq!(arms.len(), 1);
+                assert_eq!(arms[0].binding.as_deref(), Some("value"));
+            }
+            other => panic!("expected select statement, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_print_builtin_with_unit_return() {
         let module = lower_source("fn main() -> int:\n    print(\"gof\")\n    return 1\n")
             .expect("typing should succeed");
@@ -2896,6 +3562,24 @@ mod tests {
             .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3040"]);
+    }
+
+    #[test]
+    fn rejects_invalid_assert_operands() {
+        let diagnostics = lower_source("fn main() -> unit:\n    return assert(1)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3041"]);
+    }
+
+    #[test]
+    fn rejects_invalid_select_operations() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    select:\n        print(\"bad\"):\n            return 1\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3047"]);
     }
 
     #[test]

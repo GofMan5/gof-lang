@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOp, EnumDecl, EnumVariant, Expr, Module, Param, Stmt, StructDecl, StructField, TypeRef,
-    UnaryOp,
+    BinaryOp, EnumDecl, EnumVariant, Expr, Module, Param, SelectArm, Stmt, StructDecl, StructField,
+    TypeRef, UnaryOp,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -95,12 +95,24 @@ pub enum HirStmt {
         arms: Vec<HirMatchArm>,
         span: Span,
     },
+    Select {
+        arms: Vec<HirSelectArm>,
+        span: Span,
+    },
     Expr(HirExpr, Span),
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HirMatchArm {
     pub pattern: HirExpr,
+    pub body: Vec<HirStmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirSelectArm {
+    pub binding: Option<String>,
+    pub operation: HirExpr,
     pub body: Vec<HirStmt>,
     pub span: Span,
 }
@@ -270,6 +282,10 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
             arms: arms.iter().map(lower_match_arm).collect(),
             span: *span,
         },
+        Stmt::Select { arms, span } => HirStmt::Select {
+            arms: arms.iter().map(lower_select_arm).collect(),
+            span: *span,
+        },
         Stmt::Expr(expr, span) => HirStmt::Expr(lower_expr(expr), *span),
     }
 }
@@ -277,6 +293,15 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
 fn lower_match_arm(arm: &crate::ast::MatchArm) -> HirMatchArm {
     HirMatchArm {
         pattern: lower_expr(&arm.pattern),
+        body: arm.body.iter().map(lower_stmt).collect(),
+        span: arm.span,
+    }
+}
+
+fn lower_select_arm(arm: &SelectArm) -> HirSelectArm {
+    HirSelectArm {
+        binding: arm.binding.clone(),
+        operation: lower_expr(&arm.operation),
         body: arm.body.iter().map(lower_stmt).collect(),
         span: arm.span,
     }

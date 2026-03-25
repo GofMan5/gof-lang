@@ -1,0 +1,2 @@
+fn main() -> dict:
+    return insert([1], "a", 1)

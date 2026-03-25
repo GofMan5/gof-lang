@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::process::Command as ProcessCommand;
 use tempfile::tempdir;
 
 fn gof_command() -> Command {
@@ -139,6 +140,48 @@ fn gof_run_executes_stdlib_helpers_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("18"));
+}
+
+#[test]
+fn gof_run_executes_dict_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("dict_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("11"));
+}
+
+#[test]
+fn gof_run_executes_channel_select_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("channel_select.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("9"));
+}
+
+#[test]
+fn gof_run_executes_io_roundtrip_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("io_roundtrip.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("6"));
 }
 
 #[test]
@@ -381,4 +424,44 @@ fn gof_test_runs_fixtures() {
         .assert()
         .success()
         .stdout(predicate::str::contains("passed"));
+}
+
+#[test]
+fn gof_build_native_emits_runnable_host_executable() {
+    let temp = tempdir().expect("tempdir should exist");
+    let source = gof_conformance::workspace_root()
+        .join("examples")
+        .join("hello_print.gof");
+    let output = temp.path().join("hello-native");
+    let built_binary = if cfg!(windows) {
+        output.with_extension("exe")
+    } else {
+        output.clone()
+    };
+
+    gof_command()
+        .arg("build")
+        .arg(&source)
+        .arg("--native")
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wrote native executable"));
+
+    assert!(built_binary.exists(), "native binary should be created");
+
+    let output = ProcessCommand::new(&built_binary)
+        .output()
+        .expect("native binary should execute");
+    assert!(
+        output.status.success(),
+        "native binary failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("gof ready"));
+    assert!(stdout.contains("42"));
+    assert!(stdout.contains("7"));
 }

@@ -398,4 +398,31 @@ mod tests {
                 ))
         );
     }
+
+    #[test]
+    fn pipeline_supports_select_and_channel_builtins() {
+        let source = SourceFile::new(
+            "select.gof",
+            "fn main() -> int:\n    ch: channel = channel()\n    send(ch, 7)\n    select:\n        value = recv(ch):\n            return value + 1\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert!(matches!(
+            &compiled.typed_hir.functions[0].body[2],
+            crate::typed_hir::TypedStmt::Select { arms } if arms.len() == 1
+        ));
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::BeginSelect))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::SelectArm { .. }))
+        );
+    }
 }

@@ -1,0 +1,6 @@
+fn main() -> int:
+    ch: channel = channel()
+    send(ch, 4)
+    select:
+        value = recv(ch):
+            return value + 1

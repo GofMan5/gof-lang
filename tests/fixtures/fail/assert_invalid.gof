@@ -1,0 +1,2 @@
+fn main() -> unit:
+    return assert(1)

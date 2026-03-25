@@ -1,0 +1,9 @@
+fn total(metrics: dict) -> int:
+    return metrics["ok"] + metrics["warn"] + len(metrics)
+
+fn main() -> int:
+    mut metrics: dict = dict()
+    metrics = insert(metrics, "ok", 7)
+    metrics = insert(metrics, "warn", 2)
+    assert(contains(metrics, "ok"), "missing ok")
+    return total(metrics)

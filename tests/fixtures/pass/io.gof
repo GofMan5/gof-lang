@@ -1,0 +1,4 @@
+fn main() -> int:
+    write_file("out.txt", "abc")
+    assert(true, "ok")
+    return len(read_file("out.txt"))

@@ -68,14 +68,19 @@ The bootstrap compiler in this repository currently supports:
 - struct constructor calls through `TypeName(...)`
 - enum variant references through `EnumName.Variant`
 - statement-level exhaustive `match` over enum values
+- statement-level `select` over receive operations
 - struct receiver methods through `fn TypeName.method(...)`
 - field access through `value.field`
 - method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`
-- builtin `len(...)` for lists and strings
+- builtin `len(...)` for lists, strings, and dicts
 - builtin `print(...)` for one printable value
+- builtin `assert(...)` for boolean correctness contracts
+- builtin `read_file(...)` and `write_file(...)` for bootstrap file I/O
+- builtin `dict()` and `insert(...)` for bootstrap key/value data
 - builtin `append(list, value)` for pure list growth
 - builtin `contains(haystack, needle)` for list membership and string substring checks
+- builtin `channel()`, `send(...)`, and `recv(...)` for bootstrap message passing
 
 ## Bootstrap binding rules
 
@@ -84,10 +89,10 @@ The bootstrap compiler in this repository currently supports:
 - `mut name = expr` creates a mutable local
 - `mut name: type = expr` creates a mutable local constrained by the declared builtin type or struct type
 - reassigning an immutable local is a compile error
-- function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `task`, `unit`, and known struct names
+- function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `task`, `unit`, `list`, `dict`, `channel`, and known struct names
 - function parameters can currently also be annotated with known enum names
 - function return types can currently be annotated with the same builtin types plus known struct and enum names
-- local bindings and return contracts can currently use the builtin `list` annotation
+- local bindings and return contracts can currently use the builtin `list`, `dict`, and `channel` annotations
 - `import name` currently resolves `name.gof` next to the importing source file and merges top-level functions, structs, and enums into one bootstrap module graph
 - import cycles are rejected during module graph loading
 - duplicate top-level function names across the module graph are rejected
@@ -113,19 +118,35 @@ The bootstrap compiler in this repository currently supports:
 - `not` currently requires a boolean operand
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
+- `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
+- `read_file(path)` and `write_file(path, contents)` are currently builtins recognized by the compiler and evaluator
+- `dict()` and `insert(dict, key, value)` are currently builtins recognized by the compiler and evaluator
 - `append(list, value)` is currently a builtin recognized by the compiler and evaluator
 - `contains(haystack, needle)` is currently a builtin recognized by the compiler and evaluator
+- `channel()`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
 - `print` currently accepts exactly one printable value and returns `unit`
+- `assert` currently accepts either `(bool)` or `(bool, string)` and returns `unit`
+- `read_file` currently accepts exactly one string path and returns `string`
+- `write_file` currently accepts exactly one string path plus one string contents value and returns `unit`
+- `dict` currently accepts no arguments and returns an empty dict value
+- `insert` currently accepts `(dict, string, value)` and returns a new dict
 - `append` currently accepts exactly one list plus one compatible value and returns a new list
-- `contains` currently accepts either `(list, value)` or `(string, string)` and returns `bool`
+- `contains` currently accepts `(list, value)`, `(string, string)`, or `(dict, string)` and returns `bool`
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
-- indexing currently requires a list target and an integer index
+- indexing currently requires either a list target with an integer index or a dict target with a string key
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result
 - an explicit function return annotation acts as the function contract and must stay compatible with every return path in the body
 - every `return` inside one function must resolve to one compatible type
 - `go` currently accepts only `go some_function(...)`
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
+- `channel()` currently creates an unbuffered bootstrap channel
+- `send(channel, value)` currently blocks until the bootstrap runtime can transfer the value
+- `recv(channel)` currently yields the next value sent on the channel
+- `select:` currently requires one or more receive arms
+- each `select` arm currently must be written as either `recv(channel):` or `value = recv(channel):`
+- `select` currently polls its arms until one receive succeeds and then executes only that arm body
+- channels currently have no close operation, no explicit buffering syntax, and no fairness contract beyond first completed receive
 - control-flow conditions must evaluate to `bool`
 
 Everything else is specified as future work and intentionally blocked from pretending to be stable.

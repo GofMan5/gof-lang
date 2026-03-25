@@ -1,0 +1,6 @@
+fn main() -> int:
+    path = "target/io_roundtrip.txt"
+    write_file(path, "gof-io")
+    text = read_file(path)
+    assert(contains(text, "io"), "missing io")
+    return len(text)

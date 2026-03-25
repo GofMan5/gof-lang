@@ -28,9 +28,11 @@ The real goal is not feature count. Every phase of language development must:
 ## Active Focus
 
 - `[~]` M4: minimal useful standard library
-- Immediate mandatory result: keep stdlib output small, explicit, and allocation-transparent
-- Second mandatory result: richer comparison rules without semantic mud
-- Parallel operational result: release and install ergonomics that make `gof` easy to build, package, install, and update
+- `[~]` M5: concurrency semantics beyond task spawn and await
+- `[~]` M7: bootstrap-native build path on the road to direct codegen
+- Immediate mandatory result: keep stdlib side effects small, explicit, and allocation-transparent
+- Second mandatory result: make message-passing concurrency honest and testable
+- Parallel operational result: keep build, package, install, and update flows aligned with the real toolchain surface
 
 ## Milestone Map
 
@@ -97,14 +99,16 @@ The real goal is not feature count. Every phase of language development must:
 ### M4. Minimal Useful Standard Library
 
 - `[x]` output primitive (`print` or equivalent)
+- `[x]` basic file I/O baseline through `read_file(...)` and `write_file(...)`
 - `[~]` basic string helpers
 - `[~]` basic list helpers that do not hide allocations
+- `[x]` bootstrap dict baseline for key/value data
 - `[ ]` predictable numeric and conversion utilities
-- `[ ]` minimal testing and assert helpers inside the language surface
+- `[x]` minimal testing and assert helpers inside the language surface
 - Checkpoints:
-- `[~]` CP-M4-1: I/O baseline for CLI apps
+- `[x]` CP-M4-1: I/O baseline for CLI apps
 - `[~]` CP-M4-2: zero-surprise helper APIs for strings and lists
-- `[ ]` CP-M4-3: stdlib docs and contract tests
+- `[~]` CP-M4-3: stdlib docs and contract tests
 - Exit criteria:
 - small but real CLI-style programs are possible without compiler-internal hacks
 
@@ -112,14 +116,14 @@ The real goal is not feature count. Every phase of language development must:
 
 - `[x]` task spawning baseline via `go`
 - `[x]` typed `await`
-- `[ ]` typed channels
-- `[ ]` `select`
+- `[x]` typed channels
+- `[x]` `select`
 - `[ ]` cancellation contract
 - `[ ]` panic and error propagation across tasks
 - `[ ]` scheduler stress and concurrency benchmarks
 - Checkpoints:
-- `[ ]` CP-M5-1: channels with explicit semantics
-- `[ ]` CP-M5-2: `select` semantics and diagnostics
+- `[x]` CP-M5-1: channels with explicit semantics
+- `[x]` CP-M5-2: `select` semantics and diagnostics
 - `[ ]` CP-M5-3: cancellation and propagation rules
 - Exit criteria:
 - concurrency is useful, typed, testable, and benchmarked
@@ -140,6 +144,7 @@ The real goal is not feature count. Every phase of language development must:
 
 ### M7. Native Backend and Runtime Hardening
 
+- `[x]` bootstrap-native host executable path via `gof build --native`
 - `[ ]` transition from SSA JSON artifact to real codegen
 - `[ ]` runtime allocation model formalization
 - `[ ]` debug info and ABI smoke tests
@@ -147,7 +152,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[ ]` release quality gates based on benchmarks, not marketing
 - Checkpoints:
 - `[ ]` CP-M7-1: backend IR contract stabilization
-- `[ ]` CP-M7-2: first real native artifact path
+- `[~]` CP-M7-2: first native artifact path
 - `[ ]` CP-M7-3: performance regression gates
 - Exit criteria:
 - `gof build` emits real executable artifacts
@@ -168,12 +173,18 @@ The real goal is not feature count. Every phase of language development must:
 1. `[ ]` Expand the minimal stdlib beyond raw output:
 - expand string helpers beyond `contains`
 - expand list helpers beyond `append`
+- add dict construction sugar without hiding costs
 - stdlib docs and contract tests
 
-2. `[ ]` Harden developer distribution flow:
-- tagged releases documented in README
-- install and update path verified on all supported release targets
-- release workflow stays aligned with packaged asset naming
+2. `[ ]` Move the bootstrap-native build path closer to direct codegen:
+- reduce wrapper overhead in generated host executables
+- stabilize artifact naming and smoke coverage for `gof build --native`
+- keep direct codegen milestones honest in docs and tooling
+
+3. `[ ]` Deepen concurrency semantics:
+- select fairness and blocking semantics
+- channel lifecycle and cancellation rules
+- concurrency contract tests and benchmarks
 
 ## Current Non-Goals
 

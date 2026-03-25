@@ -1,0 +1,9 @@
+fn main() -> int:
+    left: channel = channel()
+    right: channel = channel()
+    send(right, 8)
+    select:
+        value = recv(left):
+            return 0
+        value = recv(right):
+            return value + 1

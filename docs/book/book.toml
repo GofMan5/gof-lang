@@ -1,0 +1,13 @@
+[book]
+title = "The gof Book"
+authors = ["gof project"]
+language = "en"
+multilingual = false
+src = "src"
+
+[build]
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/GofMan5/gof-lang"
+site-url = "/"

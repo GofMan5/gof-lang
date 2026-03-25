@@ -185,6 +185,27 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                 .join("\n");
             format!("{indent}match {}:\n{arms}", format_expr(value))
         }
+        Stmt::Select { arms, .. } => {
+            let arms = arms
+                .iter()
+                .map(|arm| {
+                    let header = match &arm.binding {
+                        Some(binding) => {
+                            format!("{binding} = {}", format_expr(&arm.operation))
+                        }
+                        None => format_expr(&arm.operation),
+                    };
+                    format!(
+                        "{}{}:\n{}",
+                        "    ".repeat(indent_level + 1),
+                        header,
+                        format_block(&arm.body, indent_level + 2)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{indent}select:\n{arms}")
+        }
         Stmt::Expr(expr, _) => format!("{indent}{}", format_expr(expr)),
     }
 }
@@ -347,6 +368,19 @@ mod tests {
         assert_eq!(
             formatted,
             "struct Point:\n    x: int\n    y: int\n\nfn Point.total(self: Point, extra: int) -> int:\n    return self.x + self.y + extra\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.total(5)\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_select_arms() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn main()->int:\n    left:channel=channel()\n    right:channel=channel()\n    select:\n        value=recv(left):\n            return value\n        recv(right):\n            return 2\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn main() -> int:\n    left: channel = channel()\n    right: channel = channel()\n    select:\n        value = recv(left):\n            return value\n        recv(right):\n            return 2\n"
         );
     }
 }

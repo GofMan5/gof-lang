@@ -103,12 +103,24 @@ pub enum Stmt {
         arms: Vec<MatchArm>,
         span: Span,
     },
+    Select {
+        arms: Vec<SelectArm>,
+        span: Span,
+    },
     Expr(Expr, Span),
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MatchArm {
     pub pattern: Expr,
+    pub body: Vec<Stmt>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SelectArm {
+    pub binding: Option<String>,
+    pub operation: Expr,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -469,6 +481,13 @@ impl<'a> Parser<'a> {
             return Stmt::Match { value, arms, span };
         }
 
+        if self.matches(TokenDiscriminant::Select) {
+            let span = self.previous().span;
+            self.expect(TokenDiscriminant::Colon, "expected `:` after `select`");
+            let arms = self.parse_select_arms("expected an indented block after `select`");
+            return Stmt::Select { arms, span };
+        }
+
         if self.matches(TokenDiscriminant::Mut) {
             let span = self.previous().span;
             let name = self.expect_ident("expected an identifier after `mut`");
@@ -565,6 +584,49 @@ impl<'a> Parser<'a> {
         let body = self.parse_block("expected an indented block after match arm");
         MatchArm {
             pattern,
+            body,
+            span,
+        }
+    }
+
+    fn parse_select_arms(&mut self, message: &'static str) -> Vec<SelectArm> {
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline before a select body",
+        );
+        self.expect(TokenDiscriminant::Indent, message);
+
+        let mut arms = Vec::new();
+        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
+            arms.push(self.parse_select_arm());
+        }
+
+        self.expect(TokenDiscriminant::Dedent, "expected a select body dedent");
+        arms
+    }
+
+    fn parse_select_arm(&mut self) -> SelectArm {
+        let binding = if self.check_select_binding() {
+            let name = self.expect_ident("expected a binding name at the start of a select arm");
+            self.expect(
+                TokenDiscriminant::Equal,
+                "expected `=` after the select arm binding name",
+            );
+            Some(name)
+        } else {
+            None
+        };
+
+        let operation = self.parse_expr();
+        let span = operation.span();
+        self.expect(
+            TokenDiscriminant::Colon,
+            "expected `:` after select arm operation",
+        );
+        let body = self.parse_block("expected an indented block after a select arm");
+        SelectArm {
+            binding,
+            operation,
             body,
             span,
         }
@@ -946,6 +1008,14 @@ impl<'a> Parser<'a> {
             )
     }
 
+    fn check_select_binding(&self) -> bool {
+        matches!(self.peek().kind, TokenKind::Ident(_))
+            && matches!(
+                self.peek_next().map(|token| &token.kind),
+                Some(TokenKind::Equal)
+            )
+    }
+
     fn previous_kind_matches(&self, expected: TokenDiscriminant) -> bool {
         expected.matches(&self.previous().kind)
     }
@@ -1004,6 +1074,7 @@ enum TokenDiscriminant {
     Else,
     While,
     Match,
+    Select,
     Go,
     Await,
     And,
@@ -1047,6 +1118,7 @@ impl TokenDiscriminant {
                 | (Self::Else, TokenKind::Else)
                 | (Self::While, TokenKind::While)
                 | (Self::Match, TokenKind::Match)
+                | (Self::Select, TokenKind::Select)
                 | (Self::Go, TokenKind::Go)
                 | (Self::Await, TokenKind::Await)
                 | (Self::And, TokenKind::And)
@@ -1089,6 +1161,7 @@ impl TokenDiscriminant {
             Self::Else => "`else`",
             Self::While => "`while`",
             Self::Match => "`match`",
+            Self::Select => "`select`",
             Self::Go => "`go`",
             Self::Await => "`await`",
             Self::And => "`and`",
@@ -1340,6 +1413,20 @@ mod tests {
         assert!(matches!(
             &module.functions[1].body[1],
             Stmt::Return(Expr::MethodCall { method, args, .. }, _) if method == "total" && args.len() == 1
+        ));
+    }
+
+    #[test]
+    fn parses_select_arms_with_optional_binding() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn worker(ch):\n    return 1\nfn main() -> int:\n    left = channel()\n    right = channel()\n    select:\n        value = recv(left):\n            return value\n        recv(right):\n            return 2\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[1].body[2],
+            Stmt::Select { arms, .. } if arms.len() == 2 && arms[0].binding.as_deref() == Some("value") && arms[1].binding.is_none()
         ));
     }
 

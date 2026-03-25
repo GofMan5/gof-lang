@@ -25,8 +25,12 @@ What is already real:
 - logical operators `and`, `or`, `not`
 - lists, indexing, builtin `len(...)`
 - builtin list and string helpers through `append(...)` and `contains(...)`
+- builtin correctness contracts through `assert(...)`
+- builtin file I/O through `read_file(...)` and `write_file(...)`
+- builtin dictionary values through `dict()` and `insert(...)`
 - task spawning through `go`
 - waiting on tasks through `await`
+- bootstrap channels through `channel()`, `send(...)`, `recv(...)`, and `select`
 - builtin output through `print(...)`
 - user-defined `struct` types with typed fields
 - user-defined `enum` types with unit variants
@@ -39,16 +43,16 @@ What is already real:
 - deterministic formatter
 - fixture-based conformance tests
 - compiler pipeline through `Lexer -> CST -> AST -> HIR -> Typed HIR -> MIR -> SSA -> backend artifact`
+- `gof build --native`, which already emits a host executable by packaging the bootstrap evaluator
 
 What is not finished yet:
 
-- native machine-code backend
-- channels and `select`
-- real standard library
+- direct native code generation without embedding the bootstrap evaluator
+- real standard library beyond the current bootstrap helpers
 - package registry and full resolver
-- production-grade runtime
+- production-grade runtime and channel semantics
 
-Important: `gof build` still emits a structured SSA/backend artifact, not a final native executable.
+Important: `gof build` still emits a structured SSA/backend artifact by default. `gof build --native` already produces a real executable, but it currently wraps the bootstrap evaluator instead of using a finalized direct codegen backend.
 
 ## Design Principles
 
@@ -63,6 +67,7 @@ Project operating rules are documented in:
 - [GOVERNANCE.md](./GOVERNANCE.md) for project governance and engineering policy
 - [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution workflow and quality gates
 - [roadmap.md](./roadmap.md) for milestones and checkpoints
+- [docs/book](./docs/book/) for the versioned learning path and language book
 - [spec/language-v1.md](./spec/language-v1.md) for the current language contract
 - [spec/diagnostics.md](./spec/diagnostics.md) for the diagnostics contract
 
@@ -148,10 +153,23 @@ Build the current backend artifact:
 cargo run -q -p gof-cli --bin gof -- build examples/geometry.gof
 ```
 
+Build a bootstrap-native host executable:
+
+```bash
+cargo run -q -p gof-cli --bin gof -- build examples/hello_print.gof --native
+```
+
 Run all workspace tests:
 
 ```bash
 cargo test --workspace
+```
+
+Preview the learning book locally:
+
+```bash
+cargo install mdbook
+mdbook serve docs/book
 ```
 
 Create or refresh the rolling snapshot prerelease from your local machine:
@@ -193,13 +211,41 @@ The current bootstrap subset supports:
 - field access
 - method calls
 - list indexing
+- dict indexing with string keys
 - builtin `len(...)`
 - builtin `print(...)`
 - builtin `append(...)`
 - builtin `contains(...)`
+- builtin `assert(...)`
+- builtin `read_file(...)`
+- builtin `write_file(...)`
+- builtin `dict()`
+- builtin `insert(...)`
+- builtin `channel()`
+- builtin `send(...)`
+- builtin `recv(...)`
 - `go` and `await`
+- `select` over receive arms
 
 See [examples/README.md](./examples/README.md) for runnable examples.
+
+## Learning gof
+
+`gof` should be learned from repository-versioned docs, not from a drifting wiki.
+
+Use this order:
+
+1. [docs/book](./docs/book/) for the teaching path
+2. [examples/README.md](./examples/README.md) for runnable examples
+3. [spec/language-v1.md](./spec/language-v1.md) for the exact contract
+4. [spec/diagnostics.md](./spec/diagnostics.md) for error behavior
+
+The book is intended to grow with the language. Every new public feature should update:
+
+- the book
+- examples
+- spec
+- diagnostics when needed
 
 ## Repository Layout
 
@@ -231,10 +277,10 @@ The active roadmap is maintained in [roadmap.md](./roadmap.md).
 
 Current priority order:
 
-1. richer stdlib beyond `print(...)`, `append(...)`, and `contains(...)`
-2. production-grade concurrency model
-3. package system and native backend hardening
-4. native backend and runtime performance hardening
+1. richer stdlib beyond the current bootstrap helpers
+2. production-grade concurrency semantics beyond the current channel baseline
+3. package system and direct native backend hardening
+4. runtime and performance hardening
 
 ## CI and Release Automation
 
