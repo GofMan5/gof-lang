@@ -11,11 +11,14 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 
 - `calculator.gof`: typed functions, mutable bindings, arithmetic
 - `factorial.gof`: `while`, `if`, typed locals, control-flow return contract
+- `hello_print.gof`: builtin `print(...)` plus normal return value rendering
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `geometry.gof`: `struct`, typed fields, constructor calls, field access
+- `geometry_methods.gof`: receiver methods on structs and method calls
 - `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow
 - `list_sum.gof`: lists, indexing, `len`, looping over data
 - `status_report.gof`: `enum`, unit variants, typed enum bindings, equality
+- `status_match.gof`: exhaustive `match` over enum values
 - `string_metrics.gof`: list of strings, indexing to string, `len(string)`
 - `parallel_report.gof`: lists plus task fan-out and aggregation
 - `modules/main.gof`: same-directory imports and multi-file resolution
@@ -26,11 +29,14 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 
 - `calculator.gof` -> `107`
 - `factorial.gof` -> `120`
+- `hello_print.gof` -> prints `gof ready`, `42`, then `7`
 - `concurrent_squares.gof` -> `225`
 - `geometry.gof` -> `42`
+- `geometry_methods.gof` -> `10`
 - `health_gate.gof` -> `1`
 - `list_sum.gof` -> `108`
 - `status_report.gof` -> `200`
+- `status_match.gof` -> `50`
 - `string_metrics.gof` -> `10`
 - `parallel_report.gof` -> `104`
 - `modules/main.gof` -> `121`

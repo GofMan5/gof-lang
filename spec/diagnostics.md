@@ -48,3 +48,12 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3027`: duplicate variant inside one enum declaration
 - `GOF3028`: unknown enum variant reference
 - `GOF3029`: duplicate top-level enum across the local module graph
+- `GOF3030`: duplicate `match` arm for one enum variant
+- `GOF3031`: invalid `match` arm pattern or wrong enum arm
+- `GOF3032`: non-enum `match` target
+- `GOF3033`: non-exhaustive `match`
+- `GOF3034`: duplicate method across the local module graph
+- `GOF3035`: invalid method receiver contract
+- `GOF3036`: unknown method on a struct
+- `GOF3037`: method call on a non-struct value
+- `GOF3038`: invalid operand for builtin `print`

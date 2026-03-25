@@ -151,6 +151,7 @@ impl ModuleResolver {
         let mut seen_structs = HashMap::<String, (PathBuf, crate::source::Span)>::new();
         let mut seen_enums = HashMap::<String, (PathBuf, crate::source::Span)>::new();
         let mut seen = HashMap::<String, (PathBuf, crate::source::Span)>::new();
+        let mut seen_methods = HashMap::<(String, String), (PathBuf, crate::source::Span)>::new();
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut functions = Vec::new();
@@ -276,6 +277,39 @@ impl ModuleResolver {
             }
 
             for function in &module.functions {
+                if let Some(receiver_type) = &function.receiver_type {
+                    let method_key = (receiver_type.name.clone(), function.name.clone());
+                    if let Some((original_path, original_span)) =
+                        seen_methods.get(&method_key).cloned()
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3034",
+                                format!(
+                                    "duplicate method `{}.{}` in module graph",
+                                    receiver_type.name, function.name
+                                ),
+                                format!(
+                                    "first declared at {}:{}:{}",
+                                    original_path.display(),
+                                    original_span.line,
+                                    original_span.column
+                                ),
+                                function.span,
+                            )
+                            .with_fix_it(
+                                "rename one of the methods or remove the conflicting import",
+                            )
+                            .with_source_path(path.clone()),
+                        );
+                        continue;
+                    }
+
+                    seen_methods.insert(method_key, (path.clone(), function.span));
+                    functions.push(function.clone());
+                    continue;
+                }
+
                 if let Some((original_path, original_span)) =
                     seen_structs.get(&function.name).cloned()
                 {
@@ -530,5 +564,29 @@ mod tests {
                 .expect_err("duplicate enums should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3029"]);
+    }
+
+    #[test]
+    fn rejects_duplicate_methods_across_modules() {
+        let temp = tempdir().expect("tempdir should exist");
+        let helper_path = temp.path().join("geometry.gof");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(
+            &helper_path,
+            "struct Point:\n    x: int\n\nfn Point.total(self: Point) -> int:\n    return self.x\n",
+        )
+        .expect("helper module should be written");
+        fs::write(
+            &main_path,
+            "import geometry\n\nfn Point.total(self: Point) -> int:\n    return self.x + 1\n\nfn main() -> int:\n    point: Point = Point(3)\n    return point.total()\n",
+        )
+        .expect("main module should be written");
+
+        let diagnostics =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
+                .expect_err("duplicate methods should fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3034"));
     }
 }

@@ -1,0 +1,13 @@
+struct Point:
+    x: int
+    y: int
+
+fn Point.total(self: Point, extra: int) -> int:
+    return self.x + self.y + extra
+
+fn Point.weighted(self: Point) -> int:
+    return self.total(self.x)
+
+fn main() -> int:
+    point: Point = Point(3, 4)
+    return point.weighted()

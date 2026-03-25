@@ -56,6 +56,22 @@ fn gof_run_executes_factorial_example() {
 }
 
 #[test]
+fn gof_run_executes_hello_print_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("hello_print.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gof ready"))
+        .stdout(predicate::str::contains("42"))
+        .stdout(predicate::str::contains("7"));
+}
+
+#[test]
 fn gof_run_executes_geometry_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")
@@ -67,6 +83,20 @@ fn gof_run_executes_geometry_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("42"));
+}
+
+#[test]
+fn gof_run_executes_geometry_methods_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("geometry_methods.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10"));
 }
 
 #[test]
@@ -109,6 +139,20 @@ fn gof_run_executes_status_report_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("200"));
+}
+
+#[test]
+fn gof_run_executes_status_match_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("status_match.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("50"));
 }
 
 #[test]
@@ -221,6 +265,31 @@ fn gof_run_executes_local_import_graph() {
         .assert()
         .success()
         .stdout(predicate::str::contains("81"));
+}
+
+#[test]
+fn gof_run_executes_imported_receiver_methods() {
+    let temp = tempdir().expect("tempdir should exist");
+    let helper_path = temp.path().join("geometry.gof");
+    let main_path = temp.path().join("main.gof");
+
+    fs::write(
+        &helper_path,
+        "struct Point:\n    x: int\n    y: int\n\nfn Point.total(self: Point, extra: int) -> int:\n    return self.x + self.y + extra\n",
+    )
+    .expect("helper module should be written");
+    fs::write(
+        &main_path,
+        "import geometry\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.total(5)\n",
+    )
+    .expect("main module should be written");
+
+    gof_command()
+        .arg("run")
+        .arg(&main_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("12"));
 }
 
 #[test]

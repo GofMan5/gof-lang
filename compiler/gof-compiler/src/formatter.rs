@@ -88,6 +88,10 @@ fn format_enum_variant(variant: &EnumVariant, indent_level: usize) -> String {
 }
 
 fn format_function(function: &Function) -> String {
+    let head = match &function.receiver_type {
+        Some(receiver_type) => format!("{}.{}", format_type_ref(receiver_type), function.name),
+        None => function.name.clone(),
+    };
     let params = function
         .params
         .iter()
@@ -100,10 +104,7 @@ fn format_function(function: &Function) -> String {
         .map(|ty| format!(" -> {}", format_type_ref(ty)))
         .unwrap_or_default();
     let body = format_block(&function.body, 1);
-    format!(
-        "fn {}({params}){return_annotation}:\n{body}\n",
-        function.name
-    )
+    format!("fn {head}({params}){return_annotation}:\n{body}\n",)
 }
 
 fn format_param(param: &Param) -> String {
@@ -169,6 +170,21 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             format_expr(condition),
             format_block(body, indent_level + 1)
         ),
+        Stmt::Match { value, arms, .. } => {
+            let arms = arms
+                .iter()
+                .map(|arm| {
+                    format!(
+                        "{}{}:\n{}",
+                        "    ".repeat(indent_level + 1),
+                        format_expr(&arm.pattern),
+                        format_block(&arm.body, indent_level + 2)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("{indent}match {}:\n{arms}", format_expr(value))
+        }
         Stmt::Expr(expr, _) => format!("{indent}{}", format_expr(expr)),
     }
 }
@@ -192,6 +208,16 @@ fn format_expr(expr: &Expr) -> String {
             args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
         ),
         Expr::Field { target, field, .. } => format!("{}.{}", format_expr(target), field),
+        Expr::MethodCall {
+            target,
+            method,
+            args,
+            ..
+        } => format!(
+            "{}.{method}({})",
+            format_expr(target),
+            args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+        ),
         Expr::Index { target, index, .. } => {
             format!("{}[{}]", format_expr(target), format_expr(index))
         }
@@ -295,6 +321,32 @@ mod tests {
         assert_eq!(
             formatted,
             "enum Status:\n    Ready\n    Busy\n\nfn main() -> bool:\n    return Status.Ready == Status.Busy\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_match_arms() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "enum Status:\n    Ready\n    Busy\n\nfn main()->int:\n    current:Status=Status.Ready\n    match current:\n        Status.Ready:\n            return 1\n        Status.Busy:\n            return 2\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> int:\n    current: Status = Status.Ready\n    match current:\n        Status.Ready:\n            return 1\n        Status.Busy:\n            return 2\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_receiver_methods() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "struct Point:\n    x:int\n    y:int\n\nfn Point.total(self:Point, extra:int)->int:\n    return self.x+self.y+extra\n\nfn main()->int:\n    point:Point=Point(3,4)\n    return point.total(5)\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "struct Point:\n    x: int\n    y: int\n\nfn Point.total(self: Point, extra: int) -> int:\n    return self.x + self.y + extra\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.total(5)\n"
         );
     }
 }

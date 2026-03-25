@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use gof_compiler::{
-    CompileMode, Diagnostics, SourceFile, compile_source, format_source, run_module,
+    CompileMode, Diagnostics, SourceFile, compile_source, format_source, run_module_with_output,
 };
 use gof_runtime::profile;
 use std::fs;
@@ -102,8 +102,11 @@ fn build(args: FileInput) -> Result<()> {
 
 fn run_file(args: FileInput) -> Result<()> {
     let source = SourceFile::from_path(&args.input)?;
-    let value = run_module(&source).map_err(|error| render_error(&source, error))?;
-    if let Some(rendered) = value.cli_text() {
+    let result = run_module_with_output(&source).map_err(|error| render_error(&source, error))?;
+    if !result.stdout.is_empty() {
+        print!("{}", result.stdout);
+    }
+    if let Some(rendered) = result.value.cli_text() {
         println!("{rendered}");
     }
     Ok(())

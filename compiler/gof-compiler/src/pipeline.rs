@@ -4,7 +4,7 @@ use crate::cst::CstModule;
 use crate::diagnostics::Diagnostics;
 use crate::formatter::format_module;
 use crate::hir::{HirModule, lower as lower_hir};
-use crate::interpreter::{Value, run as run_interpreter};
+use crate::interpreter::{ExecutionResult, Value, run_with_output as run_interpreter_with_output};
 use crate::mir::{MirModule, lower as lower_mir};
 use crate::module_graph::{load_module_graph, parse_single_source};
 use crate::source::SourceFile;
@@ -67,8 +67,12 @@ pub fn format_source(source: &SourceFile) -> Result<String, Diagnostics> {
 }
 
 pub fn run_module(source: &SourceFile) -> Result<Value, Diagnostics> {
+    Ok(run_module_with_output(source)?.value)
+}
+
+pub fn run_module_with_output(source: &SourceFile) -> Result<ExecutionResult, Diagnostics> {
     let compiled = compile_source(source, CompileMode::Executable)?;
-    run_interpreter(&compiled.ast)
+    run_interpreter_with_output(&compiled.ast)
 }
 
 #[cfg(test)]
@@ -286,6 +290,77 @@ mod tests {
                 .values
                 .iter()
                 .any(|value| matches!(value.instruction, SsaInstruction::ConstEnumVariant { .. }))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_exhaustive_match_over_enums() {
+        let source = SourceFile::new(
+            "match.gof",
+            "enum Status:\n    Ready\n    Busy\n\nfn score(status: Status) -> int:\n    match status:\n        Status.Ready:\n            return 10\n        Status.Busy:\n            return 20\n\nfn main() -> int:\n    return score(Status.Busy)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Int);
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::BeginMatch { .. }))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::MatchArm { .. }))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_receiver_methods() {
+        let source = SourceFile::new(
+            "methods.gof",
+            "struct Point:\n    x: int\n    y: int\n\nfn Point.total(self: Point, extra: int) -> int:\n    return self.x + self.y + extra\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.total(5)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.functions[0].symbol_name, "Point.total");
+        assert!(
+            compiled.ssa.functions[1]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "Point.total"
+                ))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_print_builtin() {
+        let source = SourceFile::new(
+            "print.gof",
+            "fn main() -> int:\n    print(\"gof\")\n    return 1\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert!(matches!(
+            &compiled.typed_hir.functions[0].body[0],
+            crate::typed_hir::TypedStmt::Expr(expr)
+                if matches!(&expr.kind, crate::typed_hir::TypedExprKind::Call { callee, .. } if callee == "print")
+                    && expr.ty == Type::Unit
+        ));
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "print"
+                ))
         );
     }
 }

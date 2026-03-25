@@ -97,6 +97,13 @@ pub enum MirInstruction {
         condition: usize,
     },
     EndWhile,
+    BeginMatch {
+        value: usize,
+    },
+    MatchArm {
+        pattern: usize,
+    },
+    EndMatch,
     Eval {
         value: usize,
     },
@@ -116,7 +123,7 @@ fn lower_function(function: &TypedFunction) -> MirFunction {
     builder.lower_block(&function.body);
 
     MirFunction {
-        name: function.name.clone(),
+        name: function.symbol_name.clone(),
         params: function
             .params
             .iter()
@@ -189,6 +196,16 @@ impl MirBuilder {
                     .push(MirInstruction::BeginWhile { condition });
                 self.lower_block(body);
                 self.instructions.push(MirInstruction::EndWhile);
+            }
+            TypedStmt::Match { value, arms } => {
+                let value = self.lower_expr(value);
+                self.instructions.push(MirInstruction::BeginMatch { value });
+                for arm in arms {
+                    let pattern = self.lower_expr(&arm.pattern);
+                    self.instructions.push(MirInstruction::MatchArm { pattern });
+                    self.lower_block(&arm.body);
+                }
+                self.instructions.push(MirInstruction::EndMatch);
             }
             TypedStmt::Expr(expr) => {
                 let value = self.lower_expr(expr);
@@ -283,6 +300,22 @@ impl MirBuilder {
                     dest,
                     callee: callee.clone(),
                     args,
+                });
+                dest
+            }
+            TypedExprKind::MethodCall {
+                target,
+                symbol_name,
+                args,
+                ..
+            } => {
+                let mut call_args = vec![self.lower_expr(target)];
+                call_args.extend(args.iter().map(|arg| self.lower_expr(arg)));
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::Call {
+                    dest,
+                    callee: symbol_name.clone(),
+                    args: call_args,
                 });
                 dest
             }

@@ -16,6 +16,7 @@ pub struct HirModule {
 #[derive(Debug, Clone, Serialize)]
 pub struct HirFunction {
     pub id: usize,
+    pub receiver_type: Option<HirTypeRef>,
     pub name: String,
     pub params: Vec<HirParam>,
     pub return_type: Option<HirTypeRef>,
@@ -89,7 +90,19 @@ pub enum HirStmt {
         body: Vec<HirStmt>,
         span: Span,
     },
+    Match {
+        value: HirExpr,
+        arms: Vec<HirMatchArm>,
+        span: Span,
+    },
     Expr(HirExpr, Span),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirMatchArm {
+    pub pattern: HirExpr,
+    pub body: Vec<HirStmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -110,6 +123,12 @@ pub enum HirExpr {
     Field {
         target: Box<HirExpr>,
         field: String,
+        span: Span,
+    },
+    MethodCall {
+        target: Box<HirExpr>,
+        method: String,
+        args: Vec<HirExpr>,
         span: Span,
     },
     Index {
@@ -148,6 +167,7 @@ pub fn lower(module: &Module) -> HirModule {
             .enumerate()
             .map(|(id, function)| HirFunction {
                 id,
+                receiver_type: function.receiver_type.as_ref().map(lower_type_ref),
                 name: function.name.clone(),
                 params: function.params.iter().map(lower_param).collect(),
                 return_type: function.return_type.as_ref().map(lower_type_ref),
@@ -245,7 +265,20 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
             body: body.iter().map(lower_stmt).collect(),
             span: *span,
         },
+        Stmt::Match { value, arms, span } => HirStmt::Match {
+            value: lower_expr(value),
+            arms: arms.iter().map(lower_match_arm).collect(),
+            span: *span,
+        },
         Stmt::Expr(expr, span) => HirStmt::Expr(lower_expr(expr), *span),
+    }
+}
+
+fn lower_match_arm(arm: &crate::ast::MatchArm) -> HirMatchArm {
+    HirMatchArm {
+        pattern: lower_expr(&arm.pattern),
+        body: arm.body.iter().map(lower_stmt).collect(),
+        span: arm.span,
     }
 }
 
@@ -271,6 +304,17 @@ fn lower_expr(expr: &Expr) -> HirExpr {
         } => HirExpr::Field {
             target: Box::new(lower_expr(target)),
             field: field.clone(),
+            span: *span,
+        },
+        Expr::MethodCall {
+            target,
+            method,
+            args,
+            span,
+        } => HirExpr::MethodCall {
+            target: Box::new(lower_expr(target)),
+            method: method.clone(),
+            args: args.iter().map(lower_expr).collect(),
             span: *span,
         },
         Expr::Index {
@@ -314,6 +358,7 @@ impl HirExpr {
             | HirExpr::List { span, .. }
             | HirExpr::Call { span, .. }
             | HirExpr::Field { span, .. }
+            | HirExpr::MethodCall { span, .. }
             | HirExpr::Index { span, .. }
             | HirExpr::Go { span, .. }
             | HirExpr::Await { span, .. }

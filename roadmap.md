@@ -27,9 +27,9 @@ The real goal is not feature count. Every phase of language development must:
 
 ## Active Focus
 
-- `[~]` M3: richer control flow and data modeling
-- Immediate mandatory result: `match` with safe branching and an exhaustiveness baseline
-- Second mandatory result: methods or an equivalent clean receiver story
+- `[~]` M4: minimal useful standard library
+- Immediate mandatory result: keep stdlib output small, explicit, and allocation-transparent
+- Second mandatory result: richer comparison rules without semantic mud
 - Parallel operational result: release and install ergonomics that make `gof` easy to build, package, install, and update
 
 ## Milestone Map
@@ -80,15 +80,15 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` structs as the first user-defined aggregate type
 - `[x]` logical operators with short-circuit behavior
 - `[x]` enums with a clear variant model
-- `[ ]` branching over states with `match`
+- `[x]` branching over states with `match`
 - `[ ]` richer equality and comparison rules with explicit semantics
-- `[ ]` methods or an equivalent clean receiver story
+- `[x]` methods or an equivalent clean receiver story
 - Checkpoints:
 - `[x]` CP-M3-1: structs with constructor, field access, and imports
 - `[x]` CP-M3-2: boolean logic with strict type checking and short-circuit behavior
 - `[x]` CP-M3-3: enums with unit variants, equality, type annotations, and diagnostics
-- `[ ]` CP-M3-4: `match` over enum values with an exhaustiveness baseline
-- `[ ]` CP-M3-5: receiver or method model without namespace hacks
+- `[x]` CP-M3-4: `match` over enum values with an exhaustiveness baseline
+- `[x]` CP-M3-5: receiver or method model without namespace hacks
 - Exit criteria:
 - user-defined data types can model real domain states
 - branching over state is explicit and safe
@@ -96,13 +96,13 @@ The real goal is not feature count. Every phase of language development must:
 
 ### M4. Minimal Useful Standard Library
 
-- `[ ]` output primitive (`print` or equivalent)
+- `[x]` output primitive (`print` or equivalent)
 - `[ ]` basic string helpers
 - `[ ]` basic list helpers that do not hide allocations
 - `[ ]` predictable numeric and conversion utilities
 - `[ ]` minimal testing and assert helpers inside the language surface
 - Checkpoints:
-- `[ ]` CP-M4-1: I/O baseline for CLI apps
+- `[~]` CP-M4-1: I/O baseline for CLI apps
 - `[ ]` CP-M4-2: zero-surprise helper APIs for strings and lists
 - `[ ]` CP-M4-3: stdlib docs and contract tests
 - Exit criteria:
@@ -165,18 +165,12 @@ The real goal is not feature count. Every phase of language development must:
 
 ## Immediate Execution Queue
 
-1. `[ ]` Implement `match` baseline:
-- syntax
-- enum-oriented matching
-- exhaustiveness baseline
-- diagnostics for missing or duplicate arms
+1. `[ ]` Expand the minimal stdlib beyond raw output:
+- basic string helpers with explicit contracts
+- basic list helpers without hidden allocations
+- stdlib docs and contract tests
 
-2. `[ ]` Add minimal stdlib output:
-- explicit output function
-- tests and examples
-- no hidden global runtime magic
-
-3. `[ ]` Harden developer distribution flow:
+2. `[ ]` Harden developer distribution flow:
 - tagged releases documented in README
 - install and update path verified on all supported release targets
 - release workflow stays aligned with packaged asset naming

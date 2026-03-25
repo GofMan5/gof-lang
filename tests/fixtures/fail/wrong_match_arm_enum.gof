@@ -1,0 +1,13 @@
+enum Status:
+    Ready
+
+enum Mode:
+    Fast
+
+fn main() -> int:
+    current: Status = Status.Ready
+    match current:
+        Mode.Fast:
+            return 1
+        Status.Ready:
+            return 2

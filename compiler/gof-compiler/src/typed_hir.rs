@@ -1,6 +1,8 @@
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
-use crate::hir::{HirEnum, HirExpr, HirFunction, HirModule, HirStmt, HirStruct, HirTypeRef};
+use crate::hir::{
+    HirEnum, HirExpr, HirFunction, HirMatchArm, HirModule, HirStmt, HirStruct, HirTypeRef,
+};
 use crate::source::Span;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -57,6 +59,8 @@ pub struct TypedModule {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedFunction {
     pub id: usize,
+    pub symbol_name: String,
+    pub receiver_type: Option<Type>,
     pub name: String,
     pub params: Vec<TypedParam>,
     pub return_type: Type,
@@ -113,7 +117,17 @@ pub enum TypedStmt {
         condition: TypedExpr,
         body: Vec<TypedStmt>,
     },
+    Match {
+        value: TypedExpr,
+        arms: Vec<TypedMatchArm>,
+    },
     Expr(TypedExpr),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedMatchArm {
+    pub pattern: TypedExpr,
+    pub body: Vec<TypedStmt>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -134,6 +148,12 @@ pub enum TypedExprKind {
     },
     Call {
         callee: String,
+        args: Vec<TypedExpr>,
+    },
+    MethodCall {
+        target: Box<TypedExpr>,
+        method: String,
+        symbol_name: String,
         args: Vec<TypedExpr>,
     },
     StructInit {
@@ -172,6 +192,8 @@ pub enum TypedExprKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FunctionSignature {
+    symbol_name: String,
+    receiver_type: Option<String>,
     arity: usize,
     param_types: Vec<Type>,
     declared_return_type: Option<Type>,
@@ -276,6 +298,7 @@ struct ReturnAccumulator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CallKind {
     BuiltinLen,
+    BuiltinPrint,
     Function,
     Struct,
     Enum,
@@ -314,45 +337,69 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
             )
         })
         .collect::<HashMap<_, _>>();
-    let mut signatures = module
-        .functions
-        .iter()
-        .map(|function| {
-            let declared_return_type = resolve_type_annotation(
-                function.return_type.as_ref(),
+    let mut signatures = HashMap::new();
+    let mut method_signatures = HashMap::new();
+    for function in &module.functions {
+        let declared_return_type = resolve_type_annotation(
+            function.return_type.as_ref(),
+            &known_structs,
+            &known_enums,
+            &function.source_path,
+            &mut diagnostics,
+        );
+        let declared_return_type = if function.return_type.is_some() {
+            Some(declared_return_type)
+        } else {
+            None
+        };
+        let param_types = function
+            .params
+            .iter()
+            .map(|param| {
+                resolve_type_annotation(
+                    param.ty.as_ref(),
+                    &known_structs,
+                    &known_enums,
+                    &function.source_path,
+                    &mut diagnostics,
+                )
+            })
+            .collect::<Vec<_>>();
+        let symbol_name = function_symbol_from_hir(function);
+
+        if let Some(receiver_type) = &function.receiver_type {
+            validate_method_contract(
+                function,
+                receiver_type,
+                &param_types,
                 &known_structs,
-                &known_enums,
-                &function.source_path,
                 &mut diagnostics,
             );
-            let declared_return_type = if function.return_type.is_some() {
-                Some(declared_return_type)
-            } else {
-                None
-            };
-            (
-                function.name.clone(),
+            method_signatures.insert(
+                (receiver_type.name.clone(), function.name.clone()),
                 FunctionSignature {
+                    symbol_name,
+                    receiver_type: Some(receiver_type.name.clone()),
                     arity: function.params.len(),
-                    param_types: function
-                        .params
-                        .iter()
-                        .map(|param| {
-                            resolve_type_annotation(
-                                param.ty.as_ref(),
-                                &known_structs,
-                                &known_enums,
-                                &function.source_path,
-                                &mut diagnostics,
-                            )
-                        })
-                        .collect(),
+                    param_types,
                     declared_return_type: declared_return_type.clone(),
                     return_type: declared_return_type.unwrap_or(Type::Unknown),
                 },
-            )
-        })
-        .collect::<HashMap<_, _>>();
+            );
+        } else {
+            signatures.insert(
+                function.name.clone(),
+                FunctionSignature {
+                    symbol_name,
+                    receiver_type: None,
+                    arity: function.params.len(),
+                    param_types,
+                    declared_return_type: declared_return_type.clone(),
+                    return_type: declared_return_type.unwrap_or(Type::Unknown),
+                },
+            );
+        }
+    }
 
     for _ in 0..=module.functions.len() {
         let typed_functions = module
@@ -362,6 +409,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                 lower_function(
                     function,
                     &signatures,
+                    &method_signatures,
                     &known_structs,
                     &known_enums,
                     &struct_signatures,
@@ -373,9 +421,15 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
 
         let mut changed = false;
         for function in &typed_functions {
-            let signature = signatures
-                .get_mut(&function.name)
-                .expect("all lowered functions must have a matching signature entry");
+            let signature = if let Some(Type::Struct(receiver_type)) = &function.receiver_type {
+                method_signatures
+                    .get_mut(&(receiver_type.clone(), function.name.clone()))
+                    .expect("all lowered methods must have a matching signature entry")
+            } else {
+                signatures
+                    .get_mut(&function.name)
+                    .expect("all lowered functions must have a matching signature entry")
+            };
             if signature.return_type != function.return_type {
                 signature.return_type = function.return_type.clone();
                 changed = true;
@@ -404,6 +458,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
             lower_function(
                 function,
                 &signatures,
+                &method_signatures,
                 &known_structs,
                 &known_enums,
                 &struct_signatures,
@@ -424,18 +479,104 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
     }
 }
 
+fn function_symbol_from_hir(function: &HirFunction) -> String {
+    match &function.receiver_type {
+        Some(receiver_type) => format!("{}.{}", receiver_type.name, function.name),
+        None => function.name.clone(),
+    }
+}
+
+fn validate_method_contract(
+    function: &HirFunction,
+    receiver_type: &HirTypeRef,
+    param_types: &[Type],
+    known_structs: &HashSet<String>,
+    diagnostics: &mut Diagnostics,
+) {
+    if !known_structs.contains(&receiver_type.name) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3035",
+                format!(
+                    "method `{}` must target a known struct receiver",
+                    function_symbol_from_hir(function)
+                ),
+                format!(
+                    "`{}` is not a declared struct in this module graph",
+                    receiver_type.name
+                ),
+                receiver_type.span,
+            )
+            .with_fix_it("declare the struct first or move this method onto a known struct type")
+            .with_source_path(function.source_path.clone()),
+        );
+        return;
+    }
+
+    let Some(first_param) = function.params.first() else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3035",
+                format!(
+                    "method `{}` must declare an explicit receiver parameter",
+                    function_symbol_from_hir(function)
+                ),
+                "the first parameter must carry the same struct type as the declared receiver",
+                receiver_type.span,
+            )
+            .with_fix_it(format!(
+                "add a first parameter like `self: {}` to this method",
+                receiver_type.name
+            ))
+            .with_source_path(function.source_path.clone()),
+        );
+        return;
+    };
+
+    let actual_receiver_type = param_types.first().cloned().unwrap_or(Type::Unknown);
+    if actual_receiver_type != Type::Struct(receiver_type.name.clone()) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3035",
+                format!(
+                    "method `{}` has an incompatible receiver parameter",
+                    function_symbol_from_hir(function)
+                ),
+                format!(
+                    "the first parameter resolves to `{}`, but the method receiver is `{}`",
+                    actual_receiver_type.display_name(),
+                    receiver_type.name
+                ),
+                first_param.span,
+            )
+            .with_fix_it(format!(
+                "annotate the first parameter as `{}`",
+                receiver_type.name
+            ))
+            .with_source_path(function.source_path.clone()),
+        );
+    }
+}
+
 fn lower_function(
     function: &HirFunction,
     signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
 ) -> TypedFunction {
-    let signature = signatures
-        .get(&function.name)
-        .expect("each function should have a signature during lowering");
+    let signature = if let Some(receiver_type) = &function.receiver_type {
+        method_signatures
+            .get(&(receiver_type.name.clone(), function.name.clone()))
+            .expect("each method should have a signature during lowering")
+    } else {
+        signatures
+            .get(&function.name)
+            .expect("each function should have a signature during lowering")
+    };
     let params = function
         .params
         .iter()
@@ -450,6 +591,7 @@ fn lower_function(
         &function.body,
         &mut scopes,
         signatures,
+        method_signatures,
         known_structs,
         known_enums,
         struct_signatures,
@@ -489,6 +631,11 @@ fn lower_function(
 
     TypedFunction {
         id: function.id,
+        symbol_name: signature.symbol_name.clone(),
+        receiver_type: signature
+            .receiver_type
+            .as_ref()
+            .map(|receiver_type| Type::Struct(receiver_type.clone())),
         name: function.name.clone(),
         params,
         return_type,
@@ -604,6 +751,7 @@ fn lower_block(
     stmts: &[HirStmt],
     scopes: &mut ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
@@ -623,6 +771,7 @@ fn lower_block(
                 stmt,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -644,6 +793,7 @@ fn lower_stmt(
     stmt: &HirStmt,
     scopes: &mut ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
@@ -656,6 +806,7 @@ fn lower_stmt(
             expr,
             scopes,
             signatures,
+            method_signatures,
             known_structs,
             known_enums,
             struct_signatures,
@@ -687,6 +838,7 @@ fn lower_stmt(
                 value,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -736,6 +888,7 @@ fn lower_stmt(
                 value,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -801,6 +954,7 @@ fn lower_stmt(
                 condition,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -813,6 +967,7 @@ fn lower_stmt(
                 then_body,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -825,6 +980,7 @@ fn lower_stmt(
                 else_body,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -848,6 +1004,7 @@ fn lower_stmt(
                 condition,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -860,6 +1017,7 @@ fn lower_stmt(
                 body,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -870,10 +1028,40 @@ fn lower_stmt(
             );
             TypedStmt::While { condition, body }
         }
+        HirStmt::Match { value, arms, span } => {
+            let value = lower_expr(
+                value,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+            );
+            let arms = lower_match_arms(
+                arms,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+                &value,
+                *span,
+            );
+            TypedStmt::Match { value, arms }
+        }
         HirStmt::Expr(expr, _) => TypedStmt::Expr(lower_expr(
             expr,
             scopes,
             signatures,
+            method_signatures,
             known_structs,
             known_enums,
             struct_signatures,
@@ -881,6 +1069,187 @@ fn lower_stmt(
             diagnostics,
             source_path,
         )),
+    }
+}
+
+fn lower_match_arms(
+    arms: &[HirMatchArm],
+    scopes: &mut ScopeStack,
+    signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+    value: &TypedExpr,
+    span: Span,
+) -> Vec<TypedMatchArm> {
+    let match_enum_name = match &value.ty {
+        Type::Enum(name) => Some(name.clone()),
+        Type::Unknown => None,
+        other => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3032",
+                    "`match` currently requires an enum value",
+                    format!("this match target resolves to `{}`", other.display_name()),
+                    value.span,
+                )
+                .with_fix_it("match over a value whose type is a known enum")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            None
+        }
+    };
+
+    let mut seen_variants = HashSet::new();
+    let typed_arms = arms
+        .iter()
+        .map(|arm| {
+            let pattern = lower_expr(
+                &arm.pattern,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+            );
+            validate_match_pattern(
+                &pattern,
+                match_enum_name.as_deref(),
+                &mut seen_variants,
+                diagnostics,
+                source_path,
+            );
+            let body = lower_block(
+                &arm.body,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                true,
+                source_path,
+            );
+            TypedMatchArm { pattern, body }
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(enum_name) = match_enum_name {
+        ensure_match_exhaustive(
+            &enum_name,
+            &seen_variants,
+            enum_signatures,
+            diagnostics,
+            span,
+            source_path,
+        );
+    }
+
+    typed_arms
+}
+
+fn validate_match_pattern(
+    pattern: &TypedExpr,
+    match_enum_name: Option<&str>,
+    seen_variants: &mut HashSet<String>,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    let Some(expected_enum) = match_enum_name else {
+        return;
+    };
+
+    let TypedExprKind::EnumVariant { enum_name, variant } = &pattern.kind else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3031",
+                "match arms must use enum variants",
+                "each match arm pattern must be written as `EnumName.Variant`",
+                pattern.span,
+            )
+            .with_fix_it("replace this pattern with a unit enum variant like `Status.Ready`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    };
+
+    if enum_name != expected_enum {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3031",
+                "match arm uses a variant from a different enum",
+                format!(
+                    "this match targets `{expected_enum}`, but the arm pattern belongs to `{enum_name}`"
+                ),
+                pattern.span,
+            )
+            .with_fix_it(format!("use a `{expected_enum}.Variant` pattern here"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !seen_variants.insert(variant.clone()) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3030",
+                format!("duplicate match arm for `{expected_enum}.{variant}`"),
+                "each unit enum variant can appear only once in a match over the same enum",
+                pattern.span,
+            )
+            .with_fix_it("remove the duplicate arm or replace it with another enum variant")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn ensure_match_exhaustive(
+    enum_name: &str,
+    seen_variants: &HashSet<String>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+    source_path: &Path,
+) {
+    let Some(signature) = enum_signatures.get(enum_name) else {
+        return;
+    };
+
+    let missing = signature
+        .variants
+        .iter()
+        .filter(|variant| !seen_variants.contains(&variant.name))
+        .map(|variant| variant.name.clone())
+        .collect::<Vec<_>>();
+
+    if !missing.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3033",
+                format!("non-exhaustive match over `{enum_name}`"),
+                format!(
+                    "missing arm(s): {}",
+                    missing
+                        .iter()
+                        .map(|variant| format!("{enum_name}.{variant}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                span,
+            )
+            .with_fix_it("add match arms for every remaining enum variant")
+            .with_source_path(source_path.to_path_buf()),
+        );
     }
 }
 
@@ -903,6 +1272,7 @@ fn lower_expr(
     expr: &HirExpr,
     scopes: &ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
@@ -934,6 +1304,7 @@ fn lower_expr(
                         item,
                         scopes,
                         signatures,
+                        method_signatures,
                         known_structs,
                         known_enums,
                         struct_signatures,
@@ -981,6 +1352,7 @@ fn lower_expr(
                         arg,
                         scopes,
                         signatures,
+                        method_signatures,
                         known_structs,
                         known_enums,
                         struct_signatures,
@@ -1008,6 +1380,7 @@ fn lower_expr(
                 kind: match call_kind {
                     CallKind::Function
                     | CallKind::BuiltinLen
+                    | CallKind::BuiltinPrint
                     | CallKind::Enum
                     | CallKind::Unknown => TypedExprKind::Call {
                         callee: callee.clone(),
@@ -1052,6 +1425,7 @@ fn lower_expr(
                 target,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -1076,6 +1450,61 @@ fn lower_expr(
                 span: *span,
             }
         }
+        HirExpr::MethodCall {
+            target,
+            method,
+            args,
+            span,
+        } => {
+            let target = lower_expr(
+                target,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+            );
+            let typed_args = args
+                .iter()
+                .map(|arg| {
+                    lower_expr(
+                        arg,
+                        scopes,
+                        signatures,
+                        method_signatures,
+                        known_structs,
+                        known_enums,
+                        struct_signatures,
+                        enum_signatures,
+                        diagnostics,
+                        source_path,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (symbol_name, ty) = resolve_method_call(
+                &target,
+                method,
+                &typed_args,
+                *span,
+                method_signatures,
+                diagnostics,
+                source_path,
+            );
+            TypedExpr {
+                kind: TypedExprKind::MethodCall {
+                    target: Box::new(target),
+                    method: method.clone(),
+                    symbol_name,
+                    args: typed_args,
+                },
+                ty,
+                span: *span,
+            }
+        }
         HirExpr::Index {
             target,
             index,
@@ -1085,6 +1514,7 @@ fn lower_expr(
                 target,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -1096,6 +1526,7 @@ fn lower_expr(
                 index,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -1127,6 +1558,7 @@ fn lower_expr(
                             arg,
                             scopes,
                             signatures,
+                            method_signatures,
                             known_structs,
                             known_enums,
                             struct_signatures,
@@ -1177,6 +1609,7 @@ fn lower_expr(
                     other,
                     scopes,
                     signatures,
+                    method_signatures,
                     known_structs,
                     known_enums,
                     struct_signatures,
@@ -1210,6 +1643,7 @@ fn lower_expr(
                 value,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -1248,6 +1682,7 @@ fn lower_expr(
                 value,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -1271,6 +1706,7 @@ fn lower_expr(
                 lhs,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -1282,6 +1718,7 @@ fn lower_expr(
                 rhs,
                 scopes,
                 signatures,
+                method_signatures,
                 known_structs,
                 known_enums,
                 struct_signatures,
@@ -1317,6 +1754,9 @@ fn validate_call(
     match call_kind {
         CallKind::BuiltinLen => {
             validate_len_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinPrint => {
+            validate_print_call(args, span, diagnostics, source_path);
         }
         CallKind::Function => match signatures.get(callee) {
             Some(signature) if signature.arity == args.len() => {
@@ -1414,6 +1854,94 @@ fn validate_call(
     }
 }
 
+fn resolve_method_call(
+    target: &TypedExpr,
+    method: &str,
+    args: &[TypedExpr],
+    span: Span,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> (String, Type) {
+    let receiver_name = match &target.ty {
+        Type::Struct(name) => Some(name.clone()),
+        Type::Unknown => None,
+        other => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3037",
+                    format!("method call `{method}` requires a struct receiver"),
+                    format!("this target resolves to `{}`", other.display_name()),
+                    target.span,
+                )
+                .with_fix_it("call methods only on struct values")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            None
+        }
+    };
+
+    let Some(receiver_name) = receiver_name else {
+        return (format!("_error.{method}"), Type::Unknown);
+    };
+
+    let Some(signature) = method_signatures.get(&(receiver_name.clone(), method.to_string()))
+    else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3036",
+                format!("unknown method `{method}` on `{receiver_name}`"),
+                "method calls currently resolve only to receiver methods declared as `fn TypeName.method(...)`",
+                span,
+            )
+            .with_fix_it("declare the method on the struct or call an existing method name")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return (format!("{receiver_name}.{method}"), Type::Unknown);
+    };
+
+    let expected_arity = signature.arity.saturating_sub(1);
+    if expected_arity != args.len() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{receiver_name}.{method}`"),
+                format!("expected {expected_arity} argument(s), got {}", args.len()),
+                span,
+            )
+            .with_fix_it("pass the exact number of parameters declared after the receiver")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    } else {
+        for (index, (expected, actual)) in signature
+            .param_types
+            .iter()
+            .skip(1)
+            .zip(args.iter())
+            .enumerate()
+        {
+            ensure_type_compatibility(
+                expected,
+                &actual.ty,
+                actual.span,
+                diagnostics,
+                format!(
+                    "argument {} for `{receiver_name}.{method}` has incompatible type",
+                    index + 1
+                ),
+                format!(
+                    "parameter expects `{}`, but the argument resolves to `{}`",
+                    expected.display_name(),
+                    actual.ty.display_name()
+                ),
+                source_path,
+            );
+        }
+    }
+
+    (signature.symbol_name.clone(), signature.return_type.clone())
+}
+
 fn resolve_type_annotation(
     ty: Option<&HirTypeRef>,
     known_structs: &HashSet<String>,
@@ -1458,6 +1986,8 @@ fn resolve_call_kind(
 ) -> CallKind {
     if callee == "len" {
         CallKind::BuiltinLen
+    } else if callee == "print" {
+        CallKind::BuiltinPrint
     } else if signatures.contains_key(callee) {
         CallKind::Function
     } else if struct_signatures.contains_key(callee) {
@@ -1477,6 +2007,7 @@ fn call_return_type(
 ) -> Type {
     match call_kind {
         CallKind::BuiltinLen => Type::Int,
+        CallKind::BuiltinPrint => Type::Unit,
         CallKind::Function => signatures
             .get(callee)
             .map(|signature| signature.return_type.clone())
@@ -1704,6 +2235,17 @@ fn collect_return_types(
             }
             TypedStmt::While { body, .. } => {
                 collect_return_types(function_name, body, returns, diagnostics, source_path);
+            }
+            TypedStmt::Match { arms, .. } => {
+                for arm in arms {
+                    collect_return_types(
+                        function_name,
+                        &arm.body,
+                        returns,
+                        diagnostics,
+                        source_path,
+                    );
+                }
             }
             TypedStmt::Bind { .. } | TypedStmt::Assign { .. } | TypedStmt::Expr(_) => {}
         }
@@ -1939,6 +2481,51 @@ fn validate_len_call(
     }
 }
 
+fn validate_print_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `print`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `print` with exactly one printable value")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    let arg = &args[0];
+    if !is_printable_type(&arg.ty) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3038",
+                "`print` requires a printable value",
+                format!("this argument resolves to `{}`", arg.ty.display_name()),
+                arg.span,
+            )
+            .with_fix_it("print ints, strings, bools, lists, structs, or enums instead")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn is_printable_type(ty: &Type) -> bool {
+    match ty {
+        Type::Int | Type::String | Type::Bool | Type::Struct(_) | Type::Enum(_) | Type::Unknown => {
+            true
+        }
+        Type::List(inner) => !matches!(inner.as_ref(), Type::Task(_) | Type::Unit),
+        Type::Task(_) | Type::Unit => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Type, TypedExprKind, TypedStmt, lower};
@@ -2091,6 +2678,32 @@ mod tests {
     }
 
     #[test]
+    fn supports_print_builtin_with_unit_return() {
+        let module = lower_source("fn main() -> int:\n    print(\"gof\")\n    return 1\n")
+            .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Expr(expr) => {
+                assert_eq!(expr.ty, Type::Unit);
+                assert!(
+                    matches!(&expr.kind, TypedExprKind::Call { callee, .. } if callee == "print")
+                );
+            }
+            other => panic!("expected print expression statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_non_printable_print_operands() {
+        let diagnostics = lower_source(
+            "fn noop() -> unit:\n    print(\"side\")\n    return print(\"ok\")\n\nfn main() -> int:\n    print(noop())\n    return 1\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3038"]);
+    }
+
+    #[test]
     fn supports_struct_contracts_and_field_access() {
         let module = lower_source(
             "struct Point:\n    x: int\n    y: int\n\nfn magnitude(point: Point) -> int:\n    return point.x + point.y\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return magnitude(point)\n",
@@ -2184,6 +2797,115 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3004"]);
+    }
+
+    #[test]
+    fn supports_exhaustive_match_over_enum_variants() {
+        let module = lower_source(
+            "enum Status:\n    Ready\n    Busy\n\nfn score(status: Status) -> int:\n    match status:\n        Status.Ready:\n            return 1\n        Status.Busy:\n            return 2\n\nfn main() -> int:\n    return score(Status.Busy)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Match { value, arms } => {
+                assert_eq!(value.ty, Type::Enum("Status".to_string()));
+                assert_eq!(arms.len(), 2);
+            }
+            other => panic!("expected match statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_match_on_non_enum_values() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    value = 1\n    match value:\n        value:\n            return 1\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3032"]);
+    }
+
+    #[test]
+    fn rejects_non_exhaustive_match_over_enum() {
+        let diagnostics = lower_source(
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> int:\n    current: Status = Status.Ready\n    match current:\n        Status.Ready:\n            return 1\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3033"]);
+    }
+
+    #[test]
+    fn rejects_duplicate_match_arms() {
+        let diagnostics = lower_source(
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> int:\n    current: Status = Status.Ready\n    match current:\n        Status.Ready:\n            return 1\n        Status.Ready:\n            return 2\n        Status.Busy:\n            return 3\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3030"]);
+    }
+
+    #[test]
+    fn rejects_match_arms_from_different_enums() {
+        let diagnostics = lower_source(
+            "enum Status:\n    Ready\n\nenum Mode:\n    Fast\n\nfn main() -> int:\n    current: Status = Status.Ready\n    match current:\n        Mode.Fast:\n            return 1\n        Status.Ready:\n            return 2\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3031"]);
+    }
+
+    #[test]
+    fn supports_receiver_methods_on_structs() {
+        let module = lower_source(
+            "struct Point:\n    x: int\n    y: int\n\nfn Point.total(self: Point, extra: int) -> int:\n    return self.x + self.y + extra\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.total(5)\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(
+            module.functions[0].receiver_type,
+            Some(Type::Struct("Point".to_string()))
+        );
+        assert_eq!(module.functions[0].symbol_name, "Point.total");
+
+        match &module.functions[1].body[1] {
+            TypedStmt::Return(expr) => match &expr.kind {
+                TypedExprKind::MethodCall { symbol_name, .. } => {
+                    assert_eq!(symbol_name, "Point.total");
+                    assert_eq!(expr.ty, Type::Int);
+                }
+                other => panic!("expected method call, got {other:?}"),
+            },
+            other => panic!("expected return, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_method_receiver_contract() {
+        let diagnostics = lower_source(
+            "struct Point:\n    x: int\n\nfn Point.total(self: int) -> int:\n    return self\n\nfn main() -> int:\n    point: Point = Point(3)\n    return point.total()\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3035"]);
+    }
+
+    #[test]
+    fn rejects_unknown_methods_on_structs() {
+        let diagnostics = lower_source(
+            "struct Point:\n    x: int\n\nfn main() -> int:\n    point: Point = Point(3)\n    return point.total()\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3036"]);
+    }
+
+    #[test]
+    fn rejects_method_calls_on_non_struct_values() {
+        let diagnostics = lower_source("fn main() -> int:\n    return 42.total()\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3037"]);
     }
 
     #[test]

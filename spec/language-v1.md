@@ -67,9 +67,13 @@ The bootstrap compiler in this repository currently supports:
 - named function calls
 - struct constructor calls through `TypeName(...)`
 - enum variant references through `EnumName.Variant`
+- statement-level exhaustive `match` over enum values
+- struct receiver methods through `fn TypeName.method(...)`
 - field access through `value.field`
+- method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`
 - builtin `len(...)` for lists and strings
+- builtin `print(...)` for one printable value
 
 ## Bootstrap binding rules
 
@@ -88,16 +92,26 @@ The bootstrap compiler in this repository currently supports:
 - duplicate struct names across the module graph are rejected
 - duplicate enum names across the module graph are rejected
 - struct, enum, and function names cannot conflict at top level because constructors, type references, and enum variant access must stay unambiguous
-- function calls currently target only top-level named functions
+- plain function calls currently target only top-level named functions
 - struct constructors currently use positional field order from the declaration
 - unit enum variants are values and currently do not carry payloads
 - enum equality currently works only between values of the same enum type
 - enum declarations currently require unique variant names
 - enum variant references currently require a known variant declared on the target enum
+- `match value:` currently requires `value` to resolve to a known enum
+- each `match` arm currently must use `EnumName.Variant`
+- each unit variant can appear at most once inside one `match`
+- `match` currently requires an arm for every unit variant declared on the enum
 - field access currently requires a struct target and a known field name
+- methods currently require an explicit receiver declaration `fn TypeName.method(...)`
+- method declarations currently require a known struct receiver type
+- the first method parameter currently must resolve to the same struct type as the declared receiver
+- method calls currently require a struct receiver value and a known method on that struct
 - `and` and `or` currently require boolean operands and preserve short-circuit evaluation
 - `not` currently requires a boolean operand
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
+- `print(value)` is currently a builtin recognized by the compiler and evaluator
+- `print` currently accepts exactly one printable value and returns `unit`
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires a list target and an integer index
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result

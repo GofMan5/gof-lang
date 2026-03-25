@@ -15,5 +15,8 @@ pub mod token;
 pub mod typed_hir;
 
 pub use diagnostics::{Diagnostic, Diagnostics, Severity};
-pub use pipeline::{CompileMode, CompiledModule, compile_source, format_source, run_module};
+pub use interpreter::ExecutionResult;
+pub use pipeline::{
+    CompileMode, CompiledModule, compile_source, format_source, run_module, run_module_with_output,
+};
 pub use source::{SourceFile, Span};

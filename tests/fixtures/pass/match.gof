@@ -1,0 +1,13 @@
+enum Status:
+    Ready
+    Busy
+
+fn score(status: Status) -> int:
+    match status:
+        Status.Ready:
+            return 10
+        Status.Busy:
+            return 20
+
+fn main() -> int:
+    return score(Status.Busy)

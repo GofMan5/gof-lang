@@ -1,0 +1,7 @@
+fn noop() -> unit:
+    print("side")
+    return print("ok")
+
+fn main() -> int:
+    print(noop())
+    return 1

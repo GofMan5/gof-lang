@@ -21,6 +21,7 @@ pub struct Import {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Function {
+    pub receiver_type: Option<TypeRef>,
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<TypeRef>,
@@ -97,7 +98,19 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+    Match {
+        value: Expr,
+        arms: Vec<MatchArm>,
+        span: Span,
+    },
     Expr(Expr, Span),
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MatchArm {
+    pub pattern: Expr,
+    pub body: Vec<Stmt>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -118,6 +131,12 @@ pub enum Expr {
     Field {
         target: Box<Expr>,
         field: String,
+        span: Span,
+    },
+    MethodCall {
+        target: Box<Expr>,
+        method: String,
+        args: Vec<Expr>,
         span: Span,
     },
     Index {
@@ -231,7 +250,19 @@ impl<'a> Parser<'a> {
 
     fn parse_function(&mut self) -> Function {
         let start = self.expect(TokenDiscriminant::Fn, "expected `fn` to start a function");
-        let name = self.expect_ident("expected a function name after `fn`");
+        let head = self.expect_ident("expected a function name after `fn`");
+        let head_span = self.previous().span;
+        let (receiver_type, name) = if self.matches(TokenDiscriminant::Dot) {
+            (
+                Some(TypeRef {
+                    name: head,
+                    span: head_span,
+                }),
+                self.expect_ident("expected a method name after `TypeName.`"),
+            )
+        } else {
+            (None, head)
+        };
         self.expect(
             TokenDiscriminant::LParen,
             "expected `(` after function name",
@@ -249,6 +280,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block("expected an indented block after function signature");
 
         Function {
+            receiver_type,
             name,
             params,
             return_type,
@@ -429,6 +461,14 @@ impl<'a> Parser<'a> {
             };
         }
 
+        if self.matches(TokenDiscriminant::Match) {
+            let span = self.previous().span;
+            let value = self.parse_expr();
+            self.expect(TokenDiscriminant::Colon, "expected `:` after `match` value");
+            let arms = self.parse_match_arms("expected an indented block after `match`");
+            return Stmt::Match { value, arms, span };
+        }
+
         if self.matches(TokenDiscriminant::Mut) {
             let span = self.previous().span;
             let name = self.expect_ident("expected an identifier after `mut`");
@@ -497,6 +537,37 @@ impl<'a> Parser<'a> {
 
         self.expect(TokenDiscriminant::Dedent, "expected a block dedent");
         body
+    }
+
+    fn parse_match_arms(&mut self, message: &'static str) -> Vec<MatchArm> {
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline before a match body",
+        );
+        self.expect(TokenDiscriminant::Indent, message);
+
+        let mut arms = Vec::new();
+        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
+            arms.push(self.parse_match_arm());
+        }
+
+        self.expect(TokenDiscriminant::Dedent, "expected a match body dedent");
+        arms
+    }
+
+    fn parse_match_arm(&mut self) -> MatchArm {
+        let pattern = self.parse_expr();
+        let span = pattern.span();
+        self.expect(
+            TokenDiscriminant::Colon,
+            "expected `:` after match arm pattern",
+        );
+        let body = self.parse_block("expected an indented block after match arm");
+        MatchArm {
+            pattern,
+            body,
+            span,
+        }
     }
 
     fn parse_expr(&mut self) -> Expr {
@@ -681,14 +752,28 @@ impl<'a> Parser<'a> {
             }
 
             if self.matches(TokenDiscriminant::Dot) {
-                let field = self.expect_ident("expected a field name after `.`");
-                let end = self.previous().span;
                 let start = expr.span();
-                expr = Expr::Field {
-                    target: Box::new(expr),
-                    field,
-                    span: Span::new(start.line, start.column, end.end_column),
-                };
+                let field = self.expect_ident("expected a field name after `.`");
+                if self.matches(TokenDiscriminant::LParen) {
+                    let args = self.parse_args();
+                    let end = self.expect(
+                        TokenDiscriminant::RParen,
+                        "expected `)` after method arguments",
+                    );
+                    expr = Expr::MethodCall {
+                        target: Box::new(expr),
+                        method: field,
+                        args,
+                        span: Span::new(start.line, start.column, end.end_column),
+                    };
+                } else {
+                    let end = self.previous().span;
+                    expr = Expr::Field {
+                        target: Box::new(expr),
+                        field,
+                        span: Span::new(start.line, start.column, end.end_column),
+                    };
+                }
                 continue;
             }
 
@@ -899,6 +984,7 @@ impl Expr {
             | Expr::List { span, .. }
             | Expr::Call { span, .. }
             | Expr::Field { span, .. }
+            | Expr::MethodCall { span, .. }
             | Expr::Index { span, .. }
             | Expr::Go { span, .. }
             | Expr::Await { span, .. }
@@ -917,6 +1003,7 @@ enum TokenDiscriminant {
     If,
     Else,
     While,
+    Match,
     Go,
     Await,
     And,
@@ -959,6 +1046,7 @@ impl TokenDiscriminant {
                 | (Self::If, TokenKind::If)
                 | (Self::Else, TokenKind::Else)
                 | (Self::While, TokenKind::While)
+                | (Self::Match, TokenKind::Match)
                 | (Self::Go, TokenKind::Go)
                 | (Self::Await, TokenKind::Await)
                 | (Self::And, TokenKind::And)
@@ -1000,6 +1088,7 @@ impl TokenDiscriminant {
             Self::If => "`if`",
             Self::Else => "`else`",
             Self::While => "`while`",
+            Self::Match => "`match`",
             Self::Go => "`go`",
             Self::Await => "`await`",
             Self::And => "`and`",
@@ -1218,6 +1307,39 @@ mod tests {
                 _
             ) if matches!(lhs.as_ref(), Expr::Field { field, .. } if field == "Ready")
                 && matches!(rhs.as_ref(), Expr::Field { field, .. } if field == "Busy")
+        ));
+    }
+
+    #[test]
+    fn parses_match_arms_over_enum_variants() {
+        let source = SourceFile::new(
+            "test.gof",
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> int:\n    status: Status = Status.Ready\n    match status:\n        Status.Ready:\n            return 1\n        Status.Busy:\n            return 2\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[1],
+            Stmt::Match { arms, .. } if arms.len() == 2
+        ));
+    }
+
+    #[test]
+    fn parses_receiver_methods_and_method_calls() {
+        let source = SourceFile::new(
+            "test.gof",
+            "struct Point:\n    x: int\n    y: int\n\nfn Point.total(self: Point, extra: int) -> int:\n    return self.x + self.y + extra\n\nfn main() -> int:\n    point: Point = Point(3, 4)\n    return point.total(5)\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert_eq!(
+            module.functions[0].receiver_type.as_ref().unwrap().name,
+            "Point"
+        );
+        assert_eq!(module.functions[0].name, "total");
+        assert!(matches!(
+            &module.functions[1].body[1],
+            Stmt::Return(Expr::MethodCall { method, args, .. }, _) if method == "total" && args.len() == 1
         ));
     }
 

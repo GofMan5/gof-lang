@@ -80,6 +80,13 @@ pub enum SsaInstruction {
         condition: String,
     },
     EndWhile,
+    BeginMatch {
+        value: String,
+    },
+    MatchArm {
+        pattern: String,
+    },
+    EndMatch,
     Eval(String),
     Return(String),
 }
@@ -241,6 +248,22 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
         MirInstruction::EndWhile => SsaValue {
             name: "%endwhile".to_string(),
             instruction: SsaInstruction::EndWhile,
+        },
+        MirInstruction::BeginMatch { value } => SsaValue {
+            name: "%match".to_string(),
+            instruction: SsaInstruction::BeginMatch {
+                value: format!("%{value}"),
+            },
+        },
+        MirInstruction::MatchArm { pattern } => SsaValue {
+            name: format!("%match_arm_{pattern}"),
+            instruction: SsaInstruction::MatchArm {
+                pattern: format!("%{pattern}"),
+            },
+        },
+        MirInstruction::EndMatch => SsaValue {
+            name: "%endmatch".to_string(),
+            instruction: SsaInstruction::EndMatch,
         },
         MirInstruction::Eval { value } => SsaValue {
             name: format!("%eval_{value}"),

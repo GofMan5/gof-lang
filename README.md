@@ -26,11 +26,15 @@ What is already real:
 - lists, indexing, builtin `len(...)`
 - task spawning through `go`
 - waiting on tasks through `await`
+- builtin output through `print(...)`
 - user-defined `struct` types with typed fields
 - user-defined `enum` types with unit variants
+- exhaustive `match` over enum values
+- explicit struct receiver methods
 - struct constructors like `Point(3, 4)`
 - enum variant values like `Status.Ready`
 - field access like `point.x`
+- method calls like `point.total(5)`
 - deterministic formatter
 - fixture-based conformance tests
 - compiler pipeline through `Lexer -> CST -> AST -> HIR -> Typed HIR -> MIR -> SSA -> backend artifact`
@@ -38,7 +42,6 @@ What is already real:
 What is not finished yet:
 
 - native machine-code backend
-- enums and `match`
 - channels and `select`
 - real standard library
 - package registry and full resolver
@@ -56,7 +59,8 @@ Important: `gof build` still emits a structured SSA/backend artifact, not a fina
 
 Project operating rules are documented in:
 
-- [AGENTS.md](./AGENTS.md) for local agent rules
+- [GOVERNANCE.md](./GOVERNANCE.md) for project governance and engineering policy
+- [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution workflow and quality gates
 - [roadmap.md](./roadmap.md) for milestones and checkpoints
 - [spec/language-v1.md](./spec/language-v1.md) for the current language contract
 - [spec/diagnostics.md](./spec/diagnostics.md) for the diagnostics contract
@@ -183,9 +187,13 @@ The current bootstrap subset supports:
 - top-level function calls
 - struct constructors
 - enum variant references
+- exhaustive `match` over enum values
+- struct receiver methods via `fn TypeName.method(...)`
 - field access
+- method calls
 - list indexing
 - builtin `len(...)`
+- builtin `print(...)`
 - `go` and `await`
 
 See [examples/README.md](./examples/README.md) for runnable examples.
@@ -220,10 +228,10 @@ The active roadmap is maintained in [roadmap.md](./roadmap.md).
 
 Current priority order:
 
-1. richer data modeling and control flow
-2. minimal useful standard library
-3. production-grade concurrency model
-4. package system and native backend hardening
+1. richer stdlib after `print(...)`
+2. production-grade concurrency model
+3. package system and native backend hardening
+4. native backend and runtime performance hardening
 
 ## CI and Release Automation
 

@@ -1,0 +1,6 @@
+struct Point:
+    x: int
+
+fn main() -> int:
+    point: Point = Point(3)
+    return point.total()

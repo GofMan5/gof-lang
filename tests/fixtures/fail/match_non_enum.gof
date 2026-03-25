@@ -1,0 +1,5 @@
+fn main() -> int:
+    value = 1
+    match value:
+        value:
+            return 1
