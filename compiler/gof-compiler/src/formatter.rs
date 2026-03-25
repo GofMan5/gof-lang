@@ -128,10 +128,17 @@ fn format_expr(expr: &Expr) -> String {
         Expr::String(value, _) => format!("{value:?}"),
         Expr::Bool(value, _) => value.to_string(),
         Expr::Ident(value, _) => value.clone(),
+        Expr::List { items, .. } => format!(
+            "[{}]",
+            items.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+        ),
         Expr::Call { callee, args, .. } => format!(
             "{callee}({})",
             args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
         ),
+        Expr::Index { target, index, .. } => {
+            format!("{}[{}]", format_expr(target), format_expr(index))
+        }
         Expr::Go { value, .. } => format!("go {}", format_expr(value)),
         Expr::Await { value, .. } => format!("await {}", format_expr(value)),
         Expr::Binary { lhs, op, rhs, .. } => format!(
@@ -178,12 +185,12 @@ mod tests {
     fn formatter_supports_go_and_await() {
         let source = SourceFile::new(
             "fmt.gof",
-            "import worker\n\nfn work(x:int)->int:\n    return x*x\nfn main()->int:\n    task:task=go work(6)\n    return await task\n",
+            "import worker\n\nfn work(x:int)->int:\n    return x*x\nfn main()->int:\n    values=[1,2,3]\n    task:task=go work(values[1])\n    return await task + len(values)\n",
         );
         let formatted = format_source(&source).expect("formatting should succeed");
         assert_eq!(
             formatted,
-            "import worker\n\nfn work(x: int) -> int:\n    return x * x\n\nfn main() -> int:\n    task: task = go work(6)\n    return await task\n"
+            "import worker\n\nfn work(x: int) -> int:\n    return x * x\n\nfn main() -> int:\n    values = [1, 2, 3]\n    task: task = go work(values[1])\n    return await task + len(values)\n"
         );
     }
 }

@@ -1,0 +1,3 @@
+fn main() -> list:
+    values = [1, "oops"]
+    return values

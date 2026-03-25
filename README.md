@@ -97,6 +97,9 @@ fn main() -> int:
 - `return`
 - `if` / `else`
 - `while`
+- list literals `[1, 2, 3]`
+- indexing `values[0]`
+- builtin `len(values)`
 - `go some_function(...)`
 - `await task`
 - local module graph resolution для sibling `.gof` файлов
@@ -122,8 +125,12 @@ fn main() -> int:
 - `mut name: type = expr` создает mutable binding с явным builtin-типом
 - попытка изменить immutable binding приводит к диагностике компилятора
 - параметры и bindings сейчас поддерживают builtin-annotations: `int`, `string`, `bool`, `task`, `unit`
-- функции сейчас поддерживают явный return contract через `-> int`, `-> string`, `-> bool`, `-> task`, `-> unit`
+- `list` теперь тоже входит в bootstrap builtin annotations
+- функции сейчас поддерживают явный return contract через `-> int`, `-> string`, `-> bool`, `-> list`, `-> task`, `-> unit`
 - `import name` сейчас ищет `name.gof` рядом с текущим файлом и подключает его top-level функции в bootstrap module graph
+- list literals сейчас должны оставаться однородными по типу элементов
+- indexing сейчас работает только для list values и integer indices
+- `len(...)` сейчас работает для list и string значений
 - вызовы функций в bootstrap-режиме разрешены только для top-level функций
 - compiler пытается вывести один стабильный return type для каждой функции
 - если у функции есть явный return type, тело обязано ему соответствовать

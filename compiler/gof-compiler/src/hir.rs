@@ -66,9 +66,18 @@ pub enum HirExpr {
     String(String, Span),
     Bool(bool, Span),
     Local(String, Span),
+    List {
+        items: Vec<HirExpr>,
+        span: Span,
+    },
     Call {
         callee: String,
         args: Vec<HirExpr>,
+        span: Span,
+    },
+    Index {
+        target: Box<HirExpr>,
+        index: Box<HirExpr>,
         span: Span,
     },
     Go {
@@ -171,9 +180,22 @@ fn lower_expr(expr: &Expr) -> HirExpr {
         Expr::String(value, span) => HirExpr::String(value.clone(), *span),
         Expr::Bool(value, span) => HirExpr::Bool(*value, *span),
         Expr::Ident(value, span) => HirExpr::Local(value.clone(), *span),
+        Expr::List { items, span } => HirExpr::List {
+            items: items.iter().map(lower_expr).collect(),
+            span: *span,
+        },
         Expr::Call { callee, args, span } => HirExpr::Call {
             callee: callee.clone(),
             args: args.iter().map(lower_expr).collect(),
+            span: *span,
+        },
+        Expr::Index {
+            target,
+            index,
+            span,
+        } => HirExpr::Index {
+            target: Box::new(lower_expr(target)),
+            index: Box::new(lower_expr(index)),
             span: *span,
         },
         Expr::Go { value, span } => HirExpr::Go {
@@ -200,7 +222,9 @@ impl HirExpr {
             | HirExpr::String(_, span)
             | HirExpr::Bool(_, span)
             | HirExpr::Local(_, span)
+            | HirExpr::List { span, .. }
             | HirExpr::Call { span, .. }
+            | HirExpr::Index { span, .. }
             | HirExpr::Go { span, .. }
             | HirExpr::Await { span, .. }
             | HirExpr::Binary { span, .. } => *span,

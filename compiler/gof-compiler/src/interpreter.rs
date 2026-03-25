@@ -14,6 +14,7 @@ pub enum Value {
     Int(i64),
     String(String),
     Bool(bool),
+    List(Vec<Value>),
     Task(TaskValue),
     Unit,
 }
@@ -24,6 +25,7 @@ impl Debug for Value {
             Self::Int(value) => f.debug_tuple("Int").field(value).finish(),
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
             Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
+            Self::List(values) => f.debug_tuple("List").field(values).finish(),
             Self::Task(_) => f.write_str("Task(<pending-or-completed>)"),
             Self::Unit => f.write_str("Unit"),
         }
@@ -36,6 +38,7 @@ impl PartialEq for Value {
             (Self::Int(lhs), Self::Int(rhs)) => lhs == rhs,
             (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
+            (Self::List(lhs), Self::List(rhs)) => lhs == rhs,
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
             (Self::Unit, Self::Unit) => true,
             _ => false,
@@ -51,6 +54,14 @@ impl Value {
             Self::Int(value) => Some(value.to_string()),
             Self::String(value) => Some(value.clone()),
             Self::Bool(value) => Some(value.to_string()),
+            Self::List(values) => Some(format!(
+                "[{}]",
+                values
+                    .iter()
+                    .map(|value| value.cli_text().unwrap_or_else(|| "unit".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
             Self::Task(_) => Some("<task>".to_string()),
             Self::Unit => None,
         }
@@ -401,6 +412,13 @@ fn eval_expr(
         Expr::Int(value, _) => Ok(Value::Int(*value)),
         Expr::String(value, _) => Ok(Value::String(value.clone())),
         Expr::Bool(value, _) => Ok(Value::Bool(*value)),
+        Expr::List { items, .. } => {
+            let values = items
+                .iter()
+                .map(|item| eval_expr(item, scopes, functions, source_path))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(Value::List(values))
+        }
         Expr::Ident(name, span) => scopes
             .get(name)
             .map(|binding| binding.value.clone())
@@ -417,6 +435,10 @@ fn eval_expr(
                 ])
             }),
         Expr::Call { callee, args, span } => {
+            if callee == "len" {
+                return eval_len_builtin(args, scopes, functions, source_path, *span);
+            }
+
             let function = functions.get(callee).cloned().ok_or_else(|| {
                 Diagnostics(vec![
                     Diagnostic::error(
@@ -434,6 +456,15 @@ fn eval_expr(
                 .map(|arg| eval_expr(arg, scopes, functions, source_path))
                 .collect::<Result<Vec<_>, _>>()?;
             eval_function(&function, &values, functions)
+        }
+        Expr::Index {
+            target,
+            index,
+            span,
+        } => {
+            let target = eval_expr(target, scopes, functions, source_path)?;
+            let index = eval_expr(index, scopes, functions, source_path)?;
+            eval_index(target, index, *span, source_path)
         }
         Expr::Go { value, span } => match value.as_ref() {
             Expr::Call { callee, args, span } => {
@@ -544,6 +575,8 @@ fn eval_binary(
         (Value::String(lhs), BinaryOp::Ne, Value::String(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Bool(lhs), BinaryOp::Eq, Value::Bool(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Bool(lhs), BinaryOp::Ne, Value::Bool(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::List(lhs), BinaryOp::Eq, Value::List(rhs)) => Ok(Value::Bool(lhs == rhs)),
+        (Value::List(lhs), BinaryOp::Ne, Value::List(rhs)) => Ok(Value::Bool(lhs != rhs)),
         _ => Err(Diagnostics(vec![Diagnostic::error(
             "GOF3001",
             "unsupported expression in bootstrap evaluator",
@@ -551,6 +584,116 @@ fn eval_binary(
             span,
         )
         .with_source_path(source_path.to_path_buf())])),
+    }
+}
+
+fn eval_len_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 1 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `len`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `len` with exactly one list or string argument")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let value = eval_expr(&args[0], scopes, functions, source_path)?;
+    match value {
+        Value::List(values) => Ok(Value::Int(values.len() as i64)),
+        Value::String(value) => Ok(Value::Int(value.chars().count() as i64)),
+        other => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3019",
+                "`len` requires a list or string value",
+                format!("this argument resolves to `{}`", value_name(&other)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a list literal, list binding, or string value to `len`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
+fn eval_index(
+    target: Value,
+    index: Value,
+    span: Span,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
+    let Value::Int(index) = index else {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3018",
+                "list indexing requires an `int` index",
+                format!("this index resolves to `{}`", value_name(&index)),
+                span,
+            )
+            .with_fix_it("use an integer index like `values[0]`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    if index < 0 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3018",
+                "list indexing requires a non-negative index",
+                "negative indices are not supported in the bootstrap evaluator",
+                span,
+            )
+            .with_fix_it("use an index between `0` and `len(list) - 1`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    match target {
+        Value::List(values) => values.get(index as usize).cloned().ok_or_else(|| {
+            Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3018",
+                    "list index is out of bounds",
+                    format!(
+                        "the list length is {}, but the index is {}",
+                        values.len(),
+                        index
+                    ),
+                    span,
+                )
+                .with_fix_it("keep the index below `len(list)`")
+                .with_source_path(source_path.to_path_buf()),
+            ])
+        }),
+        other => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3018",
+                "indexing requires a list value",
+                format!("this target resolves to `{}`", value_name(&other)),
+                span,
+            )
+            .with_fix_it("index only list literals or list bindings")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
+fn value_name(value: &Value) -> &'static str {
+    match value {
+        Value::Int(_) => "int",
+        Value::String(_) => "string",
+        Value::Bool(_) => "bool",
+        Value::List(_) => "list",
+        Value::Task(_) => "task",
+        Value::Unit => "unit",
     }
 }
 
@@ -590,5 +733,14 @@ mod tests {
         let diagnostics =
             run_source("fn main():\n    return await 42\n").expect_err("await should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3009"]);
+    }
+
+    #[test]
+    fn evaluates_lists_indexing_and_len() {
+        let value = run_source(
+            "fn main() -> int:\n    values = [2, 4, 6]\n    return values[1] + len(values)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(7));
     }
 }

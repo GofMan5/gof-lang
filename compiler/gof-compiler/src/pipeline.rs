@@ -155,6 +155,36 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_lists_and_indexing() {
+        let source = SourceFile::new(
+            "lists.gof",
+            "fn main() -> int:\n    values: list = [3, 5, 8]\n    return values[1] + len(values)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Int);
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected list bind statement, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::BuildList(_)))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Index { .. }))
+        );
+    }
+
+    #[test]
     fn pipeline_resolves_local_imports() {
         let temp = tempfile::tempdir().expect("tempdir should exist");
         let helper_path = temp.path().join("math.gof");

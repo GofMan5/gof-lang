@@ -56,6 +56,48 @@ fn gof_run_executes_factorial_example() {
 }
 
 #[test]
+fn gof_run_executes_list_sum_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("list_sum.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("108"));
+}
+
+#[test]
+fn gof_run_executes_string_metrics_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("string_metrics.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10"));
+}
+
+#[test]
+fn gof_run_executes_parallel_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("parallel_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("104"));
+}
+
+#[test]
 fn gof_run_executes_concurrent_squares_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")
@@ -67,6 +109,21 @@ fn gof_run_executes_concurrent_squares_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("225"));
+}
+
+#[test]
+fn gof_run_executes_portfolio_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("portfolio")
+        .join("main.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("160"));
 }
 
 #[test]

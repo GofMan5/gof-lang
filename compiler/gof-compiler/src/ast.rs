@@ -75,9 +75,18 @@ pub enum Expr {
     String(String, Span),
     Bool(bool, Span),
     Ident(String, Span),
+    List {
+        items: Vec<Expr>,
+        span: Span,
+    },
     Call {
         callee: String,
         args: Vec<Expr>,
+        span: Span,
+    },
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
         span: Span,
     },
     Go {
@@ -426,41 +435,62 @@ impl<'a> Parser<'a> {
             };
         }
 
-        self.parse_call()
+        self.parse_postfix()
     }
 
-    fn parse_call(&mut self) -> Expr {
-        let primary = self.parse_primary();
-        if !self.matches(TokenDiscriminant::LParen) {
-            return primary;
-        }
+    fn parse_postfix(&mut self) -> Expr {
+        let mut expr = self.parse_primary();
 
-        let callee = match primary {
-            Expr::Ident(name, span) => (name, span),
-            other => {
-                self.diagnostics.push(
-                    Diagnostic::error(
-                        "GOF2001",
-                        "only named functions can be called in the bootstrap parser",
-                        "call expressions currently require an identifier callee",
-                        other.span(),
-                    )
-                    .with_fix_it("replace the callee with a function name"),
+        loop {
+            if self.matches(TokenDiscriminant::LParen) {
+                let callee = match expr {
+                    Expr::Ident(name, span) => (name, span),
+                    other => {
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                "GOF2001",
+                                "only named functions can be called in the bootstrap parser",
+                                "call expressions currently require an identifier callee",
+                                other.span(),
+                            )
+                            .with_fix_it("replace the callee with a function name"),
+                        );
+                        ("_error".to_string(), other.span())
+                    }
+                };
+
+                let args = self.parse_args();
+                let end = self.expect(
+                    TokenDiscriminant::RParen,
+                    "expected `)` after call arguments",
                 );
-                ("_error".to_string(), other.span())
+                expr = Expr::Call {
+                    callee: callee.0,
+                    args,
+                    span: Span::new(callee.1.line, callee.1.column, end.end_column),
+                };
+                continue;
             }
-        };
 
-        let args = self.parse_args();
-        let end = self.expect(
-            TokenDiscriminant::RParen,
-            "expected `)` after call arguments",
-        );
-        Expr::Call {
-            callee: callee.0,
-            args,
-            span: Span::new(callee.1.line, callee.1.column, end.end_column),
+            if self.matches(TokenDiscriminant::LBracket) {
+                let start = expr.span();
+                let index = self.parse_expr();
+                let end = self.expect(
+                    TokenDiscriminant::RBracket,
+                    "expected `]` after index expression",
+                );
+                expr = Expr::Index {
+                    target: Box::new(expr),
+                    index: Box::new(index),
+                    span: Span::new(start.line, start.column, end.end_column),
+                };
+                continue;
+            }
+
+            break;
         }
+
+        expr
     }
 
     fn parse_args(&mut self) -> Vec<Expr> {
@@ -493,6 +523,25 @@ impl<'a> Parser<'a> {
                     "expected `)` to close grouped expression",
                 );
                 expr
+            }
+            TokenKind::LBracket => {
+                let mut items = Vec::new();
+                if !self.check(TokenDiscriminant::RBracket) {
+                    loop {
+                        items.push(self.parse_expr());
+                        if !self.matches(TokenDiscriminant::Comma) {
+                            break;
+                        }
+                    }
+                }
+                let end = self.expect(
+                    TokenDiscriminant::RBracket,
+                    "expected `]` after list literal",
+                );
+                Expr::List {
+                    items,
+                    span: Span::new(token.span.line, token.span.column, end.end_column),
+                }
             }
             _ => {
                 self.diagnostics.push(
@@ -627,7 +676,9 @@ impl Expr {
             | Expr::String(_, span)
             | Expr::Bool(_, span)
             | Expr::Ident(_, span)
+            | Expr::List { span, .. }
             | Expr::Call { span, .. }
+            | Expr::Index { span, .. }
             | Expr::Go { span, .. }
             | Expr::Await { span, .. }
             | Expr::Binary { span, .. } => *span,
@@ -648,6 +699,8 @@ enum TokenDiscriminant {
     Mut,
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Colon,
     Comma,
     Equal,
@@ -682,6 +735,8 @@ impl TokenDiscriminant {
                 | (Self::Mut, TokenKind::Mut)
                 | (Self::LParen, TokenKind::LParen)
                 | (Self::RParen, TokenKind::RParen)
+                | (Self::LBracket, TokenKind::LBracket)
+                | (Self::RBracket, TokenKind::RBracket)
                 | (Self::Colon, TokenKind::Colon)
                 | (Self::Comma, TokenKind::Comma)
                 | (Self::Equal, TokenKind::Equal)
@@ -715,6 +770,8 @@ impl TokenDiscriminant {
             Self::Mut => "`mut`",
             Self::LParen => "`(`",
             Self::RParen => "`)`",
+            Self::LBracket => "`[`",
+            Self::RBracket => "`]`",
             Self::Colon => "`:`",
             Self::Comma => "`,`",
             Self::Equal => "`=`",
@@ -844,6 +901,27 @@ mod tests {
         assert!(matches!(
             &module.functions[1].body[1],
             Stmt::Return(Expr::Await { .. }, _)
+        ));
+    }
+
+    #[test]
+    fn parses_list_literals_and_indexing() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> int:\n    values = [1, 2, 3]\n    return values[1]\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[0],
+            Stmt::Assign {
+                value: Expr::List { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &module.functions[0].body[1],
+            Stmt::Return(Expr::Index { .. }, _)
         ));
     }
 }

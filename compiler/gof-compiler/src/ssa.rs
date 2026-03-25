@@ -27,6 +27,7 @@ pub enum SsaInstruction {
     ConstInt(i64),
     ConstString(String),
     ConstBool(bool),
+    BuildList(Vec<String>),
     LoadLocal(String),
     StoreLocal {
         name: String,
@@ -37,6 +38,10 @@ pub enum SsaInstruction {
     Call {
         callee: String,
         args: Vec<String>,
+    },
+    Index {
+        target: String,
+        index: String,
     },
     Spawn {
         callee: String,
@@ -98,6 +103,12 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::ConstBool(*value),
         },
+        MirInstruction::BuildList { dest, items } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::BuildList(
+                items.iter().map(|item| format!("%{item}")).collect(),
+            ),
+        },
         MirInstruction::LoadLocal { dest, name } => SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::LoadLocal(name.clone()),
@@ -121,6 +132,17 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             instruction: SsaInstruction::Call {
                 callee: callee.clone(),
                 args: args.iter().map(|arg| format!("%{arg}")).collect(),
+            },
+        },
+        MirInstruction::Index {
+            dest,
+            target,
+            index,
+        } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::Index {
+                target: format!("%{target}"),
+                index: format!("%{index}"),
             },
         },
         MirInstruction::Spawn { dest, callee, args } => SsaValue {

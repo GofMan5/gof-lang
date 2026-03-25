@@ -57,10 +57,13 @@ The bootstrap compiler in this repository currently supports:
 - reassignment only for previously mutable bindings
 - integer and string literals
 - boolean literals through `true` / `false`
+- list literals through `[expr, ...]`
 - identifiers
 - additive and multiplicative expressions
 - comparison expressions
 - named function calls
+- indexing through `list_expr[index_expr]`
+- builtin `len(...)` for lists and strings
 
 ## Bootstrap binding rules
 
@@ -71,10 +74,14 @@ The bootstrap compiler in this repository currently supports:
 - reassigning an immutable local is a compile error
 - function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `task`, and `unit`
 - function return types can currently be annotated with the same builtin types
+- local bindings and return contracts can currently use the builtin `list` annotation
 - `import name` currently resolves `name.gof` next to the importing source file and merges top-level functions into one bootstrap module graph
 - import cycles are rejected during module graph loading
 - duplicate top-level function names across the module graph are rejected
 - function calls currently target only top-level named functions
+- `len(value)` is currently a builtin recognized by the compiler and evaluator
+- list literals must stay homogeneous once the bootstrap type layer can determine their element types
+- indexing currently requires a list target and an integer index
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result
 - an explicit function return annotation acts as the function contract and must stay compatible with every return path in the body
 - every `return` inside one function must resolve to one compatible type

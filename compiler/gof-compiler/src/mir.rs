@@ -29,6 +29,10 @@ pub enum MirInstruction {
         dest: usize,
         value: bool,
     },
+    BuildList {
+        dest: usize,
+        items: Vec<usize>,
+    },
     LoadLocal {
         dest: usize,
         name: String,
@@ -43,6 +47,11 @@ pub enum MirInstruction {
         dest: usize,
         callee: String,
         args: Vec<usize>,
+    },
+    Index {
+        dest: usize,
+        target: usize,
+        index: usize,
     },
     Spawn {
         dest: usize,
@@ -194,6 +203,16 @@ impl MirBuilder {
                 });
                 dest
             }
+            TypedExprKind::List { items } => {
+                let items = items
+                    .iter()
+                    .map(|item| self.lower_expr(item))
+                    .collect::<Vec<_>>();
+                let dest = self.alloc();
+                self.instructions
+                    .push(MirInstruction::BuildList { dest, items });
+                dest
+            }
             TypedExprKind::Local(name) => {
                 let dest = self.alloc();
                 self.instructions.push(MirInstruction::LoadLocal {
@@ -212,6 +231,17 @@ impl MirBuilder {
                     dest,
                     callee: callee.clone(),
                     args,
+                });
+                dest
+            }
+            TypedExprKind::Index { target, index } => {
+                let target = self.lower_expr(target);
+                let index = self.lower_expr(index);
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::Index {
+                    dest,
+                    target,
+                    index,
                 });
                 dest
             }

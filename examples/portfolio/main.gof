@@ -1,0 +1,5 @@
+import pricing
+
+fn main() -> int:
+    bids: list = [7, 11, 13, 17]
+    return weighted_total(bids) + edge_checksum(bids)

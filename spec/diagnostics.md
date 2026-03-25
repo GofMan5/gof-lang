@@ -35,3 +35,6 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3014`: unresolved local import
 - `GOF3015`: import cycle in the local module graph
 - `GOF3016`: duplicate top-level function across the local module graph
+- `GOF3017`: incompatible element types inside one list literal
+- `GOF3018`: invalid list indexing operation
+- `GOF3019`: invalid operand for builtin `len`

@@ -1,0 +1,15 @@
+fn weighted_total(values: list) -> int:
+    mut index: int = 0
+    mut total: int = 0
+
+    while index < len(values):
+        total = total + values[index] * (index + 1)
+        index = index + 1
+
+    return total
+
+fn edge_checksum(values: list) -> int:
+    if len(values) == 0:
+        return 0
+    else:
+        return values[0] + values[len(values) - 1]

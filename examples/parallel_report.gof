@@ -1,0 +1,9 @@
+fn normalize(score: int) -> int:
+    return score * score + 1
+
+fn main() -> int:
+    scores: list = [3, 5, 8]
+    left: task = go normalize(scores[0])
+    middle: task = go normalize(scores[1])
+    right: task = go normalize(scores[2])
+    return await left + await middle + await right + len(scores)

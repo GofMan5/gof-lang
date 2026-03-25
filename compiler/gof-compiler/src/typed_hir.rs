@@ -11,6 +11,7 @@ pub enum Type {
     Int,
     String,
     Bool,
+    List(Box<Type>),
     Task(Box<Type>),
     Unknown,
     Unit,
@@ -19,6 +20,10 @@ pub enum Type {
 impl Type {
     fn task(inner: Type) -> Self {
         Self::Task(Box::new(inner))
+    }
+
+    fn list(inner: Type) -> Self {
+        Self::List(Box::new(inner))
     }
 
     fn is_unknown(&self) -> bool {
@@ -30,6 +35,7 @@ impl Type {
             Self::Int => "int".to_string(),
             Self::String => "string".to_string(),
             Self::Bool => "bool".to_string(),
+            Self::List(inner) => format!("list[{}]", inner.display_name()),
             Self::Task(inner) => format!("task[{}]", inner.display_name()),
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
@@ -94,9 +100,16 @@ pub enum TypedExprKind {
     String(String),
     Bool(bool),
     Local(String),
+    List {
+        items: Vec<TypedExpr>,
+    },
     Call {
         callee: String,
         args: Vec<TypedExpr>,
+    },
+    Index {
+        target: Box<TypedExpr>,
+        index: Box<TypedExpr>,
     },
     Spawn {
         callee: String,
@@ -561,6 +574,18 @@ fn lower_expr(
             ty: Type::Bool,
             span: *span,
         },
+        HirExpr::List { items, span } => {
+            let typed_items = items
+                .iter()
+                .map(|item| lower_expr(item, scopes, signatures, diagnostics, source_path))
+                .collect::<Vec<_>>();
+            let element_type = infer_list_element_type(&typed_items, diagnostics, source_path);
+            TypedExpr {
+                kind: TypedExprKind::List { items: typed_items },
+                ty: Type::list(element_type),
+                span: *span,
+            }
+        }
         HirExpr::Local(name, span) => {
             let ty = scopes
                 .get(name)
@@ -597,13 +622,39 @@ fn lower_expr(
                 diagnostics,
                 source_path,
             );
+            let return_type = function_return_type(
+                callee,
+                &typed_args,
+                signatures,
+                diagnostics,
+                *span,
+                source_path,
+            );
 
             TypedExpr {
                 kind: TypedExprKind::Call {
                     callee: callee.clone(),
                     args: typed_args,
                 },
-                ty: function_return_type(callee, signatures),
+                ty: return_type,
+                span: *span,
+            }
+        }
+        HirExpr::Index {
+            target,
+            index,
+            span,
+        } => {
+            let target = lower_expr(target, scopes, signatures, diagnostics, source_path);
+            let index = lower_expr(index, scopes, signatures, diagnostics, source_path);
+
+            let ty = infer_index_type(&target, &index, diagnostics, *span, source_path);
+            TypedExpr {
+                kind: TypedExprKind::Index {
+                    target: Box::new(target),
+                    index: Box::new(index),
+                },
+                ty,
                 span: *span,
             }
         }
@@ -625,13 +676,21 @@ fn lower_expr(
                     diagnostics,
                     source_path,
                 );
+                let return_type = function_return_type(
+                    callee,
+                    &typed_args,
+                    signatures,
+                    diagnostics,
+                    *call_span,
+                    source_path,
+                );
 
                 TypedExpr {
                     kind: TypedExprKind::Spawn {
                         callee: callee.clone(),
                         args: typed_args,
                     },
-                    ty: Type::task(function_return_type(callee, signatures)),
+                    ty: Type::task(return_type),
                     span: *span,
                 }
             }
@@ -711,6 +770,11 @@ fn validate_call(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
+    if callee == "len" {
+        validate_len_call(args, span, diagnostics, source_path);
+        return;
+    }
+
     match signatures.get(callee) {
         Some(signature) if signature.arity == args.len() => {
             for (index, (expected, actual)) in
@@ -774,6 +838,7 @@ fn resolve_type_annotation(
         "int" => Type::Int,
         "string" => Type::String,
         "bool" => Type::Bool,
+        "list" => Type::list(Type::Unknown),
         "task" => Type::task(Type::Unknown),
         "unit" => Type::Unit,
         _ => {
@@ -781,7 +846,7 @@ fn resolve_type_annotation(
                 Diagnostic::error(
                     "GOF3012",
                     format!("unknown type annotation `{}`", ty.name),
-                    "the bootstrap type system currently supports only `int`, `string`, `bool`, `task`, and `unit` annotations",
+                    "the bootstrap type system currently supports only `int`, `string`, `bool`, `list`, `task`, and `unit` annotations",
                     ty.span,
                 )
                 .with_fix_it("replace the annotation with a supported builtin type")
@@ -792,7 +857,18 @@ fn resolve_type_annotation(
     }
 }
 
-fn function_return_type(callee: &str, signatures: &HashMap<String, FunctionSignature>) -> Type {
+fn function_return_type(
+    callee: &str,
+    _args: &[TypedExpr],
+    signatures: &HashMap<String, FunctionSignature>,
+    _diagnostics: &mut Diagnostics,
+    _span: Span,
+    _source_path: &Path,
+) -> Type {
+    if callee == "len" {
+        return Type::Int;
+    }
+
     signatures
         .get(callee)
         .map(|signature| signature.return_type.clone())
@@ -929,6 +1005,9 @@ fn merge_return_types(current: &Type, candidate: &Type) -> Option<Type> {
     }
 
     match (current, candidate) {
+        (Type::List(current), Type::List(candidate)) => {
+            merge_return_types(current, candidate).map(Type::list)
+        }
         (Type::Task(current), Type::Task(candidate)) => {
             merge_return_types(current, candidate).map(Type::task)
         }
@@ -967,8 +1046,126 @@ fn ensure_type_compatibility(
 fn types_compatible(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
         (Type::Unknown, _) | (_, Type::Unknown) => true,
+        (Type::List(expected), Type::List(actual)) => types_compatible(expected, actual),
         (Type::Task(expected), Type::Task(actual)) => types_compatible(expected, actual),
         (expected, actual) => expected == actual,
+    }
+}
+
+fn infer_list_element_type(
+    items: &[TypedExpr],
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    let mut element_type = Type::Unknown;
+
+    for item in items {
+        match merge_return_types(&element_type, &item.ty) {
+            Some(merged) => element_type = merged,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3017",
+                        "list literal contains incompatible element types",
+                        format!(
+                            "the list started as `{}`, but this element resolves to `{}`",
+                            element_type.display_name(),
+                            item.ty.display_name()
+                        ),
+                        item.span,
+                    )
+                    .with_fix_it("make every element in the list resolve to one compatible type")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return Type::Unknown;
+            }
+        }
+    }
+
+    if items.is_empty() {
+        Type::Unknown
+    } else {
+        element_type
+    }
+}
+
+fn infer_index_type(
+    target: &TypedExpr,
+    index: &TypedExpr,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+    source_path: &Path,
+) -> Type {
+    let mut valid = true;
+
+    if !matches!(index.ty, Type::Int | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3018",
+                "list indexing requires an `int` index",
+                format!("this index resolves to `{}`", index.ty.display_name()),
+                index.span,
+            )
+            .with_fix_it("use an integer index like `values[0]`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        valid = false;
+    }
+
+    let element_type = match &target.ty {
+        Type::List(inner) => inner.as_ref().clone(),
+        Type::Unknown => Type::Unknown,
+        other => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3018",
+                    "indexing requires a list value",
+                    format!("this target resolves to `{}`", other.display_name()),
+                    span,
+                )
+                .with_fix_it("index only list literals or list bindings")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            valid = false;
+            Type::Unknown
+        }
+    };
+
+    if valid { element_type } else { Type::Unknown }
+}
+
+fn validate_len_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `len`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `len` with exactly one list or string argument")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    let arg = &args[0];
+    if !matches!(arg.ty, Type::List(_) | Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3019",
+                "`len` requires a list or string value",
+                format!("this argument resolves to `{}`", arg.ty.display_name()),
+                arg.span,
+            )
+            .with_fix_it("pass a list literal, list binding, or string value to `len`")
+            .with_source_path(source_path.to_path_buf()),
+        );
     }
 }
 
@@ -1076,5 +1273,50 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3013"]);
+    }
+
+    #[test]
+    fn infers_list_and_index_types() {
+        let module = lower_source(
+            "fn main() -> int:\n    values: list = [1, 2, 3]\n    return values[1] + len(values)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected list bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Return(expr) => assert_eq!(expr.ty, Type::Int),
+            other => panic!("expected return, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_incompatible_list_literals() {
+        let diagnostics =
+            lower_source("fn main() -> list:\n    values = [1, \"oops\"]\n    return values\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3017"]);
+    }
+
+    #[test]
+    fn rejects_invalid_indexing() {
+        let diagnostics = lower_source("fn main() -> int:\n    value = 42\n    return value[0]\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3018"]);
+    }
+
+    #[test]
+    fn rejects_invalid_len_operand() {
+        let diagnostics = lower_source("fn main() -> int:\n    return len(true)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3019"]);
     }
 }

@@ -1,0 +1,3 @@
+fn main() -> int:
+    values: list = [2, 4, 6]
+    return values[1] + len(values)

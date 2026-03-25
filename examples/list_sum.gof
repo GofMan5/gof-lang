@@ -1,0 +1,13 @@
+fn sum(values: list) -> int:
+    mut index: int = 0
+    mut total: int = 0
+
+    while index < len(values):
+        total = total + values[index]
+        index = index + 1
+
+    return total
+
+fn main() -> int:
+    numbers: list = [4, 8, 15, 16, 23, 42]
+    return sum(numbers)

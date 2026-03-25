@@ -28,6 +28,8 @@ pub enum TokenKind {
     StringLiteral(String),
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Colon,
     Comma,
     Equal,

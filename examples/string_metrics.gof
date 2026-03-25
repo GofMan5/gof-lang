@@ -1,0 +1,3 @@
+fn main() -> int:
+    labels: list = ["gof", "lang", "core"]
+    return len(labels) + len(labels[0]) + len(labels[2])
