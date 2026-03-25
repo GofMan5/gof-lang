@@ -146,6 +146,18 @@ Run all workspace tests:
 cargo test --workspace
 ```
 
+Create or refresh the rolling snapshot prerelease from your local machine:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/publish-snapshot.ps1
+```
+
+Push and refresh the snapshot in one step:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/push-and-release.ps1
+```
+
 ## Current Language Surface
 
 The current bootstrap subset supports:
@@ -221,3 +233,5 @@ The repository now includes:
 - release packaging workflows for Linux, Windows, and macOS
 
 Release artifacts are built automatically from version tags and can be consumed by the install scripts in `scripts/install.sh` and `scripts/install.ps1`.
+
+For local maintainer workflows, `scripts/publish-snapshot.ps1` and `scripts/push-and-release.ps1` can also build the current commit and refresh the rolling `snapshot-main` prerelease directly through the GitHub Releases API.

@@ -3,3 +3,4 @@ Cargo.lock
 AGENTS.md
 /dist
 /dist-test
+/dist-snapshot
