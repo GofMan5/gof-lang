@@ -788,6 +788,34 @@ fn eval_expr(
                 );
             }
 
+            if callee == "append" {
+                return eval_append_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "contains" {
+                return eval_contains_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
             if let Some(decl) = structs.get(callee) {
                 let values = args
                     .iter()
@@ -1460,6 +1488,144 @@ fn eval_print_builtin(
     Ok(Value::Unit)
 }
 
+fn eval_append_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 2 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `append`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `append` as `append(list_value, item)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let list_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let appended = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    match list_value {
+        Value::List(mut values) => {
+            values.push(appended);
+            Ok(Value::List(values))
+        }
+        other => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3039",
+                "`append` requires a list as its first argument",
+                format!("this argument resolves to `{}`", value_name(&other)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a list value as the first argument to `append`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
+fn eval_contains_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> Result<Value, Diagnostics> {
+    if args.len() != 2 {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `contains`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `contains` as `contains(haystack, needle)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let haystack = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let needle = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    match (haystack, needle) {
+        (Value::String(haystack), Value::String(needle)) => {
+            Ok(Value::Bool(haystack.contains(&needle)))
+        }
+        (Value::List(values), needle) => {
+            Ok(Value::Bool(values.iter().any(|value| value == &needle)))
+        }
+        (Value::String(_), needle) => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3040",
+                "`contains` requires a string needle for string haystacks",
+                format!("this needle resolves to `{}`", value_name(&needle)),
+                args[1].span(),
+            )
+            .with_fix_it("pass a string as the second argument to `contains`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+        (other, _) => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3040",
+                "`contains` requires a string or list haystack",
+                format!("this haystack resolves to `{}`", value_name(&other)),
+                args[0].span(),
+            )
+            .with_fix_it("call `contains` with a string or list as the first argument")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
 fn eval_index(
     target: Value,
     index: Value,
@@ -1589,6 +1755,15 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(7));
+    }
+
+    #[test]
+    fn evaluates_append_and_contains() {
+        let value = run_source(
+            "fn main() -> int:\n    values = append([2, 4], 6)\n    if contains(values, 6) and contains(\"gof-lang\", \"lang\"):\n        return len(values) + values[2]\n    return 0\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(9));
     }
 
     #[test]

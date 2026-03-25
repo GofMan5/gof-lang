@@ -17,6 +17,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `geometry_methods.gof`: receiver methods on structs and method calls
 - `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow
 - `list_sum.gof`: lists, indexing, `len`, looping over data
+- `stdlib_helpers.gof`: `append`, `contains`, `len`, and control flow together
 - `status_report.gof`: `enum`, unit variants, typed enum bindings, equality
 - `status_match.gof`: exhaustive `match` over enum values
 - `string_metrics.gof`: list of strings, indexing to string, `len(string)`
@@ -35,6 +36,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `geometry_methods.gof` -> `10`
 - `health_gate.gof` -> `1`
 - `list_sum.gof` -> `108`
+- `stdlib_helpers.gof` -> `18`
 - `status_report.gof` -> `200`
 - `status_match.gof` -> `50`
 - `string_metrics.gof` -> `10`

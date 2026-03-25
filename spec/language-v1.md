@@ -74,6 +74,8 @@ The bootstrap compiler in this repository currently supports:
 - indexing through `list_expr[index_expr]`
 - builtin `len(...)` for lists and strings
 - builtin `print(...)` for one printable value
+- builtin `append(list, value)` for pure list growth
+- builtin `contains(haystack, needle)` for list membership and string substring checks
 
 ## Bootstrap binding rules
 
@@ -111,7 +113,11 @@ The bootstrap compiler in this repository currently supports:
 - `not` currently requires a boolean operand
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
+- `append(list, value)` is currently a builtin recognized by the compiler and evaluator
+- `contains(haystack, needle)` is currently a builtin recognized by the compiler and evaluator
 - `print` currently accepts exactly one printable value and returns `unit`
+- `append` currently accepts exactly one list plus one compatible value and returns a new list
+- `contains` currently accepts either `(list, value)` or `(string, string)` and returns `bool`
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires a list target and an integer index
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result

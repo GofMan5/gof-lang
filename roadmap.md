@@ -97,13 +97,13 @@ The real goal is not feature count. Every phase of language development must:
 ### M4. Minimal Useful Standard Library
 
 - `[x]` output primitive (`print` or equivalent)
-- `[ ]` basic string helpers
-- `[ ]` basic list helpers that do not hide allocations
+- `[~]` basic string helpers
+- `[~]` basic list helpers that do not hide allocations
 - `[ ]` predictable numeric and conversion utilities
 - `[ ]` minimal testing and assert helpers inside the language surface
 - Checkpoints:
 - `[~]` CP-M4-1: I/O baseline for CLI apps
-- `[ ]` CP-M4-2: zero-surprise helper APIs for strings and lists
+- `[~]` CP-M4-2: zero-surprise helper APIs for strings and lists
 - `[ ]` CP-M4-3: stdlib docs and contract tests
 - Exit criteria:
 - small but real CLI-style programs are possible without compiler-internal hacks
@@ -166,8 +166,8 @@ The real goal is not feature count. Every phase of language development must:
 ## Immediate Execution Queue
 
 1. `[ ]` Expand the minimal stdlib beyond raw output:
-- basic string helpers with explicit contracts
-- basic list helpers without hidden allocations
+- expand string helpers beyond `contains`
+- expand list helpers beyond `append`
 - stdlib docs and contract tests
 
 2. `[ ]` Harden developer distribution flow:

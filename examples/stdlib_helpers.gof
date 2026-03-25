@@ -1,0 +1,5 @@
+fn main() -> int:
+    numbers = append([4, 8], 15)
+    if contains(numbers, 15) and contains("gof language", "lang"):
+        return len(numbers) + numbers[2]
+    return 0

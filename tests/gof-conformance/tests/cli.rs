@@ -128,6 +128,20 @@ fn gof_run_executes_list_sum_example() {
 }
 
 #[test]
+fn gof_run_executes_stdlib_helpers_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("stdlib_helpers.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("18"));
+}
+
+#[test]
 fn gof_run_executes_status_report_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

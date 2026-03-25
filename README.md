@@ -24,6 +24,7 @@ What is already real:
 - `while`
 - logical operators `and`, `or`, `not`
 - lists, indexing, builtin `len(...)`
+- builtin list and string helpers through `append(...)` and `contains(...)`
 - task spawning through `go`
 - waiting on tasks through `await`
 - builtin output through `print(...)`
@@ -194,6 +195,8 @@ The current bootstrap subset supports:
 - list indexing
 - builtin `len(...)`
 - builtin `print(...)`
+- builtin `append(...)`
+- builtin `contains(...)`
 - `go` and `await`
 
 See [examples/README.md](./examples/README.md) for runnable examples.
@@ -228,7 +231,7 @@ The active roadmap is maintained in [roadmap.md](./roadmap.md).
 
 Current priority order:
 
-1. richer stdlib after `print(...)`
+1. richer stdlib beyond `print(...)`, `append(...)`, and `contains(...)`
 2. production-grade concurrency model
 3. package system and native backend hardening
 4. native backend and runtime performance hardening

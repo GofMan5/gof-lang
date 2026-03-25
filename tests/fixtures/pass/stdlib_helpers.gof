@@ -1,0 +1,3 @@
+fn main() -> bool:
+    values = append([1, 2], 3)
+    return contains(values, 3) and contains("gof-lang", "lang")

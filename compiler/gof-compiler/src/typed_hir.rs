@@ -299,6 +299,8 @@ struct ReturnAccumulator {
 enum CallKind {
     BuiltinLen,
     BuiltinPrint,
+    BuiltinAppend,
+    BuiltinContains,
     Function,
     Struct,
     Enum,
@@ -1374,13 +1376,21 @@ fn lower_expr(
                 diagnostics,
                 source_path,
             );
-            let return_type = call_return_type(callee, call_kind, signatures, struct_signatures);
+            let return_type = call_return_type(
+                callee,
+                call_kind,
+                &typed_args,
+                signatures,
+                struct_signatures,
+            );
 
             TypedExpr {
                 kind: match call_kind {
                     CallKind::Function
                     | CallKind::BuiltinLen
                     | CallKind::BuiltinPrint
+                    | CallKind::BuiltinAppend
+                    | CallKind::BuiltinContains
                     | CallKind::Enum
                     | CallKind::Unknown => TypedExprKind::Call {
                         callee: callee.clone(),
@@ -1592,8 +1602,13 @@ fn lower_expr(
                     diagnostics,
                     source_path,
                 );
-                let return_type =
-                    call_return_type(callee, call_kind, signatures, struct_signatures);
+                let return_type = call_return_type(
+                    callee,
+                    call_kind,
+                    &typed_args,
+                    signatures,
+                    struct_signatures,
+                );
 
                 TypedExpr {
                     kind: TypedExprKind::Spawn {
@@ -1758,6 +1773,12 @@ fn validate_call(
         CallKind::BuiltinPrint => {
             validate_print_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinAppend => {
+            validate_append_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinContains => {
+            validate_contains_call(args, span, diagnostics, source_path);
+        }
         CallKind::Function => match signatures.get(callee) {
             Some(signature) if signature.arity == args.len() => {
                 for (index, (expected, actual)) in
@@ -1845,7 +1866,7 @@ fn validate_call(
             Diagnostic::error(
                 "GOF3004",
                 format!("unknown function or struct `{callee}`"),
-                "calls currently resolve only to top-level functions, builtin `len`, or struct constructors; enums use `EnumName.Variant`",
+                "calls currently resolve only to top-level functions, builtin helpers like `len`, `print`, `append`, `contains`, or struct constructors; enums use `EnumName.Variant`",
                 span,
             )
             .with_fix_it("define the function or struct before calling it")
@@ -1988,6 +2009,10 @@ fn resolve_call_kind(
         CallKind::BuiltinLen
     } else if callee == "print" {
         CallKind::BuiltinPrint
+    } else if callee == "append" {
+        CallKind::BuiltinAppend
+    } else if callee == "contains" {
+        CallKind::BuiltinContains
     } else if signatures.contains_key(callee) {
         CallKind::Function
     } else if struct_signatures.contains_key(callee) {
@@ -2002,12 +2027,15 @@ fn resolve_call_kind(
 fn call_return_type(
     callee: &str,
     call_kind: CallKind,
+    args: &[TypedExpr],
     signatures: &HashMap<String, FunctionSignature>,
     _struct_signatures: &HashMap<String, StructSignature>,
 ) -> Type {
     match call_kind {
         CallKind::BuiltinLen => Type::Int,
         CallKind::BuiltinPrint => Type::Unit,
+        CallKind::BuiltinAppend => infer_append_return_type(args),
+        CallKind::BuiltinContains => Type::Bool,
         CallKind::Function => signatures
             .get(callee)
             .map(|signature| signature.return_type.clone())
@@ -2516,6 +2544,134 @@ fn validate_print_call(
     }
 }
 
+fn validate_append_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `append`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `append` as `append(list_value, item)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    let list_arg = &args[0];
+    let value_arg = &args[1];
+    match &list_arg.ty {
+        Type::List(inner) => ensure_type_compatibility(
+            inner,
+            &value_arg.ty,
+            value_arg.span,
+            diagnostics,
+            "appended value has an incompatible type".to_string(),
+            format!(
+                "the list stores `{}`, but the appended value resolves to `{}`",
+                inner.display_name(),
+                value_arg.ty.display_name()
+            ),
+            source_path,
+        ),
+        Type::Unknown => {}
+        other => diagnostics.push(
+            Diagnostic::error(
+                "GOF3039",
+                "`append` requires a list as its first argument",
+                format!("this argument resolves to `{}`", other.display_name()),
+                list_arg.span,
+            )
+            .with_fix_it("pass a list value as the first argument to `append`")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+}
+
+fn validate_contains_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `contains`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `contains` as `contains(haystack, needle)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    let haystack = &args[0];
+    let needle = &args[1];
+    match &haystack.ty {
+        Type::String => {
+            if !matches!(needle.ty, Type::String | Type::Unknown) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3040",
+                        "`contains` requires a string needle for string haystacks",
+                        format!("this needle resolves to `{}`", needle.ty.display_name()),
+                        needle.span,
+                    )
+                    .with_fix_it("pass a string as the second argument to `contains`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+        }
+        Type::List(inner) => ensure_type_compatibility(
+            inner,
+            &needle.ty,
+            needle.span,
+            diagnostics,
+            "needle has an incompatible type for `contains`".to_string(),
+            format!(
+                "the list stores `{}`, but the needle resolves to `{}`",
+                inner.display_name(),
+                needle.ty.display_name()
+            ),
+            source_path,
+        ),
+        Type::Unknown => {}
+        other => diagnostics.push(
+            Diagnostic::error(
+                "GOF3040",
+                "`contains` requires a string or list haystack",
+                format!("this haystack resolves to `{}`", other.display_name()),
+                haystack.span,
+            )
+            .with_fix_it("call `contains` with a string or list as the first argument")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+}
+
+fn infer_append_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 2 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) => merge_return_types(inner, &args[1].ty)
+            .map(Type::list)
+            .unwrap_or_else(|| Type::list(inner.as_ref().clone())),
+        Type::Unknown => Type::Unknown,
+        _ => Type::Unknown,
+    }
+}
+
 fn is_printable_type(ty: &Type) -> bool {
     match ty {
         Type::Int | Type::String | Type::Bool | Type::Struct(_) | Type::Enum(_) | Type::Unknown => {
@@ -2678,6 +2834,29 @@ mod tests {
     }
 
     #[test]
+    fn supports_append_and_contains_builtins() {
+        let module = lower_source(
+            "fn main() -> bool:\n    values = append([1, 2], 3)\n    return contains(values, 3) and contains(\"gof-lang\", \"lang\")\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "append")
+                );
+            }
+            other => panic!("expected append bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Return(expr) => assert_eq!(expr.ty, Type::Bool),
+            other => panic!("expected bool return, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_print_builtin_with_unit_return() {
         let module = lower_source("fn main() -> int:\n    print(\"gof\")\n    return 1\n")
             .expect("typing should succeed");
@@ -2701,6 +2880,22 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3038"]);
+    }
+
+    #[test]
+    fn rejects_invalid_append_operands() {
+        let diagnostics = lower_source("fn main() -> list:\n    return append(1, 2)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3039"]);
+    }
+
+    #[test]
+    fn rejects_invalid_contains_operands() {
+        let diagnostics = lower_source("fn main() -> bool:\n    return contains(true, false)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3040"]);
     }
 
     #[test]

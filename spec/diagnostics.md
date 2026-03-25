@@ -57,3 +57,5 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3036`: unknown method on a struct
 - `GOF3037`: method call on a non-struct value
 - `GOF3038`: invalid operand for builtin `print`
+- `GOF3039`: invalid operand for builtin `append`
+- `GOF3040`: invalid operand for builtin `contains`
