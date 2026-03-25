@@ -56,26 +56,32 @@ function New-ReleaseNotes {
         [string]$GeneratedAt
     )
 
-    @"
-# gof snapshot release
+    $assetLine = if ($SkipLinux) {
+        "- gof-linux-x86_64.tar.gz (skipped for this run)"
+    } else {
+        "- gof-linux-x86_64.tar.gz"
+    }
 
-- branch: `$Branch`
-- commit: `$ShortSha`
-- generated-at: `$GeneratedAt`
-- source: https://github.com/$Repo/commit/$CommitSha
-
-## Commit
-
-$CommitMessage
-
-## Assets
-
-- `gof-windows-x86_64.zip`
-- `gof-linux-x86_64.tar.gz`$(if ($SkipLinux) { " (skipped for this run)" } else { "" })
-- `SHA256SUMS.txt`
-
-This is an automatically refreshed prerelease snapshot intended for fast install and update testing.
-"@ | Set-Content -Path $Path
+    @(
+        "# gof snapshot release"
+        ""
+        "- branch: $Branch"
+        "- commit: $ShortSha"
+        "- generated-at: $GeneratedAt"
+        "- source: https://github.com/$Repo/commit/$CommitSha"
+        ""
+        "## Commit"
+        ""
+        $CommitMessage
+        ""
+        "## Assets"
+        ""
+        "- gof-windows-x86_64.zip"
+        $assetLine
+        "- SHA256SUMS.txt"
+        ""
+        "This is an automatically refreshed prerelease snapshot intended for fast install and update testing."
+    ) | Set-Content -Path $Path
 }
 
 Require-Command git
