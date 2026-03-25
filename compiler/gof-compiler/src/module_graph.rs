@@ -21,6 +21,9 @@ pub fn parse_single_source(source: &SourceFile) -> Result<Module, Diagnostics> {
     for decl in &mut module.structs {
         decl.source_path = source.path().to_path_buf();
     }
+    for decl in &mut module.enums {
+        decl.source_path = source.path().to_path_buf();
+    }
     for function in &mut module.functions {
         function.source_path = source.path().to_path_buf();
     }
@@ -38,12 +41,13 @@ pub fn load_module_graph(source: &SourceFile) -> Result<Module, Diagnostics> {
         .get(&root_path)
         .map(|module| module.imports.clone())
         .unwrap_or_default();
-    let (structs, functions) = resolver.collect_items(&mut diagnostics);
+    let (structs, enums, functions) = resolver.collect_items(&mut diagnostics);
 
     if diagnostics.is_empty() {
         Ok(Module {
             imports: root_imports,
             structs,
+            enums,
             functions,
         })
     } else {
@@ -139,10 +143,16 @@ impl ModuleResolver {
     fn collect_items(
         &self,
         diagnostics: &mut Diagnostics,
-    ) -> (Vec<crate::ast::StructDecl>, Vec<crate::ast::Function>) {
+    ) -> (
+        Vec<crate::ast::StructDecl>,
+        Vec<crate::ast::EnumDecl>,
+        Vec<crate::ast::Function>,
+    ) {
         let mut seen_structs = HashMap::<String, (PathBuf, crate::source::Span)>::new();
+        let mut seen_enums = HashMap::<String, (PathBuf, crate::source::Span)>::new();
         let mut seen = HashMap::<String, (PathBuf, crate::source::Span)>::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         let mut functions = Vec::new();
 
         for path in &self.load_order {
@@ -194,6 +204,77 @@ impl ModuleResolver {
                 structs.push(decl.clone());
             }
 
+            for decl in &module.enums {
+                if let Some((original_path, original_span)) = seen_enums.get(&decl.name).cloned() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3029",
+                            format!("duplicate enum `{}` in module graph", decl.name),
+                            format!(
+                                "first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it("rename one of the enums or remove the conflicting import")
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                if let Some((original_path, original_span)) = seen_structs.get(&decl.name).cloned()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between an enum and a struct",
+                                decl.name
+                            ),
+                            format!(
+                                "the struct was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it(
+                            "rename either the enum or the struct so type names stay unambiguous",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                if let Some((original_path, original_span)) = seen.get(&decl.name).cloned() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between an enum and a function",
+                                decl.name
+                            ),
+                            format!(
+                                "the function was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it("rename either the enum or the function so top-level names stay unambiguous")
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                seen_enums.insert(decl.name.clone(), (path.clone(), decl.span));
+                enums.push(decl.clone());
+            }
+
             for function in &module.functions {
                 if let Some((original_path, original_span)) =
                     seen_structs.get(&function.name).cloned()
@@ -215,6 +296,32 @@ impl ModuleResolver {
                         )
                         .with_fix_it(
                             "rename either the function or the struct so calls stay unambiguous",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                if let Some((original_path, original_span)) =
+                    seen_enums.get(&function.name).cloned()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between a function and an enum",
+                                function.name
+                            ),
+                            format!(
+                                "the enum was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            function.span,
+                        )
+                        .with_fix_it(
+                            "rename either the function or the enum so top-level names stay unambiguous",
                         )
                         .with_source_path(path.clone()),
                     );
@@ -245,7 +352,7 @@ impl ModuleResolver {
             }
         }
 
-        (structs, functions)
+        (structs, enums, functions)
     }
 }
 
@@ -298,6 +405,7 @@ mod tests {
 
         assert_eq!(module.imports.len(), 1);
         assert_eq!(module.functions.len(), 2);
+        assert!(module.enums.is_empty());
         assert_eq!(module.functions[0].name, "square");
         assert_eq!(module.functions[1].name, "main");
     }
@@ -375,7 +483,52 @@ mod tests {
                 .expect("module graph should load");
 
         assert_eq!(module.structs.len(), 1);
+        assert!(module.enums.is_empty());
         assert_eq!(module.structs[0].name, "Point");
         assert_eq!(module.functions.len(), 2);
+    }
+
+    #[test]
+    fn loads_enums_from_local_imports() {
+        let temp = tempdir().expect("tempdir should exist");
+        let helper_path = temp.path().join("state.gof");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(&helper_path, "enum Status:\n    Ready\n    Busy\n")
+            .expect("helper module should be written");
+        fs::write(
+            &main_path,
+            "import state\n\nfn main() -> bool:\n    return Status.Ready == Status.Busy\n",
+        )
+        .expect("main module should be written");
+
+        let module =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
+                .expect("module graph should load");
+
+        assert_eq!(module.enums.len(), 1);
+        assert_eq!(module.enums[0].name, "Status");
+        assert_eq!(module.functions.len(), 1);
+    }
+
+    #[test]
+    fn rejects_duplicate_enum_names_across_modules() {
+        let temp = tempdir().expect("tempdir should exist");
+        let helper_path = temp.path().join("state.gof");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(&helper_path, "enum Status:\n    Ready\n")
+            .expect("helper module should be written");
+        fs::write(
+            &main_path,
+            "import state\n\nenum Status:\n    Busy\n\nfn main() -> bool:\n    return Status.Ready != Status.Busy\n",
+        )
+        .expect("main module should be written");
+
+        let diagnostics =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
+                .expect_err("duplicate enums should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3029"]);
     }
 }

@@ -1,0 +1,13 @@
+enum Status:
+    Ready
+    Busy
+
+fn score(status: Status) -> int:
+    if status == Status.Ready:
+        return 200
+    else:
+        return 503
+
+fn main() -> int:
+    current: Status = Status.Ready
+    return score(current)

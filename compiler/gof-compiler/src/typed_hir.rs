@@ -1,6 +1,6 @@
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
-use crate::hir::{HirExpr, HirFunction, HirModule, HirStmt, HirStruct, HirTypeRef};
+use crate::hir::{HirEnum, HirExpr, HirFunction, HirModule, HirStmt, HirStruct, HirTypeRef};
 use crate::source::Span;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
@@ -12,6 +12,7 @@ pub enum Type {
     String,
     Bool,
     Struct(String),
+    Enum(String),
     List(Box<Type>),
     Task(Box<Type>),
     Unknown,
@@ -37,6 +38,7 @@ impl Type {
             Self::String => "string".to_string(),
             Self::Bool => "bool".to_string(),
             Self::Struct(name) => name.clone(),
+            Self::Enum(name) => name.clone(),
             Self::List(inner) => format!("list[{}]", inner.display_name()),
             Self::Task(inner) => format!("task[{}]", inner.display_name()),
             Self::Unknown => "unknown".to_string(),
@@ -48,6 +50,7 @@ impl Type {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedModule {
     pub structs: Vec<TypedStruct>,
+    pub enums: Vec<TypedEnum>,
     pub functions: Vec<TypedFunction>,
 }
 
@@ -67,9 +70,20 @@ pub struct TypedStruct {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct TypedEnum {
+    pub name: String,
+    pub variants: Vec<TypedEnumVariant>,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct TypedStructField {
     pub name: String,
     pub ty: Type,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedEnumVariant {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -126,6 +140,10 @@ pub enum TypedExprKind {
         name: String,
         args: Vec<TypedExpr>,
     },
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+    },
     Field {
         target: Box<TypedExpr>,
         field: String,
@@ -166,9 +184,19 @@ struct StructSignature {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct EnumSignature {
+    variants: Vec<EnumVariantSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StructFieldSignature {
     name: String,
     ty: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnumVariantSignature {
+    name: String,
 }
 
 #[derive(Debug, Clone)]
@@ -250,6 +278,7 @@ enum CallKind {
     BuiltinLen,
     Function,
     Struct,
+    Enum,
     Unknown,
 }
 
@@ -260,13 +289,28 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         .iter()
         .map(|decl| decl.name.clone())
         .collect::<HashSet<_>>();
+    let known_enums = module
+        .enums
+        .iter()
+        .map(|decl| decl.name.clone())
+        .collect::<HashSet<_>>();
     let struct_signatures = module
         .structs
         .iter()
         .map(|decl| {
             (
                 decl.name.clone(),
-                lower_struct_signature(decl, &known_structs, &mut diagnostics),
+                lower_struct_signature(decl, &known_structs, &known_enums, &mut diagnostics),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let enum_signatures = module
+        .enums
+        .iter()
+        .map(|decl| {
+            (
+                decl.name.clone(),
+                lower_enum_signature(decl, &mut diagnostics),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -277,6 +321,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
             let declared_return_type = resolve_type_annotation(
                 function.return_type.as_ref(),
                 &known_structs,
+                &known_enums,
                 &function.source_path,
                 &mut diagnostics,
             );
@@ -296,6 +341,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                             resolve_type_annotation(
                                 param.ty.as_ref(),
                                 &known_structs,
+                                &known_enums,
                                 &function.source_path,
                                 &mut diagnostics,
                             )
@@ -317,7 +363,9 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                     function,
                     &signatures,
                     &known_structs,
+                    &known_enums,
                     &struct_signatures,
+                    &enum_signatures,
                     &mut Diagnostics::default(),
                 )
             })
@@ -344,6 +392,11 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         .iter()
         .map(|decl| lower_struct(decl, &struct_signatures))
         .collect::<Vec<_>>();
+    let enums = module
+        .enums
+        .iter()
+        .map(|decl| lower_enum(decl, &enum_signatures))
+        .collect::<Vec<_>>();
     let functions = module
         .functions
         .iter()
@@ -352,14 +405,20 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                 function,
                 &signatures,
                 &known_structs,
+                &known_enums,
                 &struct_signatures,
+                &enum_signatures,
                 &mut diagnostics,
             )
         })
         .collect::<Vec<_>>();
 
     if diagnostics.is_empty() {
-        Ok(TypedModule { structs, functions })
+        Ok(TypedModule {
+            structs,
+            enums,
+            functions,
+        })
     } else {
         Err(diagnostics)
     }
@@ -369,7 +428,9 @@ fn lower_function(
     function: &HirFunction,
     signatures: &HashMap<String, FunctionSignature>,
     known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
 ) -> TypedFunction {
     let signature = signatures
@@ -390,7 +451,9 @@ fn lower_function(
         &mut scopes,
         signatures,
         known_structs,
+        known_enums,
         struct_signatures,
+        enum_signatures,
         diagnostics,
         false,
         &function.source_path,
@@ -436,6 +499,7 @@ fn lower_function(
 fn lower_struct_signature(
     decl: &HirStruct,
     known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
     diagnostics: &mut Diagnostics,
 ) -> StructSignature {
     let mut seen_fields = HashSet::new();
@@ -462,9 +526,38 @@ fn lower_struct_signature(
                     ty: resolve_type_annotation(
                         Some(&field.ty),
                         known_structs,
+                        known_enums,
                         &decl.source_path,
                         diagnostics,
                     ),
+                }
+            })
+            .collect(),
+    }
+}
+
+fn lower_enum_signature(decl: &HirEnum, diagnostics: &mut Diagnostics) -> EnumSignature {
+    let mut seen_variants = HashSet::new();
+    EnumSignature {
+        variants: decl
+            .variants
+            .iter()
+            .map(|variant| {
+                if !seen_variants.insert(variant.name.clone()) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3027",
+                            format!("duplicate variant `{}` on `{}`", variant.name, decl.name),
+                            "each enum variant name must be unique within its declaration",
+                            variant.span,
+                        )
+                        .with_fix_it("rename or remove the duplicate variant")
+                        .with_source_path(decl.source_path.clone()),
+                    );
+                }
+
+                EnumVariantSignature {
+                    name: variant.name.clone(),
                 }
             })
             .collect(),
@@ -491,12 +584,30 @@ fn lower_struct(
     }
 }
 
+fn lower_enum(decl: &HirEnum, enum_signatures: &HashMap<String, EnumSignature>) -> TypedEnum {
+    let signature = enum_signatures
+        .get(&decl.name)
+        .expect("typed enum lowering requires a matching enum signature");
+    TypedEnum {
+        name: decl.name.clone(),
+        variants: signature
+            .variants
+            .iter()
+            .map(|variant| TypedEnumVariant {
+                name: variant.name.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn lower_block(
     stmts: &[HirStmt],
     scopes: &mut ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
     known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     nested_scope: bool,
     source_path: &Path,
@@ -513,7 +624,9 @@ fn lower_block(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             )
@@ -532,7 +645,9 @@ fn lower_stmt(
     scopes: &mut ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
     known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> TypedStmt {
@@ -542,7 +657,9 @@ fn lower_stmt(
             scopes,
             signatures,
             known_structs,
+            known_enums,
             struct_signatures,
+            enum_signatures,
             diagnostics,
             source_path,
         )),
@@ -571,12 +688,19 @@ fn lower_stmt(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
-            let declared_type =
-                resolve_type_annotation(ty.as_ref(), known_structs, source_path, diagnostics);
+            let declared_type = resolve_type_annotation(
+                ty.as_ref(),
+                known_structs,
+                known_enums,
+                source_path,
+                diagnostics,
+            );
             if ty.is_some() {
                 ensure_type_compatibility(
                     &declared_type,
@@ -613,7 +737,9 @@ fn lower_stmt(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -676,7 +802,9 @@ fn lower_stmt(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -686,7 +814,9 @@ fn lower_stmt(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 true,
                 source_path,
@@ -696,7 +826,9 @@ fn lower_stmt(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 true,
                 source_path,
@@ -717,7 +849,9 @@ fn lower_stmt(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -727,7 +861,9 @@ fn lower_stmt(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 true,
                 source_path,
@@ -739,7 +875,9 @@ fn lower_stmt(
             scopes,
             signatures,
             known_structs,
+            known_enums,
             struct_signatures,
+            enum_signatures,
             diagnostics,
             source_path,
         )),
@@ -766,7 +904,9 @@ fn lower_expr(
     scopes: &ScopeStack,
     signatures: &HashMap<String, FunctionSignature>,
     known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
     struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> TypedExpr {
@@ -795,7 +935,9 @@ fn lower_expr(
                         scopes,
                         signatures,
                         known_structs,
+                        known_enums,
                         struct_signatures,
+                        enum_signatures,
                         diagnostics,
                         source_path,
                     )
@@ -840,13 +982,16 @@ fn lower_expr(
                         scopes,
                         signatures,
                         known_structs,
+                        known_enums,
                         struct_signatures,
+                        enum_signatures,
                         diagnostics,
                         source_path,
                     )
                 })
                 .collect::<Vec<_>>();
-            let call_kind = resolve_call_kind(callee, signatures, struct_signatures);
+            let call_kind =
+                resolve_call_kind(callee, signatures, struct_signatures, enum_signatures);
             validate_call(
                 callee,
                 &typed_args,
@@ -861,12 +1006,13 @@ fn lower_expr(
 
             TypedExpr {
                 kind: match call_kind {
-                    CallKind::Function | CallKind::BuiltinLen | CallKind::Unknown => {
-                        TypedExprKind::Call {
-                            callee: callee.clone(),
-                            args: typed_args,
-                        }
-                    }
+                    CallKind::Function
+                    | CallKind::BuiltinLen
+                    | CallKind::Enum
+                    | CallKind::Unknown => TypedExprKind::Call {
+                        callee: callee.clone(),
+                        args: typed_args,
+                    },
                     CallKind::Struct => TypedExprKind::StructInit {
                         name: callee.clone(),
                         args: typed_args,
@@ -881,12 +1027,35 @@ fn lower_expr(
             field,
             span,
         } => {
+            if let HirExpr::Local(name, target_span) = target.as_ref() {
+                if scopes.get(name).is_none() && enum_signatures.contains_key(name) {
+                    let ty = infer_enum_variant_type(
+                        name,
+                        field,
+                        diagnostics,
+                        *span,
+                        enum_signatures,
+                        source_path,
+                    );
+                    return TypedExpr {
+                        kind: TypedExprKind::EnumVariant {
+                            enum_name: name.clone(),
+                            variant: field.clone(),
+                        },
+                        ty,
+                        span: Span::new(target_span.line, target_span.column, span.end_column),
+                    };
+                }
+            }
+
             let target = lower_expr(
                 target,
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -917,7 +1086,9 @@ fn lower_expr(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -926,7 +1097,9 @@ fn lower_expr(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -955,13 +1128,16 @@ fn lower_expr(
                             scopes,
                             signatures,
                             known_structs,
+                            known_enums,
                             struct_signatures,
+                            enum_signatures,
                             diagnostics,
                             source_path,
                         )
                     })
                     .collect::<Vec<_>>();
-                let call_kind = resolve_call_kind(callee, signatures, struct_signatures);
+                let call_kind =
+                    resolve_call_kind(callee, signatures, struct_signatures, enum_signatures);
                 if !matches!(call_kind, CallKind::Function | CallKind::Unknown) {
                     diagnostics.push(
                         Diagnostic::error(
@@ -1002,7 +1178,9 @@ fn lower_expr(
                     scopes,
                     signatures,
                     known_structs,
+                    known_enums,
                     struct_signatures,
+                    enum_signatures,
                     diagnostics,
                     source_path,
                 );
@@ -1033,7 +1211,9 @@ fn lower_expr(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -1069,7 +1249,9 @@ fn lower_expr(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -1090,7 +1272,9 @@ fn lower_expr(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -1099,7 +1283,9 @@ fn lower_expr(
                 scopes,
                 signatures,
                 known_structs,
+                known_enums,
                 struct_signatures,
+                enum_signatures,
                 diagnostics,
                 source_path,
             );
@@ -1205,11 +1391,21 @@ fn validate_call(
                 );
             }
         }
+        CallKind::Enum => diagnostics.push(
+            Diagnostic::error(
+                "GOF3004",
+                format!("enum `{callee}` is not callable"),
+                "unit enum variants use `EnumName.Variant`, not constructor calls",
+                span,
+            )
+            .with_fix_it("replace this call with `EnumName.Variant`")
+            .with_source_path(source_path.to_path_buf()),
+        ),
         CallKind::Unknown => diagnostics.push(
             Diagnostic::error(
                 "GOF3004",
                 format!("unknown function or struct `{callee}`"),
-                "calls currently resolve only to top-level functions, builtin `len`, or struct constructors",
+                "calls currently resolve only to top-level functions, builtin `len`, or struct constructors; enums use `EnumName.Variant`",
                 span,
             )
             .with_fix_it("define the function or struct before calling it")
@@ -1221,6 +1417,7 @@ fn validate_call(
 fn resolve_type_annotation(
     ty: Option<&HirTypeRef>,
     known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
 ) -> Type {
@@ -1236,15 +1433,16 @@ fn resolve_type_annotation(
         "task" => Type::task(Type::Unknown),
         "unit" => Type::Unit,
         name if known_structs.contains(name) => Type::Struct(name.to_string()),
+        name if known_enums.contains(name) => Type::Enum(name.to_string()),
         _ => {
             diagnostics.push(
                 Diagnostic::error(
                     "GOF3012",
                     format!("unknown type annotation `{}`", ty.name),
-                    "the bootstrap type system currently supports builtin annotations plus known struct names from the loaded module graph",
+                    "the bootstrap type system currently supports builtin annotations plus known struct and enum names from the loaded module graph",
                     ty.span,
                 )
-                .with_fix_it("replace the annotation with a supported builtin type or a known struct name")
+                .with_fix_it("replace the annotation with a supported builtin type or a known struct or enum name")
                 .with_source_path(source_path.to_path_buf()),
             );
             Type::Unknown
@@ -1256,6 +1454,7 @@ fn resolve_call_kind(
     callee: &str,
     signatures: &HashMap<String, FunctionSignature>,
     struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
 ) -> CallKind {
     if callee == "len" {
         CallKind::BuiltinLen
@@ -1263,6 +1462,8 @@ fn resolve_call_kind(
         CallKind::Function
     } else if struct_signatures.contains_key(callee) {
         CallKind::Struct
+    } else if enum_signatures.contains_key(callee) {
+        CallKind::Enum
     } else {
         CallKind::Unknown
     }
@@ -1281,6 +1482,7 @@ fn call_return_type(
             .map(|signature| signature.return_type.clone())
             .unwrap_or(Type::Unknown),
         CallKind::Struct => Type::Struct(callee.to_string()),
+        CallKind::Enum => Type::Unknown,
         CallKind::Unknown => Type::Unknown,
     }
 }
@@ -1368,6 +1570,7 @@ fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
         (Type::Struct(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Struct(rhs)) if lhs == rhs => {
             Type::Bool
         }
+        (Type::Enum(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Enum(rhs)) if lhs == rhs => Type::Bool,
         _ => Type::Unknown,
     }
 }
@@ -1421,6 +1624,39 @@ fn infer_field_type(
             );
             Type::Unknown
         }
+    }
+}
+
+fn infer_enum_variant_type(
+    enum_name: &str,
+    variant: &str,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    source_path: &Path,
+) -> Type {
+    let Some(signature) = enum_signatures.get(enum_name) else {
+        return Type::Unknown;
+    };
+
+    if signature
+        .variants
+        .iter()
+        .any(|candidate| candidate.name == variant)
+    {
+        Type::Enum(enum_name.to_string())
+    } else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3028",
+                format!("unknown variant `{variant}` on `{enum_name}`"),
+                "enum variant references must use a variant declared on the enum",
+                span,
+            )
+            .with_fix_it("use one of the variants declared on the enum")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        Type::Unknown
     }
 }
 
@@ -1872,6 +2108,28 @@ mod tests {
     }
 
     #[test]
+    fn supports_enum_contracts_and_variant_references() {
+        let module = lower_source(
+            "enum Status:\n    Ready\n    Busy\n\nfn is_ready(status: Status) -> bool:\n    return status == Status.Ready\n\nfn main() -> bool:\n    current: Status = Status.Busy\n    return is_ready(current)\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(module.enums.len(), 1);
+        assert_eq!(module.enums[0].name, "Status");
+        assert_eq!(
+            module.functions[0].params[0].ty,
+            Type::Enum("Status".to_string())
+        );
+        assert_eq!(module.functions[0].return_type, Type::Bool);
+        assert_eq!(module.functions[1].return_type, Type::Bool);
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Return(expr) => assert_eq!(expr.ty, Type::Bool),
+            other => panic!("expected enum comparison return, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn rejects_unknown_struct_field_access() {
         let diagnostics = lower_source(
             "struct Point:\n    x: int\n\nfn main() -> int:\n    point = Point(3)\n    return point.y\n",
@@ -1897,6 +2155,35 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3023"]);
+    }
+
+    #[test]
+    fn rejects_duplicate_enum_variants() {
+        let diagnostics = lower_source(
+            "enum Status:\n    Ready\n    Ready\n\nfn main() -> bool:\n    return Status.Ready == Status.Ready\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3027"]);
+    }
+
+    #[test]
+    fn rejects_unknown_enum_variant() {
+        let diagnostics = lower_source(
+            "enum Status:\n    Ready\n\nfn main() -> bool:\n    return Status.Busy == Status.Ready\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3028"]);
+    }
+
+    #[test]
+    fn rejects_enum_calls() {
+        let diagnostics =
+            lower_source("enum Status:\n    Ready\n\nfn main() -> Status:\n    return Status()\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3004"]);
     }
 
     #[test]

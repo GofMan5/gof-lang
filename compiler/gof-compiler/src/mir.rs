@@ -29,6 +29,11 @@ pub enum MirInstruction {
         dest: usize,
         value: bool,
     },
+    ConstEnumVariant {
+        dest: usize,
+        enum_name: String,
+        variant: String,
+    },
     BuildList {
         dest: usize,
         items: Vec<usize>,
@@ -215,6 +220,15 @@ impl MirBuilder {
                 self.instructions.push(MirInstruction::ConstBool {
                     dest,
                     value: *value,
+                });
+                dest
+            }
+            TypedExprKind::EnumVariant { enum_name, variant } => {
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::ConstEnumVariant {
+                    dest,
+                    enum_name: enum_name.clone(),
+                    variant: variant.clone(),
                 });
                 dest
             }

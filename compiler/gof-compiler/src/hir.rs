@@ -1,4 +1,7 @@
-use crate::ast::{BinaryOp, Expr, Module, Param, Stmt, StructDecl, StructField, TypeRef, UnaryOp};
+use crate::ast::{
+    BinaryOp, EnumDecl, EnumVariant, Expr, Module, Param, Stmt, StructDecl, StructField, TypeRef,
+    UnaryOp,
+};
 use crate::source::Span;
 use serde::Serialize;
 use std::path::PathBuf;
@@ -6,6 +9,7 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Serialize)]
 pub struct HirModule {
     pub structs: Vec<HirStruct>,
+    pub enums: Vec<HirEnum>,
     pub functions: Vec<HirFunction>,
 }
 
@@ -30,6 +34,19 @@ pub struct HirStruct {
 pub struct HirStructField {
     pub name: String,
     pub ty: HirTypeRef,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirEnum {
+    pub name: String,
+    pub variants: Vec<HirEnumVariant>,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirEnumVariant {
+    pub name: String,
     pub span: Span,
 }
 
@@ -124,6 +141,7 @@ pub enum HirExpr {
 pub fn lower(module: &Module) -> HirModule {
     HirModule {
         structs: module.structs.iter().map(lower_struct).collect(),
+        enums: module.enums.iter().map(lower_enum).collect(),
         functions: module
             .functions
             .iter()
@@ -153,6 +171,21 @@ fn lower_struct_field(field: &StructField) -> HirStructField {
         name: field.name.clone(),
         ty: lower_type_ref(&field.ty),
         span: field.span,
+    }
+}
+
+fn lower_enum(decl: &EnumDecl) -> HirEnum {
+    HirEnum {
+        name: decl.name.clone(),
+        variants: decl.variants.iter().map(lower_enum_variant).collect(),
+        source_path: decl.source_path.clone(),
+    }
+}
+
+fn lower_enum_variant(variant: &EnumVariant) -> HirEnumVariant {
+    HirEnumVariant {
+        name: variant.name.clone(),
+        span: variant.span,
     }
 }
 

@@ -98,6 +98,20 @@ fn gof_run_executes_list_sum_example() {
 }
 
 #[test]
+fn gof_run_executes_status_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("status_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("200"));
+}
+
+#[test]
 fn gof_run_executes_string_metrics_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

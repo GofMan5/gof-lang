@@ -1,0 +1,6 @@
+enum Status:
+    Ready
+    Ready
+
+fn main() -> bool:
+    return Status.Ready == Status.Ready

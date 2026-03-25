@@ -15,6 +15,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `geometry.gof`: `struct`, typed fields, constructor calls, field access
 - `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow
 - `list_sum.gof`: lists, indexing, `len`, looping over data
+- `status_report.gof`: `enum`, unit variants, typed enum bindings, equality
 - `string_metrics.gof`: list of strings, indexing to string, `len(string)`
 - `parallel_report.gof`: lists plus task fan-out and aggregation
 - `modules/main.gof`: same-directory imports and multi-file resolution
@@ -29,6 +30,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `geometry.gof` -> `42`
 - `health_gate.gof` -> `1`
 - `list_sum.gof` -> `108`
+- `status_report.gof` -> `200`
 - `string_metrics.gof` -> `10`
 - `parallel_report.gof` -> `104`
 - `modules/main.gof` -> `121`

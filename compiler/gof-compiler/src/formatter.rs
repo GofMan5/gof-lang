@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOp, Expr, Function, Import, Module, Param, Stmt, StructDecl, StructField, TypeRef,
-    UnaryOp,
+    BinaryOp, EnumDecl, EnumVariant, Expr, Function, Import, Module, Param, Stmt, StructDecl,
+    StructField, TypeRef, UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -23,6 +23,17 @@ pub fn format_module(module: &Module) -> String {
                 .structs
                 .iter()
                 .map(format_struct)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    if !module.enums.is_empty() {
+        sections.push(
+            module
+                .enums
+                .iter()
+                .map(format_enum)
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -59,6 +70,21 @@ fn format_struct(decl: &StructDecl) -> String {
 fn format_struct_field(field: &StructField, indent_level: usize) -> String {
     let indent = "    ".repeat(indent_level);
     format!("{indent}{}: {}", field.name, format_type_ref(&field.ty))
+}
+
+fn format_enum(decl: &EnumDecl) -> String {
+    let variants = decl
+        .variants
+        .iter()
+        .map(|variant| format_enum_variant(variant, 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("enum {}:\n{variants}", decl.name)
+}
+
+fn format_enum_variant(variant: &EnumVariant, indent_level: usize) -> String {
+    let indent = "    ".repeat(indent_level);
+    format!("{indent}{}", variant.name)
 }
 
 fn format_function(function: &Function) -> String {
@@ -256,6 +282,19 @@ mod tests {
         assert_eq!(
             formatted,
             "fn main() -> bool:\n    return not false and true or false\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_enums_and_variant_references() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "enum Status:\n    Ready\n    Busy\n\nfn main()->bool:\n    return Status.Ready==Status.Busy\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> bool:\n    return Status.Ready == Status.Busy\n"
         );
     }
 }

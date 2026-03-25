@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, Expr, Function, Module, Param, Stmt, StructDecl, UnaryOp};
+use crate::ast::{BinaryOp, EnumDecl, Expr, Function, Module, Param, Stmt, StructDecl, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
 use std::collections::HashMap;
@@ -9,6 +9,7 @@ use std::sync::{Arc, Condvar, Mutex};
 
 type FunctionTable = Arc<HashMap<String, Function>>;
 type StructTable = Arc<HashMap<String, StructDecl>>;
+type EnumTable = Arc<HashMap<String, EnumDecl>>;
 
 #[derive(Clone)]
 pub enum Value {
@@ -16,6 +17,7 @@ pub enum Value {
     String(String),
     Bool(bool),
     Struct(StructValue),
+    Enum(EnumValue),
     List(Vec<Value>),
     Task(TaskValue),
     Unit,
@@ -28,6 +30,7 @@ impl Debug for Value {
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
             Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
             Self::Struct(value) => f.debug_tuple("Struct").field(value).finish(),
+            Self::Enum(value) => f.debug_tuple("Enum").field(value).finish(),
             Self::List(values) => f.debug_tuple("List").field(values).finish(),
             Self::Task(_) => f.write_str("Task(<pending-or-completed>)"),
             Self::Unit => f.write_str("Unit"),
@@ -42,6 +45,7 @@ impl PartialEq for Value {
             (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
             (Self::Struct(lhs), Self::Struct(rhs)) => lhs == rhs,
+            (Self::Enum(lhs), Self::Enum(rhs)) => lhs == rhs,
             (Self::List(lhs), Self::List(rhs)) => lhs == rhs,
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
             (Self::Unit, Self::Unit) => true,
@@ -59,6 +63,7 @@ impl Value {
             Self::String(value) => Some(value.clone()),
             Self::Bool(value) => Some(value.to_string()),
             Self::Struct(value) => Some(value.cli_text()),
+            Self::Enum(value) => Some(value.cli_text()),
             Self::List(values) => Some(format!(
                 "[{}]",
                 values
@@ -101,6 +106,18 @@ impl StructValue {
                 .collect::<Vec<_>>()
                 .join(", ")
         )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnumValue {
+    name: String,
+    variant: String,
+}
+
+impl EnumValue {
+    fn cli_text(&self) -> String {
+        format!("{}.{}", self.name, self.variant)
     }
 }
 
@@ -235,6 +252,13 @@ pub fn run(module: &Module) -> Result<Value, Diagnostics> {
             .map(|decl| (decl.name.clone(), decl.clone()))
             .collect::<HashMap<_, _>>(),
     );
+    let enums = Arc::new(
+        module
+            .enums
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.clone()))
+            .collect::<HashMap<_, _>>(),
+    );
 
     let main = functions.get("main").cloned().ok_or_else(|| {
         Diagnostics(vec![
@@ -260,7 +284,7 @@ pub fn run(module: &Module) -> Result<Value, Diagnostics> {
         ]));
     }
 
-    eval_function(&main, &[], &functions, &structs)
+    eval_function(&main, &[], &functions, &structs, &enums)
 }
 
 fn eval_function(
@@ -268,6 +292,7 @@ fn eval_function(
     args: &[Value],
     functions: &FunctionTable,
     structs: &StructTable,
+    enums: &EnumTable,
 ) -> Result<Value, Diagnostics> {
     if function.params.len() != args.len() {
         return Err(Diagnostics(vec![
@@ -291,6 +316,7 @@ fn eval_function(
         &mut scopes,
         functions,
         structs,
+        enums,
         false,
         &function.source_path,
     )? {
@@ -305,6 +331,7 @@ fn eval_block(
     scopes: &mut ScopeStack,
     functions: &FunctionTable,
     structs: &StructTable,
+    enums: &EnumTable,
     nested_scope: bool,
     source_path: &Path,
 ) -> Result<Option<Value>, Diagnostics> {
@@ -313,7 +340,7 @@ fn eval_block(
     }
 
     for stmt in stmts {
-        if let Some(value) = eval_stmt(stmt, scopes, functions, structs, source_path)? {
+        if let Some(value) = eval_stmt(stmt, scopes, functions, structs, enums, source_path)? {
             if nested_scope {
                 scopes.pop();
             }
@@ -333,6 +360,7 @@ fn eval_stmt(
     scopes: &mut ScopeStack,
     functions: &FunctionTable,
     structs: &StructTable,
+    enums: &EnumTable,
     source_path: &Path,
 ) -> Result<Option<Value>, Diagnostics> {
     match stmt {
@@ -341,6 +369,7 @@ fn eval_stmt(
             scopes,
             functions,
             structs,
+            enums,
             source_path,
         )?)),
         Stmt::Bind {
@@ -359,7 +388,7 @@ fn eval_stmt(
                 )]));
             }
 
-            let value = eval_expr(value, scopes, functions, structs, source_path)?;
+            let value = eval_expr(value, scopes, functions, structs, enums, source_path)?;
             scopes.define_current(
                 name.clone(),
                 Binding {
@@ -370,7 +399,7 @@ fn eval_stmt(
             Ok(None)
         }
         Stmt::Assign { name, value, span } => {
-            let value = eval_expr(value, scopes, functions, structs, source_path)?;
+            let value = eval_expr(value, scopes, functions, structs, enums, source_path)?;
             if let Some(existing) = scopes.get_mut(name) {
                 if !existing.mutable {
                     return Err(Diagnostics(vec![
@@ -402,14 +431,26 @@ fn eval_stmt(
             else_body,
             ..
         } => {
-            let condition = eval_expr(condition, scopes, functions, structs, source_path)?;
+            let condition = eval_expr(condition, scopes, functions, structs, enums, source_path)?;
             match condition {
-                Value::Bool(true) => {
-                    eval_block(then_body, scopes, functions, structs, true, source_path)
-                }
-                Value::Bool(false) => {
-                    eval_block(else_body, scopes, functions, structs, true, source_path)
-                }
+                Value::Bool(true) => eval_block(
+                    then_body,
+                    scopes,
+                    functions,
+                    structs,
+                    enums,
+                    true,
+                    source_path,
+                ),
+                Value::Bool(false) => eval_block(
+                    else_body,
+                    scopes,
+                    functions,
+                    structs,
+                    enums,
+                    true,
+                    source_path,
+                ),
                 _ => Err(Diagnostics(vec![
                     Diagnostic::error(
                         "GOF3007",
@@ -426,11 +467,11 @@ fn eval_stmt(
             condition, body, ..
         } => {
             loop {
-                let value = eval_expr(condition, scopes, functions, structs, source_path)?;
+                let value = eval_expr(condition, scopes, functions, structs, enums, source_path)?;
                 match value {
                     Value::Bool(true) => {
                         if let Some(result) =
-                            eval_block(body, scopes, functions, structs, true, source_path)?
+                            eval_block(body, scopes, functions, structs, enums, true, source_path)?
                         {
                             return Ok(Some(result));
                         }
@@ -453,7 +494,7 @@ fn eval_stmt(
             Ok(None)
         }
         Stmt::Expr(expr, _) => {
-            let _ = eval_expr(expr, scopes, functions, structs, source_path)?;
+            let _ = eval_expr(expr, scopes, functions, structs, enums, source_path)?;
             Ok(None)
         }
     }
@@ -464,6 +505,7 @@ fn eval_expr(
     scopes: &ScopeStack,
     functions: &FunctionTable,
     structs: &StructTable,
+    enums: &EnumTable,
     source_path: &Path,
 ) -> Result<Value, Diagnostics> {
     match expr {
@@ -473,7 +515,7 @@ fn eval_expr(
         Expr::List { items, .. } => {
             let values = items
                 .iter()
-                .map(|item| eval_expr(item, scopes, functions, structs, source_path))
+                .map(|item| eval_expr(item, scopes, functions, structs, enums, source_path))
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Value::List(values))
         }
@@ -494,15 +536,28 @@ fn eval_expr(
             }),
         Expr::Call { callee, args, span } => {
             if callee == "len" {
-                return eval_len_builtin(args, scopes, functions, structs, source_path, *span);
+                return eval_len_builtin(args, scopes, functions, structs, enums, source_path, *span);
             }
 
             if let Some(decl) = structs.get(callee) {
                 let values = args
                     .iter()
-                    .map(|arg| eval_expr(arg, scopes, functions, structs, source_path))
+                    .map(|arg| eval_expr(arg, scopes, functions, structs, enums, source_path))
                     .collect::<Result<Vec<_>, _>>()?;
                 return eval_struct_constructor(decl, values, *span, source_path);
+            }
+
+            if enums.contains_key(callee) {
+                return Err(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3004",
+                        format!("enum `{callee}` is not callable"),
+                        "unit enum variants use `EnumName.Variant`, not constructor calls",
+                        *span,
+                    )
+                    .with_fix_it("replace this call with `EnumName.Variant`")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
             }
 
             let function = functions.get(callee).cloned().ok_or_else(|| {
@@ -519,16 +574,23 @@ fn eval_expr(
             })?;
             let values = args
                 .iter()
-                .map(|arg| eval_expr(arg, scopes, functions, structs, source_path))
+                .map(|arg| eval_expr(arg, scopes, functions, structs, enums, source_path))
                 .collect::<Result<Vec<_>, _>>()?;
-            eval_function(&function, &values, functions, structs)
+            eval_function(&function, &values, functions, structs, enums)
         }
         Expr::Field {
             target,
             field,
             span,
         } => {
-            let target = eval_expr(target, scopes, functions, structs, source_path)?;
+            if let Expr::Ident(name, _) = target.as_ref() {
+                if scopes.get(name).is_none() {
+                    if let Some(decl) = enums.get(name) {
+                        return eval_enum_variant(decl, field, *span, source_path);
+                    }
+                }
+            }
+            let target = eval_expr(target, scopes, functions, structs, enums, source_path)?;
             eval_field_access(target, field, *span, source_path)
         }
         Expr::Index {
@@ -536,8 +598,8 @@ fn eval_expr(
             index,
             span,
         } => {
-            let target = eval_expr(target, scopes, functions, structs, source_path)?;
-            let index = eval_expr(index, scopes, functions, structs, source_path)?;
+            let target = eval_expr(target, scopes, functions, structs, enums, source_path)?;
+            let index = eval_expr(index, scopes, functions, structs, enums, source_path)?;
             eval_index(target, index, *span, source_path)
         }
         Expr::Go { value, span } => match value.as_ref() {
@@ -556,9 +618,9 @@ fn eval_expr(
                 }
                 let values = args
                     .iter()
-                    .map(|arg| eval_expr(arg, scopes, functions, structs, source_path))
+                    .map(|arg| eval_expr(arg, scopes, functions, structs, enums, source_path))
                     .collect::<Result<Vec<_>, _>>()?;
-                spawn_task(callee, values, *span, functions, structs, source_path)
+                spawn_task(callee, values, *span, functions, structs, enums, source_path)
             }
             _ => Err(Diagnostics(vec![
                 Diagnostic::error(
@@ -572,7 +634,7 @@ fn eval_expr(
             ])),
         },
         Expr::Await { value, span } => {
-            match eval_expr(value, scopes, functions, structs, source_path)? {
+            match eval_expr(value, scopes, functions, structs, enums, source_path)? {
                 Value::Task(task) => task.await_value(),
                 _ => Err(Diagnostics(vec![
                     Diagnostic::error(
@@ -587,12 +649,12 @@ fn eval_expr(
             }
         }
         Expr::Unary { op, value, span } => {
-            let value = eval_expr(value, scopes, functions, structs, source_path)?;
+            let value = eval_expr(value, scopes, functions, structs, enums, source_path)?;
             eval_unary(*op, value, *span, source_path)
         }
         Expr::Binary { lhs, op, rhs, span } => {
             if matches!(op, BinaryOp::And | BinaryOp::Or) {
-                let lhs = eval_expr(lhs, scopes, functions, structs, source_path)?;
+                let lhs = eval_expr(lhs, scopes, functions, structs, enums, source_path)?;
                 return eval_logical(
                     lhs,
                     *op,
@@ -600,13 +662,14 @@ fn eval_expr(
                     scopes,
                     functions,
                     structs,
+                    enums,
                     *span,
                     source_path,
                 );
             }
 
-            let lhs = eval_expr(lhs, scopes, functions, structs, source_path)?;
-            let rhs = eval_expr(rhs, scopes, functions, structs, source_path)?;
+            let lhs = eval_expr(lhs, scopes, functions, structs, enums, source_path)?;
+            let rhs = eval_expr(rhs, scopes, functions, structs, enums, source_path)?;
             eval_binary(lhs, *op, rhs, *span, source_path)
         }
     }
@@ -640,6 +703,7 @@ fn eval_logical(
     scopes: &ScopeStack,
     functions: &FunctionTable,
     structs: &StructTable,
+    enums: &EnumTable,
     span: Span,
     source_path: &Path,
 ) -> Result<Value, Diagnostics> {
@@ -660,7 +724,7 @@ fn eval_logical(
         (BinaryOp::And, false) => Ok(Value::Bool(false)),
         (BinaryOp::Or, true) => Ok(Value::Bool(true)),
         _ => {
-            let rhs = eval_expr(rhs, scopes, functions, structs, source_path)?;
+            let rhs = eval_expr(rhs, scopes, functions, structs, enums, source_path)?;
             match rhs {
                 Value::Bool(rhs) => Ok(Value::Bool(match op {
                     BinaryOp::And => lhs && rhs,
@@ -688,6 +752,7 @@ fn spawn_task(
     span: Span,
     functions: &FunctionTable,
     structs: &StructTable,
+    enums: &EnumTable,
     source_path: &Path,
 ) -> Result<Value, Diagnostics> {
     let function = functions.get(callee).cloned().ok_or_else(|| {
@@ -708,10 +773,11 @@ fn spawn_task(
     let function_name = callee.to_string();
     let functions = Arc::clone(functions);
     let structs = Arc::clone(structs);
+    let enums = Arc::clone(enums);
 
     std::thread::spawn(move || {
         let result = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-            eval_function(&function, &args, &functions, &structs)
+            eval_function(&function, &args, &functions, &structs, &enums)
         })) {
             Ok(result) => result,
             Err(_) => Err(Diagnostics(vec![
@@ -763,6 +829,35 @@ fn eval_struct_constructor(
             .zip(args)
             .collect(),
     }))
+}
+
+fn eval_enum_variant(
+    decl: &EnumDecl,
+    variant: &str,
+    span: Span,
+    source_path: &Path,
+) -> Result<Value, Diagnostics> {
+    if decl
+        .variants
+        .iter()
+        .any(|candidate| candidate.name == variant)
+    {
+        Ok(Value::Enum(EnumValue {
+            name: decl.name.clone(),
+            variant: variant.to_string(),
+        }))
+    } else {
+        Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3028",
+                format!("unknown variant `{variant}` on `{}`", decl.name),
+                "enum variant references must use a variant declared on the enum",
+                span,
+            )
+            .with_fix_it("use one of the variants declared on the enum")
+            .with_source_path(source_path.to_path_buf()),
+        ]))
+    }
 }
 
 fn eval_field_access(
@@ -821,12 +916,14 @@ fn eval_binary(
         (Value::Bool(lhs), BinaryOp::Ne, Value::Bool(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Struct(lhs), BinaryOp::Eq, Value::Struct(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Struct(lhs), BinaryOp::Ne, Value::Struct(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::Enum(lhs), BinaryOp::Eq, Value::Enum(rhs)) => Ok(Value::Bool(lhs == rhs)),
+        (Value::Enum(lhs), BinaryOp::Ne, Value::Enum(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::List(lhs), BinaryOp::Eq, Value::List(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::List(lhs), BinaryOp::Ne, Value::List(rhs)) => Ok(Value::Bool(lhs != rhs)),
         _ => Err(Diagnostics(vec![Diagnostic::error(
             "GOF3001",
             "unsupported expression in bootstrap evaluator",
-            "the current evaluator supports int arithmetic, comparisons, and equality for strings, bools, lists, and structs",
+            "the current evaluator supports int arithmetic, comparisons, and equality for strings, bools, lists, structs, and enums",
             span,
         )
         .with_source_path(source_path.to_path_buf())])),
@@ -838,6 +935,7 @@ fn eval_len_builtin(
     scopes: &ScopeStack,
     functions: &FunctionTable,
     structs: &StructTable,
+    enums: &EnumTable,
     source_path: &Path,
     span: Span,
 ) -> Result<Value, Diagnostics> {
@@ -854,7 +952,7 @@ fn eval_len_builtin(
         ]));
     }
 
-    let value = eval_expr(&args[0], scopes, functions, structs, source_path)?;
+    let value = eval_expr(&args[0], scopes, functions, structs, enums, source_path)?;
     match value {
         Value::List(values) => Ok(Value::Int(values.len() as i64)),
         Value::String(value) => Ok(Value::Int(value.chars().count() as i64)),
@@ -939,6 +1037,7 @@ fn value_name(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Bool(_) => "bool",
         Value::Struct(_) => "struct",
+        Value::Enum(_) => "enum",
         Value::List(_) => "list",
         Value::Task(_) => "task",
         Value::Unit => "unit",
@@ -1006,5 +1105,23 @@ mod tests {
         let value = run_source("fn main() -> bool:\n    return not false and true or false\n")
             .expect("program should run");
         assert_eq!(value, Value::Bool(true));
+    }
+
+    #[test]
+    fn evaluates_enum_variant_equality() {
+        let value = run_source(
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> bool:\n    return Status.Ready != Status.Busy\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Bool(true));
+    }
+
+    #[test]
+    fn rejects_unknown_enum_variant() {
+        let diagnostics = run_source(
+            "enum Status:\n    Ready\n\nfn main() -> bool:\n    return Status.Busy == Status.Ready\n",
+        )
+        .expect_err("unknown enum variant should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3028"]);
     }
 }

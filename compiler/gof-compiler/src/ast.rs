@@ -9,6 +9,7 @@ use std::path::PathBuf;
 pub struct Module {
     pub imports: Vec<Import>,
     pub structs: Vec<StructDecl>,
+    pub enums: Vec<EnumDecl>,
     pub functions: Vec<Function>,
 }
 
@@ -40,6 +41,20 @@ pub struct StructDecl {
 pub struct StructField {
     pub name: String,
     pub ty: TypeRef,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnumDecl {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+    pub span: Span,
+    pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnumVariant {
+    pub name: String,
     pub span: Span,
 }
 
@@ -179,6 +194,7 @@ impl<'a> Parser<'a> {
     fn parse_module(&mut self) -> Module {
         let mut imports = Vec::new();
         let mut structs = Vec::new();
+        let mut enums = Vec::new();
         let mut functions = Vec::new();
         while !self.at_end() {
             self.skip_newlines();
@@ -189,6 +205,8 @@ impl<'a> Parser<'a> {
                 imports.push(self.parse_import());
             } else if self.check(TokenDiscriminant::Struct) {
                 structs.push(self.parse_struct());
+            } else if self.check(TokenDiscriminant::Enum) {
+                enums.push(self.parse_enum());
             } else {
                 functions.push(self.parse_function());
             }
@@ -196,6 +214,7 @@ impl<'a> Parser<'a> {
         Module {
             imports,
             structs,
+            enums,
             functions,
         }
     }
@@ -260,6 +279,24 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn parse_enum(&mut self) -> EnumDecl {
+        let start = self.expect(TokenDiscriminant::Enum, "expected `enum` to start an enum");
+        let name = self.expect_ident("expected an enum name after `enum`");
+        self.expect(
+            TokenDiscriminant::Colon,
+            "expected `:` after enum declaration",
+        );
+        let variants =
+            self.parse_enum_variants("expected an indented block after enum declaration");
+
+        EnumDecl {
+            name,
+            variants,
+            span: Span::new(start.line, start.column, start.end_column),
+            source_path: PathBuf::new(),
+        }
+    }
+
     fn parse_params(&mut self) -> Vec<Param> {
         let mut params = Vec::new();
         if self.check(TokenDiscriminant::RParen) {
@@ -316,6 +353,32 @@ impl<'a> Parser<'a> {
             },
             span,
         }
+    }
+
+    fn parse_enum_variants(&mut self, message: &'static str) -> Vec<EnumVariant> {
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline before an enum body",
+        );
+        self.expect(TokenDiscriminant::Indent, message);
+
+        let mut variants = Vec::new();
+        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
+            variants.push(self.parse_enum_variant());
+        }
+
+        self.expect(TokenDiscriminant::Dedent, "expected an enum body dedent");
+        variants
+    }
+
+    fn parse_enum_variant(&mut self) -> EnumVariant {
+        let name = self.expect_ident("expected an enum variant name");
+        let span = self.previous().span;
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline after enum variant",
+        );
+        EnumVariant { name, span }
     }
 
     fn parse_stmt(&mut self) -> Stmt {
@@ -849,6 +912,7 @@ impl Expr {
 enum TokenDiscriminant {
     Import,
     Struct,
+    Enum,
     Fn,
     If,
     Else,
@@ -890,6 +954,7 @@ impl TokenDiscriminant {
             (self, kind),
             (Self::Import, TokenKind::Import)
                 | (Self::Struct, TokenKind::Struct)
+                | (Self::Enum, TokenKind::Enum)
                 | (Self::Fn, TokenKind::Fn)
                 | (Self::If, TokenKind::If)
                 | (Self::Else, TokenKind::Else)
@@ -930,6 +995,7 @@ impl TokenDiscriminant {
         match self {
             Self::Import => "`import`",
             Self::Struct => "`struct`",
+            Self::Enum => "`enum`",
             Self::Fn => "`fn`",
             Self::If => "`if`",
             Self::Else => "`else`",
@@ -993,6 +1059,7 @@ mod tests {
         assert_eq!(module.imports.len(), 1);
         assert_eq!(module.imports[0].module, "math");
         assert!(module.structs.is_empty());
+        assert!(module.enums.is_empty());
         assert_eq!(module.functions.len(), 1);
         assert_eq!(module.functions[0].name, "main");
     }
@@ -1124,6 +1191,33 @@ mod tests {
                 _
             ) if matches!(lhs.as_ref(), Expr::Field { field, .. } if field == "x")
                 && matches!(rhs.as_ref(), Expr::Field { field, .. } if field == "y")
+        ));
+    }
+
+    #[test]
+    fn parses_enums_and_variant_references() {
+        let source = SourceFile::new(
+            "test.gof",
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> bool:\n    return Status.Ready == Status.Busy\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert_eq!(module.enums.len(), 1);
+        assert_eq!(module.enums[0].name, "Status");
+        assert_eq!(module.enums[0].variants.len(), 2);
+        assert_eq!(module.enums[0].variants[0].name, "Ready");
+        assert!(matches!(
+            &module.functions[0].body[0],
+            Stmt::Return(
+                Expr::Binary {
+                    lhs,
+                    rhs,
+                    op: BinaryOp::Eq,
+                    ..
+                },
+                _
+            ) if matches!(lhs.as_ref(), Expr::Field { field, .. } if field == "Ready")
+                && matches!(rhs.as_ref(), Expr::Field { field, .. } if field == "Busy")
         ));
     }
 

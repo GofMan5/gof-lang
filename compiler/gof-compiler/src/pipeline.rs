@@ -267,4 +267,25 @@ mod tests {
                 ))
         );
     }
+
+    #[test]
+    fn pipeline_supports_enums_and_variant_constants() {
+        let source = SourceFile::new(
+            "enums.gof",
+            "enum Status:\n    Ready\n    Busy\n\nfn main() -> bool:\n    return Status.Ready != Status.Busy\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.ast.enums.len(), 1);
+        assert_eq!(compiled.hir.enums.len(), 1);
+        assert_eq!(compiled.typed_hir.enums[0].name, "Status");
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Bool);
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::ConstEnumVariant { .. }))
+        );
+    }
 }

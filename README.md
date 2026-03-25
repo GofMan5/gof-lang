@@ -27,7 +27,9 @@ What is already real:
 - task spawning through `go`
 - waiting on tasks through `await`
 - user-defined `struct` types with typed fields
+- user-defined `enum` types with unit variants
 - struct constructors like `Point(3, 4)`
+- enum variant values like `Status.Ready`
 - field access like `point.x`
 - deterministic formatter
 - fixture-based conformance tests
@@ -165,6 +167,7 @@ The current bootstrap subset supports:
 
 - `import name`
 - `struct`
+- `enum`
 - `fn`
 - typed parameters
 - explicit return annotations
@@ -179,6 +182,7 @@ The current bootstrap subset supports:
 - comparisons with `==`, `!=`, `<`, `<=`, `>`, `>=`
 - top-level function calls
 - struct constructors
+- enum variant references
 - field access
 - list indexing
 - builtin `len(...)`

@@ -22,7 +22,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3001`: missing `main` entrypoint for executable mode
 - `GOF3002`: unknown local binding
 - `GOF3003`: attempted reassignment of immutable binding
-- `GOF3004`: unknown function call target
+- `GOF3004`: unknown or invalid callable target
 - `GOF3005`: wrong argument count for function call
 - `GOF3006`: duplicate local binding in function scope
 - `GOF3007`: non-boolean control-flow condition
@@ -39,9 +39,12 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3018`: invalid list indexing operation
 - `GOF3019`: invalid operand for builtin `len`
 - `GOF3020`: duplicate top-level struct across the local module graph
-- `GOF3021`: conflicting top-level name between a struct and a function
+- `GOF3021`: conflicting top-level name between a struct, enum, and/or function
 - `GOF3022`: unknown field on a struct value
 - `GOF3023`: duplicate field inside one struct declaration
 - `GOF3024`: field access on a non-struct value
 - `GOF3025`: non-boolean operand for `and` or `or`
 - `GOF3026`: non-boolean operand for `not`
+- `GOF3027`: duplicate variant inside one enum declaration
+- `GOF3028`: unknown enum variant reference
+- `GOF3029`: duplicate top-level enum across the local module graph

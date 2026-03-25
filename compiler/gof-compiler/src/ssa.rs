@@ -27,6 +27,10 @@ pub enum SsaInstruction {
     ConstInt(i64),
     ConstString(String),
     ConstBool(bool),
+    ConstEnumVariant {
+        enum_name: String,
+        variant: String,
+    },
     BuildList(Vec<String>),
     BuildStruct {
         name: String,
@@ -114,6 +118,17 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
         MirInstruction::ConstBool { dest, value } => SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::ConstBool(*value),
+        },
+        MirInstruction::ConstEnumVariant {
+            dest,
+            enum_name,
+            variant,
+        } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::ConstEnumVariant {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+            },
         },
         MirInstruction::BuildList { dest, items } => SsaValue {
             name: format!("%{dest}"),
