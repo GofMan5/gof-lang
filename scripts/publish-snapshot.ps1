@@ -77,6 +77,7 @@ function New-ReleaseNotes {
         "## Assets"
         ""
         "- gof-windows-x86_64.zip"
+        "- gof-windows-x86_64-setup.exe"
         $assetLine
         "- SHA256SUMS.txt"
         ""
@@ -154,7 +155,7 @@ Invoke-Git -GitArgs @("push", "origin", "refs/tags/$Tag", "--force") | Out-Null
 $assetPaths = Get-ChildItem -Path $distRoot -File | Sort-Object Name | ForEach-Object { $_.FullName }
 
 if ($releaseExists) {
-    $null = Invoke-Gh @("release", "edit", $Tag, "-R", $Repo, "--title", $ReleaseTitle, "--notes-file", $notesPath)
+    $null = Invoke-Gh -GhArgs @("release", "edit", $Tag, "-R", $Repo, "--title", $ReleaseTitle, "--notes-file", $notesPath)
     $uploadArgs = @("release", "upload", $Tag, "-R", $Repo, "--clobber") + $assetPaths
     $null = Invoke-Gh -GhArgs $uploadArgs
 } else {

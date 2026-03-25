@@ -101,6 +101,7 @@ irm https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.ps1 
 ```
 
 Run the same installer command later to update to the newest release.
+The Windows install flow now downloads and runs a real `setup.exe`, which installs `gof` into the current user profile and updates PATH.
 
 Install a specific tagged release on Unix-like systems:
 
@@ -233,5 +234,6 @@ The repository now includes:
 - release packaging workflows for Linux, Windows, and macOS
 
 Release artifacts are built automatically from version tags and can be consumed by the install scripts in `scripts/install.sh` and `scripts/install.ps1`.
+Windows release assets now include both `gof-windows-x86_64.zip` and `gof-windows-x86_64-setup.exe`.
 
 For local maintainer workflows, `scripts/publish-snapshot.ps1` and `scripts/push-and-release.ps1` can also build the current commit and refresh the rolling `snapshot-main` prerelease directly through the GitHub Releases API.
