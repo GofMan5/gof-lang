@@ -468,6 +468,7 @@ enum CallKind {
     BuiltinParseInt,
     BuiltinToString,
     BuiltinRange,
+    BuiltinSleep,
     BuiltinAssert,
     BuiltinArgv,
     BuiltinEnv,
@@ -501,6 +502,7 @@ enum CallKind {
     BuiltinJsonString,
     BuiltinJsonInt,
     BuiltinHttpGet,
+    BuiltinHttpPost,
     Function,
     Struct,
     Enum,
@@ -2097,6 +2099,7 @@ fn lower_expr(
                     | CallKind::BuiltinParseInt
                     | CallKind::BuiltinToString
                     | CallKind::BuiltinRange
+                    | CallKind::BuiltinSleep
                     | CallKind::BuiltinAssert
                     | CallKind::BuiltinArgv
                     | CallKind::BuiltinEnv
@@ -2130,6 +2133,7 @@ fn lower_expr(
                     | CallKind::BuiltinJsonString
                     | CallKind::BuiltinJsonInt
                     | CallKind::BuiltinHttpGet
+                    | CallKind::BuiltinHttpPost
                     | CallKind::Enum
                     | CallKind::Unknown => TypedExprKind::Call {
                         callee: callee.clone(),
@@ -2700,6 +2704,9 @@ fn validate_call(
         CallKind::BuiltinRange => {
             validate_range_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinSleep => {
+            validate_sleep_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinAssert => {
             validate_assert_call(args, span, diagnostics, source_path);
         }
@@ -2816,6 +2823,9 @@ fn validate_call(
         }
         CallKind::BuiltinHttpGet => {
             validate_single_string_argument_call("http_get", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinHttpPost => {
+            validate_http_post_call(args, span, diagnostics, source_path);
         }
         CallKind::Function => match signatures.get(callee) {
             Some(signature) if signature.arity == args.len() => {
@@ -3298,6 +3308,8 @@ fn resolve_call_kind(
         CallKind::BuiltinToString
     } else if callee == "range" {
         CallKind::BuiltinRange
+    } else if callee == "sleep" {
+        CallKind::BuiltinSleep
     } else if callee == "assert" {
         CallKind::BuiltinAssert
     } else if callee == "argv" {
@@ -3364,6 +3376,8 @@ fn resolve_call_kind(
         CallKind::BuiltinJsonInt
     } else if callee == "http_get" {
         CallKind::BuiltinHttpGet
+    } else if callee == "http_post" {
+        CallKind::BuiltinHttpPost
     } else if signatures.contains_key(callee) {
         CallKind::Function
     } else if struct_signatures.contains_key(callee) {
@@ -3395,6 +3409,7 @@ fn call_return_type(
         CallKind::BuiltinParseInt => Type::Int,
         CallKind::BuiltinToString => Type::String,
         CallKind::BuiltinRange => Type::list(Type::Int),
+        CallKind::BuiltinSleep => Type::Unit,
         CallKind::BuiltinAssert => Type::Unit,
         CallKind::BuiltinArgv => Type::list(Type::String),
         CallKind::BuiltinEnv => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
@@ -3447,6 +3462,9 @@ fn call_return_type(
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinHttpGet => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinHttpPost => {
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::Function => signatures
@@ -5023,6 +5041,42 @@ fn validate_single_string_argument_call(
     }
 }
 
+fn validate_single_int_argument_call(
+    name: &str,
+    code: &'static str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(value)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Int | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                code,
+                format!("`{name}` requires an integer argument"),
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass an integer value")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_two_string_argument_call(
     name: &str,
     args: &[TypedExpr],
@@ -5071,6 +5125,15 @@ fn validate_env_call(
     source_path: &Path,
 ) {
     validate_single_string_argument_call("env", args, span, diagnostics, source_path);
+}
+
+fn validate_sleep_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    validate_single_int_argument_call("sleep", "GOF3085", args, span, diagnostics, source_path);
 }
 
 fn validate_close_call(
@@ -5397,6 +5460,46 @@ fn validate_json_int_call(
             .with_fix_it("pass a `json` value")
             .with_source_path(source_path.to_path_buf()),
         );
+    }
+}
+
+fn validate_http_post_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !(2..=3).contains(&args.len()) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `http_post`",
+                format!("expected 2 or 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `http_post(url, body)` or `http_post(url, body, content_type)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    for (index, arg) in args.iter().enumerate() {
+        if !matches!(arg.ty, Type::String | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3076",
+                    "`http_post` requires string arguments",
+                    format!(
+                        "argument {} resolves to `{}`",
+                        index + 1,
+                        arg.ty.display_name()
+                    ),
+                    arg.span,
+                )
+                .with_fix_it("pass string values for the URL, body, and optional content type")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
     }
 }
 
@@ -6134,6 +6237,37 @@ mod tests {
     }
 
     #[test]
+    fn supports_sleep_and_http_post_builtins() {
+        let module = lower_source(
+            "fn main() -> Result[string, RuntimeError]:\n    sleep(0)\n    return http_post(\"https://example.invalid/send\", \"{}\", \"application/json\")\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Expr(expr) => {
+                assert_eq!(expr.ty, Type::Unit);
+                assert!(
+                    matches!(&expr.kind, TypedExprKind::Call { callee, .. } if callee == "sleep")
+                );
+            }
+            other => panic!("expected sleep expression, got {other:?}"),
+        }
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Return(value) => {
+                assert_eq!(
+                    value.ty,
+                    Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+                );
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "http_post")
+                );
+            }
+            other => panic!("expected http_post return, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_parameterized_builtin_type_annotations() {
         let module = lower_source(
             "fn first(values: list[int]) -> int:\n    return values[0]\nfn main() -> Result[dict[int], RuntimeError]:\n    ch: channel[int] = channel()\n    send(ch, first([7, 9]))?\n    return Result.Ok({\"ok\": recv(ch)?})\n",
@@ -6449,6 +6583,14 @@ mod tests {
             .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3060"]);
+    }
+
+    #[test]
+    fn rejects_invalid_sleep_operands() {
+        let diagnostics = lower_source("fn main() -> unit:\n    sleep(\"soon\")\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3085"]);
     }
 
     #[test]

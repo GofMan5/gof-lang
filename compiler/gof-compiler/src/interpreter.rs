@@ -2127,6 +2127,34 @@ fn eval_expr(
                 );
             }
 
+            if callee == "http_post" {
+                return eval_http_post_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "sleep" {
+                return eval_sleep_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
             if let Some(decl) = structs.get(callee) {
                 let values = args
                     .iter()
@@ -4372,6 +4400,43 @@ fn eval_string_argument(
     Ok(text)
 }
 
+fn eval_int_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<i64> {
+    let value = eval_expr(
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::Int(number) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                diagnostic_code,
+                format!("`{builtin_name}` requires an integer argument"),
+                format!("this argument resolves to `{}`", value_name(&value)),
+                expr.span(),
+            )
+            .with_fix_it("pass an integer value")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    Ok(number)
+}
+
 fn eval_read_file_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -5597,8 +5662,140 @@ fn eval_http_get_builtin(
         "GOF3076",
     )?;
 
-    let response = ureq::get(&url).timeout(Duration::from_secs(35)).call();
-    Ok(match response {
+    Ok(eval_http_response(
+        ureq::get(&url).timeout(Duration::from_secs(35)).call(),
+    ))
+}
+
+fn eval_http_post_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if !(2..=3).contains(&args.len()) {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `http_post`",
+                format!("expected 2 or 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `http_post(url, body)` or `http_post(url, body, content_type)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let url = eval_string_argument(
+        "http_post",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3076",
+    )?;
+    let body = eval_string_argument(
+        "http_post",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3076",
+    )?;
+    let content_type = if args.len() == 3 {
+        eval_string_argument(
+            "http_post",
+            &args[2],
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            "GOF3076",
+        )?
+    } else {
+        "text/plain; charset=utf-8".to_string()
+    };
+
+    Ok(eval_http_response(
+        ureq::post(&url)
+            .set("Content-Type", &content_type)
+            .timeout(Duration::from_secs(35))
+            .send_string(&body),
+    ))
+}
+
+fn eval_sleep_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `sleep`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `sleep(milliseconds)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let millis = eval_int_argument(
+        "sleep",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3085",
+    )?;
+
+    if millis < 0 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3086",
+                "`sleep` requires a non-negative duration",
+                format!("this duration resolves to `{millis}`"),
+                args[0].span(),
+            )
+            .with_fix_it("pass `0` or another non-negative millisecond count")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    std::thread::sleep(Duration::from_millis(millis as u64));
+    Ok(Value::Unit)
+}
+
+fn eval_http_response(response: Result<ureq::Response, ureq::Error>) -> Value {
+    match response {
         Ok(response) => {
             let status = i64::from(response.status());
             match response.into_string() {
@@ -5614,7 +5811,7 @@ fn eval_http_get_builtin(
         Err(ureq::Error::Transport(error)) => {
             result_err(runtime_http_request_error(error.to_string()))
         }
-    })
+    }
 }
 
 fn eval_index(
@@ -5759,6 +5956,9 @@ mod tests {
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
     fn run_source(text: &str) -> Result<Value, crate::diagnostics::Diagnostics> {
@@ -5854,6 +6054,96 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(47));
+    }
+
+    #[test]
+    fn evaluates_sleep_builtin() {
+        let value = run_source("fn main() -> int:\n    sleep(0)\n    return 1\n")
+            .expect("program should run");
+        assert_eq!(value, Value::Int(1));
+    }
+
+    #[test]
+    fn evaluates_http_post_builtin() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener.local_addr().expect("listener addr should exist");
+        let observed_requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let observed_requests_thread = observed_requests.clone();
+
+        let server = std::thread::spawn(move || {
+            fn expected_request_len(bytes: &[u8]) -> Option<usize> {
+                let header_end = bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|index| index + 4)?;
+                let headers = std::str::from_utf8(&bytes[..header_end]).ok()?;
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("Content-Length: ")
+                            .or_else(|| line.strip_prefix("content-length: "))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                Some(header_end + content_length)
+            }
+
+            let (mut stream, _) = listener.accept().expect("request should arrive");
+            let mut buffer = [0_u8; 4096];
+            let mut request_bytes = Vec::new();
+            loop {
+                let size = stream
+                    .read(&mut buffer)
+                    .expect("request should be readable");
+                if size == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buffer[..size]);
+                if let Some(total_len) = expected_request_len(&request_bytes) {
+                    if request_bytes.len() >= total_len {
+                        request_bytes.truncate(total_len);
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8_lossy(&request_bytes).to_string();
+            observed_requests_thread
+                .lock()
+                .expect("requests mutex should not be poisoned")
+                .push(request);
+
+            let body = "done";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should be written");
+        });
+
+        let value = run_source(&format!(
+            "fn main() -> Result[int, RuntimeError]:\n    body = http_post(\"http://{address}/submit\", \"payload\", \"text/plain\")?\n    return Result.Ok(len(body))\n"
+        ))
+        .expect("program should run");
+
+        server.join().expect("server thread should exit");
+        let requests = observed_requests
+            .lock()
+            .expect("requests mutex should not be poisoned")
+            .clone();
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("POST /submit HTTP/1.1")),
+            "expected POST request, got {requests:?}"
+        );
+        assert!(
+            requests.iter().any(|request| request.contains("payload")),
+            "expected payload body, got {requests:?}"
+        );
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 4)"));
     }
 
     #[test]
@@ -6092,6 +6382,13 @@ mod tests {
         let diagnostics = run_source("fn main() -> int:\n    return parse_int(1)\n")
             .expect_err("parse_int operand should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3060"]);
+    }
+
+    #[test]
+    fn rejects_invalid_sleep_operand() {
+        let diagnostics = run_source("fn main() -> unit:\n    sleep(\"soon\")\n")
+            .expect_err("sleep operand should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3085"]);
     }
 
     #[test]

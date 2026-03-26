@@ -97,3 +97,5 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3082`: invalid operand for cancellation-token-aware builtins
 - `GOF3083`: invalid operand for JSON helpers
 - `GOF3084`: invalid JSON index type
+- `GOF3085`: invalid operand for builtin `sleep`
+- `GOF3086`: invalid negative duration for builtin `sleep`

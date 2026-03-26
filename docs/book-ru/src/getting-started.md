@@ -26,6 +26,9 @@ cargo run -q -p gof-cli --bin gof -- run examples/hello_print.gof
 
 Это правильный путь, если тебе важны compiler behavior, examples и tests.
 
+Если тебе нужно просто писать и запускать программы на `gof`, не оставайся на Rust-пути.
+Ставь `gof`, убеждайся, что он есть в `PATH`, и используй обычный CLI напрямую.
+
 ## Первая программа
 
 Напиши так:
@@ -39,7 +42,7 @@ fn main() -> int:
 Сохрани как `hello.gof` и запусти:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- run hello.gof
+gof run hello.gof
 ```
 
 ### Что здесь реально происходит
@@ -54,31 +57,38 @@ cargo run -q -p gof-cli --bin gof -- run hello.gof
 Форматирование:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- fmt hello.gof
+gof fmt hello.gof
 ```
 
 Проверка форматирования без переписывания:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- fmt hello.gof --check
+gof fmt hello.gof --check
 ```
 
 Запуск fixture suite:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- test tests/fixtures
+gof test tests/fixtures
 ```
 
 Сборка backend artifact:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- build hello.gof
+gof build hello.gof
 ```
 
 Сборка bootstrap-native executable:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- build hello.gof --native
+gof build hello.gof --native
+```
+
+Если ты разрабатываешь `gof` прямо из репозитория и еще не ставил бинарь,
+используй тот же CLI через префикс:
+
+```bash
+cargo run -q -p gof-cli --bin gof --
 ```
 
 ## Пойми build modes правильно

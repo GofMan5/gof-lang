@@ -11,7 +11,8 @@ fn fetch_updates(base: string, token: string, offset: int) -> Result[json, Runti
     return json_parse(body)
 
 fn send_pong(base: string, token: string, chat_id: int) -> Result[int, RuntimeError]:
-    http_get(base + "/bot" + token + "/sendMessage?chat_id=" + to_string(chat_id) + "&text=pong")?
+    body = "{\"chat_id\":" + to_string(chat_id) + ",\"text\":\"pong\"}"
+    http_post(base + "/bot" + token + "/sendMessage", body, "application/json")?
     return Result.Ok(chat_id)
 
 fn main() -> Result[int, RuntimeError]:
@@ -20,6 +21,7 @@ fn main() -> Result[int, RuntimeError]:
     updates = json_get(payload, "result")?
 
     if json_len(updates)? == 0:
+        sleep(0)
         return Result.Ok(0)
 
     first = json_index(updates, 0)?

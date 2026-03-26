@@ -98,10 +98,11 @@ The bootstrap compiler in this repository currently supports:
 - builtin `trim(...)`, `split(...)`, `join(...)`, `starts_with(...)`, and `ends_with(...)` for explicit string work
 - builtin `parse_int(...)` and `to_string(...)` for explicit numeric and text conversion
 - builtin `range(...)` for explicit integer sequence construction
+- builtin `sleep(...)` for explicit delay and retry/backoff control
 - builtin `channel()`, `close(...)`, `send(...)`, and `recv(...)` for bootstrap message passing
 - builtin `cancel_token()`, `cancel(...)`, and `is_cancelled(...)` for cooperative cancellation
 - builtin `json_parse(...)`, `json_stringify(...)`, `json_get(...)`, `json_index(...)`, `json_len(...)`, `json_string(...)`, and `json_int(...)` for explicit JSON handling
-- builtin `http_get(...)` for bootstrap HTTP reads
+- builtin `http_get(...)` and `http_post(...)` for bootstrap HTTP work
 
 ## Bootstrap binding rules
 
@@ -167,8 +168,6 @@ The bootstrap compiler in this repository currently supports:
 - `channel()`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
 - `print` currently accepts exactly one printable value and returns `unit`
 - `assert` currently accepts either `(bool)` or `(bool, string)` and returns `unit`
-- `read_file` currently accepts exactly one string path and returns `string`
-- `write_file` currently accepts exactly one string path plus one string contents value and returns `unit`
 - `dict` currently accepts no arguments and returns an empty dict value
 - `insert` currently accepts `(dict, string, value)` and returns a new dict
 - `keys` currently accepts exactly one dict and returns `list[string]` in deterministic key order
@@ -186,6 +185,8 @@ The bootstrap compiler in this repository currently supports:
 - `range` currently accepts `(stop)`, `(start, stop)`, or `(start, stop, step)` and returns `list[int]`
 - `range` currently requires every argument to resolve to `int`
 - `range` currently rejects a zero step
+- `sleep` currently accepts exactly one `int` duration in milliseconds and returns `unit`
+- `sleep` currently reports a runtime diagnostic when the duration resolves to a negative value
 - `argv` currently accepts no arguments and returns `list[string]`
 - `env` currently accepts exactly one string name and returns `Result[string, RuntimeError]`
 - `cwd` currently accepts no arguments and returns `Result[string, RuntimeError]`
@@ -204,6 +205,7 @@ The bootstrap compiler in this repository currently supports:
 - `json_string` currently accepts exactly one `json` value and returns `Result[string, RuntimeError]`
 - `json_int` currently accepts exactly one `json` value and returns `Result[int, RuntimeError]`
 - `http_get` currently accepts exactly one string URL and returns `Result[string, RuntimeError]`
+- `http_post` currently accepts `(url, body)` or `(url, body, content_type)` and returns `Result[string, RuntimeError]`
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires either a list target with an integer index or a dict target with a string key
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result

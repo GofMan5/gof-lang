@@ -91,11 +91,12 @@ Current string-helper rules:
 - `starts_with(text, prefix)` returns `bool`
 - `ends_with(text, suffix)` returns `bool`
 
-## JSON and HTTP
+## JSON, HTTP, and explicit retry delays
 
 ```gof
-fn fetch(base: string) -> Result[string, RuntimeError]:
-    body = http_get(base + "/health")?
+fn notify(base: string) -> Result[string, RuntimeError]:
+    sleep(0)
+    body = http_post(base + "/notify", "{\"text\":\"pong\"}", "application/json")?
     payload = json_parse(body)?
     status = json_string(json_get(payload, "status")?)?
     return Result.Ok(status)
@@ -106,7 +107,9 @@ Current JSON and HTTP rules:
 - `json_parse(text)` returns `Result[json, RuntimeError]`
 - `json_get(value, key)` and `json_index(value, index)` keep JSON traversal explicit
 - `json_len`, `json_string`, and `json_int` perform explicit typed extraction
-- `http_get(url)` is the current bootstrap HTTP client
+- `http_get(url)` is the current bootstrap HTTP read path
+- `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
+- `sleep(milliseconds)` makes retry and backoff intent explicit instead of hiding it in framework magic
 - request failures and non-success HTTP statuses become `RuntimeError` values
 
 That slice is intentionally narrow, but it is already enough for a long-polling

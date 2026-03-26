@@ -26,6 +26,9 @@ cargo run -q -p gof-cli --bin gof -- run examples/hello_print.gof
 
 This is the right path if you want to inspect compiler behavior, examples, and tests.
 
+If you only want to write and run `gof` programs, do not stay on the Rust path.
+Install `gof`, put it on `PATH`, and use the normal CLI directly.
+
 ## Your first program
 
 Write this:
@@ -39,7 +42,7 @@ fn main() -> int:
 Save it as `hello.gof` and run:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- run hello.gof
+gof run hello.gof
 ```
 
 ### What happens
@@ -54,31 +57,38 @@ That split is intentional. `print` is side effect. `return` is program result.
 Format a file:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- fmt hello.gof
+gof fmt hello.gof
 ```
 
 Check whether formatting is already correct:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- fmt hello.gof --check
+gof fmt hello.gof --check
 ```
 
 Run the fixture suite:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- test tests/fixtures
+gof test tests/fixtures
 ```
 
 Build the backend artifact:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- build hello.gof
+gof build hello.gof
 ```
 
 Build a bootstrap-native executable:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- build hello.gof --native
+gof build hello.gof --native
+```
+
+If you are hacking on `gof` from the repository before installing it, prefix the
+same commands with:
+
+```bash
+cargo run -q -p gof-cli --bin gof --
 ```
 
 ## Understand the two build modes correctly

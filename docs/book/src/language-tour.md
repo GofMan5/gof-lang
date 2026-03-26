@@ -91,6 +91,7 @@ Today the bootstrap language surface includes:
 - `parse_int(...)`
 - `to_string(...)`
 - `range(...)`
+- `sleep(...)`
 - `argv()`
 - `env(...)`
 - `cwd()`
@@ -123,6 +124,7 @@ Today the bootstrap language surface includes:
 - `json_string(...)`
 - `json_int(...)`
 - `http_get(...)`
+- `http_post(...)`
 
 The small size is deliberate.
 

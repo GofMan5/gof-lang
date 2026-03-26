@@ -25,6 +25,23 @@ fn normalize_path_for_assert(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+fn expected_http_request_len(bytes: &[u8]) -> Option<usize> {
+    let header_end = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index + 4)?;
+    let headers = std::str::from_utf8(&bytes[..header_end]).ok()?;
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("Content-Length: ")
+                .or_else(|| line.strip_prefix("content-length: "))
+                .and_then(|value| value.trim().parse::<usize>().ok())
+        })
+        .unwrap_or(0);
+    Some(header_end + content_length)
+}
+
 #[test]
 fn gof_run_executes_bootstrap_main() {
     let fixture = gof_conformance::workspace_root()
@@ -363,29 +380,42 @@ fn gof_run_executes_telegram_long_polling_example_against_fake_api() {
     let example = gof_conformance::workspace_root()
         .join("examples")
         .join("telegram_long_polling.gof");
-    let observed_paths = Arc::new(Mutex::new(Vec::<String>::new()));
+    let observed_requests = Arc::new(Mutex::new(Vec::<String>::new()));
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let address = listener.local_addr().expect("listener addr should exist");
-    let observed_paths_thread = observed_paths.clone();
+    let observed_requests_thread = observed_requests.clone();
 
     let server = thread::spawn(move || {
         for _ in 0..2 {
             let (mut stream, _) = listener.accept().expect("request should arrive");
             let mut buffer = [0_u8; 4096];
-            let size = stream
-                .read(&mut buffer)
-                .expect("request should be readable");
-            let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+            let mut request_bytes = Vec::new();
+            loop {
+                let size = stream
+                    .read(&mut buffer)
+                    .expect("request should be readable");
+                if size == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buffer[..size]);
+                if let Some(total_len) = expected_http_request_len(&request_bytes) {
+                    if request_bytes.len() >= total_len {
+                        request_bytes.truncate(total_len);
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8_lossy(&request_bytes).to_string();
             let request_line = request.lines().next().unwrap_or_default().to_string();
             let path = request_line
                 .split_whitespace()
                 .nth(1)
                 .unwrap_or("/")
                 .to_string();
-            observed_paths_thread
+            observed_requests_thread
                 .lock()
-                .expect("paths mutex should not be poisoned")
-                .push(path.clone());
+                .expect("requests mutex should not be poisoned")
+                .push(request.clone());
 
             let body = if path.contains("/getUpdates") {
                 "{\"ok\":true,\"result\":[{\"update_id\":123,\"message\":{\"chat\":{\"id\":777},\"text\":\"/ping\"}}]}".to_string()
@@ -417,21 +447,28 @@ fn gof_run_executes_telegram_long_polling_example_against_fake_api() {
 
     server.join().expect("server thread should exit");
 
-    let paths = observed_paths
+    let requests = observed_requests
         .lock()
-        .expect("paths mutex should not be poisoned")
+        .expect("requests mutex should not be poisoned")
         .clone();
     assert!(
-        paths
+        requests
             .iter()
-            .any(|path| path.contains("/bottest-token/getUpdates")),
-        "expected getUpdates request, got {paths:?}"
+            .any(|request| request.contains("GET /bottest-token/getUpdates")),
+        "expected getUpdates request, got {requests:?}"
     );
     assert!(
-        paths
+        requests
             .iter()
-            .any(|path| path.contains("/bottest-token/sendMessage?chat_id=777&text=pong")),
-        "expected sendMessage request, got {paths:?}"
+            .any(|request| request.contains("POST /bottest-token/sendMessage HTTP/1.1")),
+        "expected sendMessage POST request, got {requests:?}"
+    );
+    assert!(
+        requests.iter().any(|request| {
+            request.contains("{\"chat_id\":777,\"text\":\"pong\"}")
+                && request.contains("Content-Type: application/json")
+        }),
+        "expected JSON sendMessage payload, got {requests:?}"
     );
 }
 

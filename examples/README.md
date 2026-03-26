@@ -4,6 +4,13 @@ This directory is the current executable showcase for the bootstrap `gof`
 language. Every example is expected to run through:
 
 ```text
+gof run <example>
+```
+
+If you are developing `gof` from source without installing it first, the
+developer fallback is:
+
+```text
 cargo run -q -p gof-cli --bin gof -- run <example>
 ```
 
@@ -27,7 +34,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `payload_match.gof`: enum payload variants plus exhaustive destructuring `match`
 - `result_flow.gof`: `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, and exhaustive result handling
 - `runtime_ops.gof`: `argv`, `env`, `cwd`, `exists`, `read_dir`, and path helpers on top of `Result`
-- `telegram_long_polling.gof`: bootstrap Telegram bot path with `env`, `http_get`, `json_*`, and `Result`
+- `telegram_long_polling.gof`: bootstrap Telegram bot path with `env`, `sleep`, `http_get`, `http_post`, `json_*`, and `Result`
 - `geometry.gof`: `struct`, typed fields, constructor calls, field access
 - `geometry_methods.gof`: receiver methods on structs and method calls
 - `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow

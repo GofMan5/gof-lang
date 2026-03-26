@@ -91,6 +91,7 @@ Mutation в `gof` разрешена, но она не является silent d
 - `parse_int(...)`
 - `to_string(...)`
 - `range(...)`
+- `sleep(...)`
 - `argv()`
 - `env(...)`
 - `cwd()`
@@ -123,6 +124,7 @@ Mutation в `gof` разрешена, но она не является silent d
 - `json_string(...)`
 - `json_int(...)`
 - `http_get(...)`
+- `http_post(...)`
 
 Небольшой размер stdlib — осознанный выбор.
 

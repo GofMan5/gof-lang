@@ -1,0 +1,2 @@
+fn main() -> Result[string, RuntimeError]:
+    return http_post(1, "payload")

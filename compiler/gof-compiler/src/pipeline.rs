@@ -619,6 +619,55 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_sleep_and_http_post_builtins() {
+        let source = SourceFile::new(
+            "bot_ops.gof",
+            "fn main() -> Result[string, RuntimeError]:\n    sleep(0)\n    return http_post(\"https://example.invalid/send\", \"{}\", \"application/json\")\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Expr(expr) => {
+                assert_eq!(expr.ty, Type::Unit);
+                assert!(matches!(
+                    &expr.kind,
+                    crate::typed_hir::TypedExprKind::Call { callee, .. } if callee == "sleep"
+                ));
+            }
+            other => panic!("expected sleep expression, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Return(expr) => {
+                assert!(matches!(
+                    &expr.kind,
+                    crate::typed_hir::TypedExprKind::Call { callee, .. } if callee == "http_post"
+                ));
+                assert!(matches!(expr.ty, Type::Result(_, _)));
+            }
+            other => panic!("expected http_post return, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "sleep"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "http_post"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_range_builtin() {
         let source = SourceFile::new(
             "range_helpers.gof",

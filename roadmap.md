@@ -121,14 +121,14 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` bootstrap dict baseline for key/value data
 - `[~]` predictable numeric and conversion utilities
 - `[x]` bootstrap JSON helpers for explicit data decoding
-- `[x]` bootstrap HTTP GET client sufficient for long-polling examples
+- `[x]` bootstrap HTTP GET/POST client plus explicit `sleep(...)` retry helper sufficient for long-polling examples
 - `[x]` unary minus, integer division, and modulo in the bootstrap numeric surface
 - `[x]` minimal testing and assert helpers inside the language surface
 - Checkpoints:
 - `[x]` CP-M4-1: I/O baseline for CLI apps
 - `[~]` CP-M4-2: zero-surprise helper APIs for strings, lists, dict construction, and dict views
 - `[x]` CP-M4-3: process, filesystem, and path helpers on explicit `Result`
-- `[x]` CP-M4-4: JSON and HTTP bootstrap path for bot-oriented examples
+- `[x]` CP-M4-4: JSON, HTTP GET/POST, and explicit retry-delay bootstrap path for bot-oriented examples
 - `[~]` CP-M4-5: stdlib docs and contract tests
 - Exit criteria:
 - small but real CLI-style and bot-style programs are possible without compiler-internal hacks
@@ -201,7 +201,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` add deterministic dict view helpers without hiding ordering or allocations
 - `[~]` add predictable conversion helpers through `parse_int` and `to_string`
 - `[x]` add process, path, and filesystem helpers required by real CLI tools
-- `[x]` add a bootstrap JSON and HTTP client slice sufficient for long-polling bots
+- `[x]` add a bootstrap JSON and HTTP GET/POST client slice plus explicit retry delay for long-polling bots
 - stdlib docs and contract tests
 
 2. `[~]` Start migrating recoverable operational paths onto explicit results:

@@ -54,3 +54,45 @@ fn workspace_contains_governance_directories() {
         assert!(Path::new(&root).join(path).exists(), "missing {path}");
     }
 }
+
+#[test]
+fn public_docs_prefer_installed_gof_cli() {
+    let root = gof_conformance::workspace_root();
+    let read = |path: &str| std::fs::read_to_string(Path::new(&root).join(path)).unwrap();
+
+    let readme = read("README.md");
+    assert!(
+        readme.contains("Rust is not required to run `gof` programs."),
+        "README must explain that normal usage does not require Rust"
+    );
+    assert!(
+        readme.contains("gof run examples/geometry.gof"),
+        "README must show installed gof usage"
+    );
+
+    let getting_started = read("docs/book/src/getting-started.md");
+    assert!(
+        getting_started.contains("gof run hello.gof"),
+        "English getting-started guide must teach installed gof usage first"
+    );
+    assert!(
+        getting_started.contains("cargo run -q -p gof-cli --bin gof --"),
+        "English getting-started guide must keep a developer fallback"
+    );
+
+    let getting_started_ru = read("docs/book-ru/src/getting-started.md");
+    assert!(
+        getting_started_ru.contains("gof run hello.gof"),
+        "Russian getting-started guide must teach installed gof usage first"
+    );
+    assert!(
+        getting_started_ru.contains("cargo run -q -p gof-cli --bin gof --"),
+        "Russian getting-started guide must keep a developer fallback"
+    );
+
+    let examples = read("examples/README.md");
+    assert!(
+        examples.contains("gof run <example>"),
+        "examples README must show the installed CLI path"
+    );
+}

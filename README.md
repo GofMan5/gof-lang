@@ -39,6 +39,7 @@ irm https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.ps1 
 ```
 
 Run the same command again to update. The installer places the binary in `~/.gof/bin` and updates PATH.
+After installation, open a new shell and use `gof` directly. Rust is not required to run `gof` programs.
 
 ## Usage
 
@@ -59,8 +60,8 @@ gof test tests/fixtures                # run conformance suite
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
-| `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, conversion helpers, `range` | stable |
-| JSON helpers and bootstrap `http_get(...)` | bootstrap |
+| `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, conversion helpers, `range`, `sleep(...)` | stable |
+| JSON helpers and bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports | stable |
 | `go`, `await`, typed channels, `close`, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
@@ -82,13 +83,17 @@ See the [language spec](spec/language-v1.md) for the full contract.
 | [RFCs](rfcs/) | Language evolution proposals |
 | [ADRs](adrs/) | Architecture decisions |
 
-## Building from source
+## Building and hacking from source
 
-Requires Rust toolchain (see [rust-toolchain.toml](rust-toolchain.toml)).
+You only need Rust if you are developing the compiler, runtime, or CLI itself.
+Normal language usage should go through the installed `gof` binary.
+
+Requires Rust toolchain (see [rust-toolchain.toml](rust-toolchain.toml)) if you
+want to work on the repository internals.
 
 ```bash
 cargo test --workspace                 # run all tests
-cargo run -p gof-cli -- run app.gof    # run via cargo
+cargo run -p gof-cli -- run app.gof    # developer fallback without installing gof
 ```
 
 Preview the books locally:

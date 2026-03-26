@@ -91,11 +91,12 @@ has_suffix = ends_with(merged, "lang")
 - `starts_with(text, prefix)` возвращает `bool`
 - `ends_with(text, suffix)` возвращает `bool`
 
-## JSON и HTTP
+## JSON, HTTP и явные retry delays
 
 ```gof
-fn fetch(base: string) -> Result[string, RuntimeError]:
-    body = http_get(base + "/health")?
+fn notify(base: string) -> Result[string, RuntimeError]:
+    sleep(0)
+    body = http_post(base + "/notify", "{\"text\":\"pong\"}", "application/json")?
     payload = json_parse(body)?
     status = json_string(json_get(payload, "status")?)?
     return Result.Ok(status)
@@ -106,7 +107,9 @@ fn fetch(base: string) -> Result[string, RuntimeError]:
 - `json_parse(text)` возвращает `Result[json, RuntimeError]`
 - `json_get(value, key)` и `json_index(value, index)` делают traversal явным
 - `json_len`, `json_string` и `json_int` делают явное typed extraction
-- `http_get(url)` — текущий bootstrap HTTP client
+- `http_get(url)` — текущий bootstrap HTTP read path
+- `http_post(url, body[, content_type])` — текущий bootstrap HTTP write path
+- `sleep(milliseconds)` делает retry и backoff намерение явным, а не прячет его в framework magic
 - request failures и non-success HTTP statuses становятся значениями `RuntimeError`
 
 Этот слой намеренно узкий, но его уже хватает для baseline long-polling Telegram bot.
