@@ -1,43 +1,76 @@
 # Language Tour
 
-This chapter gives the shortest honest overview of the current `gof` surface.
+This chapter is the shortest honest overview of the current `gof` surface.
 
-## Functions
+It is not trying to teach every edge case. It is trying to make the language feel
+mentally coherent before you dive deeper.
+
+## The core idea
+
+`gof` code should read simply, but its behavior should stay explicit.
+
+That means the language is currently built around:
+
+- top-level functions
+- clear type contracts
+- immutable bindings by default
+- visible mutation through `mut`
+- explicit data modeling with `struct` and `enum`
+- explicit concurrency with tasks, channels, and `select`
+
+## Functions are the main execution unit
 
 ```gof
 fn add(a: int, b: int) -> int:
     return a + b
 ```
 
-## Bindings
+Current function rules:
 
-Bindings are immutable by default.
+- functions live at top level
+- parameters can carry type annotations
+- return types can be declared explicitly
+- return paths must stay type-compatible
+
+At the current bootstrap stage, plain calls target top-level named functions.
+
+## Bindings are immutable unless you say otherwise
 
 ```gof
 total = 10
 ```
 
-Use `mut` only when reassignment is intentional.
+That creates an immutable binding.
+
+If reassignment is part of the logic, you must opt into it:
 
 ```gof
 mut total: int = 10
 total = total + 1
 ```
 
-## Builtin values and containers
+This rule is central to how `gof` is being taught. Mutation is allowed, but it is
+not the silent default.
 
-`gof` currently supports:
+## Values you can work with today
+
+The current bootstrap subset already supports:
 
 - `int`
 - `string`
 - `bool`
-- `list`
-- `dict`
-- `channel`
-- `task`
+- lists
+- dicts
+- user-defined structs
+- user-defined enums
+- task values
+- channel values
 - `unit`
 
-## Builtin helpers
+That is enough to write non-trivial examples, but not enough to pretend the full
+language ecosystem already exists.
+
+## Builtin helpers are intentionally small
 
 Today the bootstrap language surface includes:
 
@@ -54,4 +87,32 @@ Today the bootstrap language surface includes:
 - `send(...)`
 - `recv(...)`
 
-These are intentionally small and explicit. The project is avoiding a fake-big standard library until the contracts are stable.
+The small size is deliberate.
+
+> `gof` would rather have a small standard-library surface with explicit behavior
+> than a large surface that teaches the wrong semantics.
+
+## A tiny program that already feels like `gof`
+
+```gof
+struct Point:
+    x: int
+    y: int
+
+fn Point.total(self: Point, extra: int) -> int:
+    return self.x + self.y + extra
+
+fn main() -> int:
+    point: Point = Point(3, 4)
+    return point.total(5)
+```
+
+This one example already shows the current language shape:
+
+- typed functions
+- structs
+- methods
+- explicit receiver contract
+- explicit return value
+
+That combination is closer to what `gof` wants to be than any single syntax feature.

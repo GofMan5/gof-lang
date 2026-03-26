@@ -69,6 +69,7 @@ Project operating rules are documented in:
 - [roadmap.md](./roadmap.md) for milestones and checkpoints
 - [docs/book](./docs/book/) for the versioned learning path and language book
 - [Public book site](https://gofman5.github.io/gof-lang/) for the hosted GitHub Pages version
+- [Russian book site](https://gofman5.github.io/gof-lang/ru/) for the hosted Russian version
 - [spec/language-v1.md](./spec/language-v1.md) for the current language contract
 - [spec/diagnostics.md](./spec/diagnostics.md) for the diagnostics contract
 
@@ -170,10 +171,13 @@ Preview the learning book locally:
 
 ```bash
 cargo install mdbook
-mdbook serve docs/book
+mdbook build docs/book
+mdbook build docs/book-ru
 ```
 
-Hosted docs are intended to publish automatically from `main` through GitHub Pages.
+This builds a bilingual static site into `target/docs-site`.
+
+Hosted docs are intended to publish automatically from `main` through GitHub Pages, with English at the root and Russian under `/ru/`.
 
 Create or refresh the rolling snapshot prerelease from your local machine:
 
@@ -238,10 +242,11 @@ See [examples/README.md](./examples/README.md) for runnable examples.
 
 Use this order:
 
-1. [docs/book](./docs/book/) for the teaching path
-2. [examples/README.md](./examples/README.md) for runnable examples
-3. [spec/language-v1.md](./spec/language-v1.md) for the exact contract
-4. [spec/diagnostics.md](./spec/diagnostics.md) for error behavior
+1. [docs/book](./docs/book/) for the English teaching path
+2. [docs/book-ru](./docs/book-ru/) for the Russian teaching path
+3. [examples/README.md](./examples/README.md) for runnable examples
+4. [spec/language-v1.md](./spec/language-v1.md) for the exact contract
+5. [spec/diagnostics.md](./spec/diagnostics.md) for error behavior
 
 The book is intended to grow with the language. Every new public feature should update:
 

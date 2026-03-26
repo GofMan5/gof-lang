@@ -93,5 +93,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install mdBook
         run: cargo install mdbook --locked
-      - name: Build book
+      - name: Build English book
         run: mdbook build docs/book
+      - name: Build Russian book
+        run: mdbook build docs/book-ru

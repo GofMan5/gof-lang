@@ -1,16 +1,16 @@
 [book]
-title = "The gof Book"
+title = "ÐšÐ½Ð¸Ð³Ð° gof"
 authors = ["gof project"]
-language = "en"
+language = "ru"
 src = "src"
 
 [build]
 create-missing = false
-build-dir = "../../target/docs-site"
+build-dir = "../../target/docs-site/ru"
 
 [output.html]
 git-repository-url = "https://github.com/GofMan5/gof-lang"
-site-url = "/"
+site-url = "/ru/"
 default-theme = "navy"
 preferred-dark-theme = "navy"
 additional-css = ["theme/custom.css"]

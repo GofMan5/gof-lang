@@ -5,6 +5,8 @@ param(
     [string]$OutputPath,
     [string]$Version = "dev",
     [string]$FriendlyName = "gof Setup",
+    [string]$AppId,
+    [switch]$SkipUninstallRegKey,
     [switch]$KeepArtifactsOnFailure
 )
 
@@ -60,9 +62,18 @@ $arguments = @(
     "/DAppVersion=$Version",
     "/DPayloadDir=$payloadDir",
     "/DOutputDir=$outputDir",
-    "/DOutputBaseFilename=$outputBaseFilename",
-    $issPath
+    "/DOutputBaseFilename=$outputBaseFilename"
 )
+
+if ($AppId) {
+    $arguments += "/DAppIdValue=$AppId"
+}
+
+if ($SkipUninstallRegKey) {
+    $arguments += "/DCreateUninstallRegKeyValue=no"
+}
+
+$arguments += $issPath
 
 & $isccPath @arguments
 if ($LASTEXITCODE -ne 0) {

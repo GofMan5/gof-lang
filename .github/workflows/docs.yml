@@ -28,12 +28,14 @@ jobs:
         run: cargo install mdbook --locked
       - name: Configure Pages
         uses: actions/configure-pages@v5
-      - name: Build book
+      - name: Build English book
         run: mdbook build docs/book
+      - name: Build Russian book
+        run: mdbook build docs/book-ru
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/book/book
+          path: target/docs-site
 
   deploy:
     needs: build

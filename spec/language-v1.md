@@ -140,8 +140,8 @@ The bootstrap compiler in this repository currently supports:
 - `go` currently accepts only `go some_function(...)`
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
-- `channel()` currently creates an unbuffered bootstrap channel
-- `send(channel, value)` currently blocks until the bootstrap runtime can transfer the value
+- `channel()` currently creates a bootstrap channel value backed by the runtime queue model
+- `send(channel, value)` currently enqueues one value when the bootstrap channel is available
 - `recv(channel)` currently yields the next value sent on the channel
 - `select:` currently requires one or more receive arms
 - each `select` arm currently must be written as either `recv(channel):` or `value = recv(channel):`

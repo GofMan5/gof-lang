@@ -272,11 +272,11 @@ fn build_native_host_executable(source: &SourceFile, output: &Path) -> Result<()
     fs::write(src_dir.join("main.rs"), runner)?;
 
     let status = ProcessCommand::new("cargo")
-        .args(["build", "--release", "--manifest-path"])
+        .args(["build", "--release", "--offline", "--manifest-path"])
         .arg(project_dir.join("Cargo.toml"))
         .status()?;
     if !status.success() {
-        bail!("cargo build --release failed for bootstrap native build");
+        bail!("cargo build --release --offline failed for bootstrap native build");
     }
 
     let built_binary = with_platform_executable_extension(
