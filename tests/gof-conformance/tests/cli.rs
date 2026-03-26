@@ -14,7 +14,11 @@ fn gof_command() -> Command {
 }
 
 fn normalize_path_for_assert(path: &Path) -> String {
-    path.to_string_lossy().replace("\\\\?\\", "")
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .replace("\\\\?\\", "")
+        .to_ascii_lowercase()
 }
 
 #[test]
@@ -387,7 +391,7 @@ fn gof_run_reports_imported_file_diagnostics_with_their_path() {
     let assert = gof_command().arg("run").arg(&main_path).assert().failure();
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
-    let normalized_stderr = stderr.replace("\\\\?\\", "");
+    let normalized_stderr = stderr.replace("\\\\?\\", "").to_ascii_lowercase();
     let normalized_helper_path = normalize_path_for_assert(&helper_path);
 
     assert!(
