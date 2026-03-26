@@ -90,6 +90,12 @@ pub enum HirStmt {
         body: Vec<HirStmt>,
         span: Span,
     },
+    For {
+        binding: String,
+        iterable: HirExpr,
+        body: Vec<HirStmt>,
+        span: Span,
+    },
     Match {
         value: HirExpr,
         arms: Vec<HirMatchArm>,
@@ -274,6 +280,17 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
             span,
         } => HirStmt::While {
             condition: lower_expr(condition),
+            body: body.iter().map(lower_stmt).collect(),
+            span: *span,
+        },
+        Stmt::For {
+            binding,
+            iterable,
+            body,
+            span,
+        } => HirStmt::For {
+            binding: binding.clone(),
+            iterable: lower_expr(iterable),
             body: body.iter().map(lower_stmt).collect(),
             span: *span,
         },

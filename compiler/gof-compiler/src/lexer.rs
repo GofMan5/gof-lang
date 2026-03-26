@@ -323,6 +323,8 @@ fn lex_line(
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
                     "while" => TokenKind::While,
+                    "for" => TokenKind::For,
+                    "in" => TokenKind::In,
                     "go" => TokenKind::Go,
                     "return" => TokenKind::Return,
                     "struct" => TokenKind::Struct,

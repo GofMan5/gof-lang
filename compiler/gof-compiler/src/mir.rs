@@ -97,6 +97,11 @@ pub enum MirInstruction {
         condition: usize,
     },
     EndWhile,
+    BeginFor {
+        iterable: usize,
+        binding: String,
+    },
+    EndFor,
     BeginMatch {
         value: usize,
     },
@@ -202,6 +207,19 @@ impl MirBuilder {
                     .push(MirInstruction::BeginWhile { condition });
                 self.lower_block(body);
                 self.instructions.push(MirInstruction::EndWhile);
+            }
+            TypedStmt::For {
+                binding,
+                iterable,
+                body,
+            } => {
+                let iterable = self.lower_expr(iterable);
+                self.instructions.push(MirInstruction::BeginFor {
+                    iterable,
+                    binding: binding.clone(),
+                });
+                self.lower_block(body);
+                self.instructions.push(MirInstruction::EndFor);
             }
             TypedStmt::Match { value, arms } => {
                 let value = self.lower_expr(value);

@@ -771,6 +771,52 @@ fn eval_stmt(
             }
             Ok(None)
         }
+        Stmt::For {
+            binding,
+            iterable,
+            body,
+            span,
+        } => {
+            let iterable = eval_expr(
+                iterable,
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+            )?;
+            let items = iter_values_from_iterable(&iterable, *span, source_path)?;
+
+            for item in items {
+                scopes.push();
+                scopes.define_current(
+                    binding.clone(),
+                    Binding {
+                        mutable: false,
+                        value: item,
+                    },
+                );
+                if let Some(result) = eval_block(
+                    body,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    false,
+                    source_path,
+                )? {
+                    scopes.pop();
+                    return Ok(Some(result));
+                }
+                scopes.pop();
+            }
+
+            Ok(None)
+        }
         Stmt::Match { value, arms, span } => {
             let target = eval_expr(
                 value,
@@ -2569,6 +2615,34 @@ fn eval_index(
     }
 }
 
+fn iter_values_from_iterable(
+    iterable: &Value,
+    span: Span,
+    source_path: &Path,
+) -> Result<Vec<Value>, Diagnostics> {
+    match iterable {
+        Value::List(values) => Ok(values.clone()),
+        Value::String(value) => Ok(value
+            .chars()
+            .map(|character| Value::String(character.to_string()))
+            .collect()),
+        Value::Dict(values) => Ok(values.entries.keys().cloned().map(Value::String).collect()),
+        other => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3048",
+                "`for` currently requires an iterable value",
+                format!(
+                    "this loop target resolves to `{}` instead of `list`, `string`, or `dict`",
+                    value_name(other)
+                ),
+                span,
+            )
+            .with_fix_it("iterate over a list, string, or dict value")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
 fn value_name(value: &Value) -> &'static str {
     match value {
         Value::Int(_) => "int",
@@ -2639,6 +2713,15 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(7));
+    }
+
+    #[test]
+    fn evaluates_for_in_over_core_iterables() {
+        let value = run_source(
+            "fn main() -> int:\n    mut total = 0\n    for value in [1, 2, 3]:\n        total = total + value\n    for ch in \"go\":\n        total = total + len(ch)\n    mut store: dict = dict()\n    store = insert(store, \"alpha\", 1)\n    for key in store:\n        total = total + len(key)\n    return total\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(13));
     }
 
     #[test]
@@ -2756,5 +2839,13 @@ mod tests {
         )
         .expect_err("unknown enum variant should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3028"]);
+    }
+
+    #[test]
+    fn rejects_invalid_for_iterables() {
+        let diagnostics =
+            run_source("fn main() -> int:\n    for value in 42:\n        return value\n")
+                .expect_err("invalid loop target should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3048"]);
     }
 }

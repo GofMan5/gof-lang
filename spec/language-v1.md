@@ -30,6 +30,7 @@
 - `enum`
 - `protocol`
 - `match`
+- `for`
 - `async` / `await`
 - `select`
 - `defer`
@@ -49,6 +50,7 @@ The bootstrap compiler in this repository currently supports:
 - `return`
 - `if` / `else`
 - `while`
+- `for binding in iterable:`
 - `go` for spawning top-level named function calls
 - `await` for waiting on task values
 - module-level inference of function return types when they can be derived from return expressions
@@ -148,5 +150,11 @@ The bootstrap compiler in this repository currently supports:
 - `select` currently polls its arms until one receive succeeds and then executes only that arm body
 - channels currently have no close operation, no explicit buffering syntax, and no fairness contract beyond first completed receive
 - control-flow conditions must evaluate to `bool`
+- `for binding in iterable:` currently supports lists, strings, and dicts
+- list iteration currently yields list elements in order
+- string iteration currently yields one-character `string` values
+- dict iteration currently yields string keys in deterministic key order
+- the loop binding created by `for` is immutable inside each iteration scope
+- using `for` on a non-iterable value is a compile error
 
 Everything else is specified as future work and intentionally blocked from pretending to be stable.

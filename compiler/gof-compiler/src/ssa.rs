@@ -80,6 +80,11 @@ pub enum SsaInstruction {
         condition: String,
     },
     EndWhile,
+    BeginFor {
+        iterable: String,
+        binding: String,
+    },
+    EndFor,
     BeginMatch {
         value: String,
     },
@@ -254,6 +259,17 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
         MirInstruction::EndWhile => SsaValue {
             name: "%endwhile".to_string(),
             instruction: SsaInstruction::EndWhile,
+        },
+        MirInstruction::BeginFor { iterable, binding } => SsaValue {
+            name: format!("%for_{binding}"),
+            instruction: SsaInstruction::BeginFor {
+                iterable: format!("%{iterable}"),
+                binding: binding.clone(),
+            },
+        },
+        MirInstruction::EndFor => SsaValue {
+            name: "%endfor".to_string(),
+            instruction: SsaInstruction::EndFor,
         },
         MirInstruction::BeginMatch { value } => SsaValue {
             name: "%match".to_string(),

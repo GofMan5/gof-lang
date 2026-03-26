@@ -98,6 +98,12 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+    For {
+        binding: String,
+        iterable: Expr,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     Match {
         value: Expr,
         arms: Vec<MatchArm>,
@@ -468,6 +474,27 @@ impl<'a> Parser<'a> {
             let body = self.parse_block("expected an indented block after `while`");
             return Stmt::While {
                 condition,
+                body,
+                span,
+            };
+        }
+
+        if self.matches(TokenDiscriminant::For) {
+            let span = self.previous().span;
+            let binding = self.expect_ident("expected a loop binding after `for`");
+            self.expect(
+                TokenDiscriminant::In,
+                "expected `in` after the loop binding",
+            );
+            let iterable = self.parse_expr();
+            self.expect(
+                TokenDiscriminant::Colon,
+                "expected `:` after the `for` iterable",
+            );
+            let body = self.parse_block("expected an indented block after `for`");
+            return Stmt::For {
+                binding,
+                iterable,
                 body,
                 span,
             };
@@ -1073,6 +1100,8 @@ enum TokenDiscriminant {
     If,
     Else,
     While,
+    For,
+    In,
     Match,
     Select,
     Go,
@@ -1117,6 +1146,8 @@ impl TokenDiscriminant {
                 | (Self::If, TokenKind::If)
                 | (Self::Else, TokenKind::Else)
                 | (Self::While, TokenKind::While)
+                | (Self::For, TokenKind::For)
+                | (Self::In, TokenKind::In)
                 | (Self::Match, TokenKind::Match)
                 | (Self::Select, TokenKind::Select)
                 | (Self::Go, TokenKind::Go)
@@ -1160,6 +1191,8 @@ impl TokenDiscriminant {
             Self::If => "`if`",
             Self::Else => "`else`",
             Self::While => "`while`",
+            Self::For => "`for`",
+            Self::In => "`in`",
             Self::Match => "`match`",
             Self::Select => "`select`",
             Self::Go => "`go`",
@@ -1285,6 +1318,20 @@ mod tests {
         let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
         assert!(matches!(&module.functions[0].body[1], Stmt::While { .. }));
         assert!(matches!(&module.functions[0].body[2], Stmt::If { .. }));
+    }
+
+    #[test]
+    fn parses_for_in_loops() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> int:\n    total = 0\n    for value in [1, 2, 3]:\n        total = total + value\n    return total\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[1],
+            Stmt::For { binding, .. } if binding == "value"
+        ));
     }
 
     #[test]

@@ -48,6 +48,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Run for-in example
+        run: cargo run -q -p gof-cli --bin gof -- run examples/for_report.gof
       - name: Run geometry example
         run: cargo run -q -p gof-cli --bin gof -- run examples/geometry.gof
       - name: Run health gate example
@@ -93,7 +95,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install mdBook
         run: cargo install mdbook --locked
+      - name: Clean previous docs output
+        run: rm -rf target/docs-site
       - name: Build English book
         run: mdbook build docs/book
       - name: Build Russian book
-        run: mdbook build docs/book-ru
+        run: |
+          rm -rf target/docs-site/ru
+          mdbook build docs/book-ru

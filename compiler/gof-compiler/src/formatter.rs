@@ -170,6 +170,16 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             format_expr(condition),
             format_block(body, indent_level + 1)
         ),
+        Stmt::For {
+            binding,
+            iterable,
+            body,
+            ..
+        } => format!(
+            "{indent}for {binding} in {}:\n{}",
+            format_expr(iterable),
+            format_block(body, indent_level + 1)
+        ),
         Stmt::Match { value, arms, .. } => {
             let arms = arms
                 .iter()
@@ -329,6 +339,19 @@ mod tests {
         assert_eq!(
             formatted,
             "fn main() -> bool:\n    return not false and true or false\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_for_in_loops() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn main()->int:\n    total=0\n    for value in [1,2,3]:\n        total=total+value\n    return total\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn main() -> int:\n    total = 0\n    for value in [1, 2, 3]:\n        total = total + value\n    return total\n"
         );
     }
 

@@ -130,6 +130,11 @@ pub enum TypedStmt {
         condition: TypedExpr,
         body: Vec<TypedStmt>,
     },
+    For {
+        binding: String,
+        iterable: TypedExpr,
+        body: Vec<TypedStmt>,
+    },
     Match {
         value: TypedExpr,
         arms: Vec<TypedMatchArm>,
@@ -1061,6 +1066,54 @@ fn lower_stmt(
             );
             TypedStmt::While { condition, body }
         }
+        HirStmt::For {
+            binding,
+            iterable,
+            body,
+            span,
+        } => {
+            let iterable = lower_expr(
+                iterable,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+            );
+            let binding_type =
+                resolve_for_binding_type(binding, &iterable, *span, diagnostics, source_path);
+            scopes.push();
+            scopes.define_current(
+                binding.clone(),
+                LocalBinding {
+                    mutable: false,
+                    ty: binding_type,
+                },
+            );
+            let body = lower_block(
+                body,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                false,
+                source_path,
+            );
+            scopes.pop();
+            TypedStmt::For {
+                binding: binding.clone(),
+                iterable,
+                body,
+            }
+        }
         HirStmt::Match { value, arms, span } => {
             let value = lower_expr(
                 value,
@@ -1297,6 +1350,37 @@ fn lower_select_arms(
             }
         })
         .collect()
+}
+
+fn resolve_for_binding_type(
+    binding: &str,
+    iterable: &TypedExpr,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    match &iterable.ty {
+        Type::List(item) => item.as_ref().clone(),
+        Type::String => Type::String,
+        Type::Dict(_) => Type::String,
+        Type::Unknown => Type::Unknown,
+        other => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3048",
+                    format!("`for {binding} in ...` requires an iterable value"),
+                    format!(
+                        "this loop target resolves to `{}`, but bootstrap `for` currently supports only `list`, `string`, and `dict`",
+                        other.display_name()
+                    ),
+                    span,
+                )
+                .with_fix_it("iterate over a list, string, or dict value")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            Type::Unknown
+        }
+    }
 }
 
 fn validate_match_pattern(
@@ -2466,6 +2550,9 @@ fn collect_return_types(
             TypedStmt::While { body, .. } => {
                 collect_return_types(function_name, body, returns, diagnostics, source_path);
             }
+            TypedStmt::For { body, .. } => {
+                collect_return_types(function_name, body, returns, diagnostics, source_path);
+            }
             TypedStmt::Match { arms, .. } => {
                 for arm in arms {
                     collect_return_types(
@@ -3483,6 +3570,44 @@ mod tests {
     }
 
     #[test]
+    fn supports_for_in_over_core_iterables() {
+        let module = lower_source(
+            "fn main() -> int:\n    mut total = 0\n    for value in [1, 2, 3]:\n        total = total + value\n    for ch in \"go\":\n        total = total + len(ch)\n    mut store: dict = dict()\n    store = insert(store, \"alpha\", 1)\n    for key in store:\n        total = total + len(key)\n    return total\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::For {
+                binding, iterable, ..
+            } => {
+                assert_eq!(binding, "value");
+                assert_eq!(iterable.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected first loop, got {other:?}"),
+        }
+
+        match &module.functions[0].body[2] {
+            TypedStmt::For {
+                binding, iterable, ..
+            } => {
+                assert_eq!(binding, "ch");
+                assert_eq!(iterable.ty, Type::String);
+            }
+            other => panic!("expected second loop, got {other:?}"),
+        }
+
+        match &module.functions[0].body[5] {
+            TypedStmt::For {
+                binding, iterable, ..
+            } => {
+                assert_eq!(binding, "key");
+                assert_eq!(iterable.ty, Type::Dict(Box::new(Type::Int)));
+            }
+            other => panic!("expected dict loop, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_dict_assert_and_file_builtins() {
         let module = lower_source(
             "fn main() -> int:\n    mut store: dict = dict()\n    store = insert(store, \"size\", 3)\n    assert(contains(store, \"size\"), \"missing size\")\n    write_file(\"out.txt\", read_file(\"in.txt\"))\n    return store[\"size\"] + len(store)\n",
@@ -3580,6 +3705,15 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3047"]);
+    }
+
+    #[test]
+    fn rejects_invalid_for_iterables() {
+        let diagnostics =
+            lower_source("fn main() -> int:\n    for value in 42:\n        return value\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3048"]);
     }
 
     #[test]

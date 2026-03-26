@@ -425,4 +425,31 @@ mod tests {
                 .any(|value| matches!(value.instruction, SsaInstruction::SelectArm { .. }))
         );
     }
+
+    #[test]
+    fn pipeline_supports_for_in_loops() {
+        let source = SourceFile::new(
+            "for.gof",
+            "fn main() -> int:\n    mut total = 0\n    for value in [1, 2, 3]:\n        total = total + value\n    return total\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert!(matches!(
+            &compiled.typed_hir.functions[0].body[1],
+            crate::typed_hir::TypedStmt::For { binding, .. } if binding == "value"
+        ));
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::BeginFor { .. }))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::EndFor))
+        );
+    }
 }

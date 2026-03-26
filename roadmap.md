@@ -85,6 +85,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` logical operators with short-circuit behavior
 - `[x]` enums with a clear variant model
 - `[x]` branching over states with `match`
+- `[x]` predictable iteration over core iterable values
 - `[ ]` richer equality and comparison rules with explicit semantics
 - `[x]` methods or an equivalent clean receiver story
 - Checkpoints:
@@ -93,6 +94,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` CP-M3-3: enums with unit variants, equality, type annotations, and diagnostics
 - `[x]` CP-M3-4: `match` over enum values with an exhaustiveness baseline
 - `[x]` CP-M3-5: receiver or method model without namespace hacks
+- `[x]` CP-M3-6: `for ... in ...` over lists, strings, and dict keys
 - Exit criteria:
 - user-defined data types can model real domain states
 - branching over state is explicit and safe

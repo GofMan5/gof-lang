@@ -11,6 +11,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 
 - `calculator.gof`: typed functions, mutable bindings, arithmetic
 - `factorial.gof`: `while`, `if`, typed locals, control-flow return contract
+- `for_report.gof`: `for ... in ...` over lists, strings, and dict keys
 - `hello_print.gof`: builtin `print(...)` plus normal return value rendering
 - `io_roundtrip.gof`: bootstrap file I/O plus `assert(...)`
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
@@ -33,6 +34,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 
 - `calculator.gof` -> `107`
 - `factorial.gof` -> `120`
+- `for_report.gof` -> `19`
 - `hello_print.gof` -> prints `gof ready`, `42`, then `7`
 - `io_roundtrip.gof` -> `6`
 - `concurrent_squares.gof` -> `225`

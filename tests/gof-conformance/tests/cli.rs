@@ -1,6 +1,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::path::Path;
 use std::process::Command as ProcessCommand;
 use tempfile::tempdir;
 
@@ -10,6 +11,10 @@ fn gof_command() -> Command {
         .current_dir(gof_conformance::workspace_root())
         .args(["run", "-q", "-p", "gof-cli", "--bin", "gof", "--"]);
     command
+}
+
+fn normalize_path_for_assert(path: &Path) -> String {
+    path.to_string_lossy().replace("\\\\?\\", "")
 }
 
 #[test]
@@ -54,6 +59,20 @@ fn gof_run_executes_factorial_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("120"));
+}
+
+#[test]
+fn gof_run_executes_for_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("for_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("19"));
 }
 
 #[test]
@@ -354,8 +373,6 @@ fn gof_run_reports_imported_file_diagnostics_with_their_path() {
     let temp = tempdir().expect("tempdir should exist");
     let helper_path = temp.path().join("math.gof");
     let main_path = temp.path().join("main.gof");
-    let helper_display = helper_path.to_string_lossy().to_string();
-
     fs::write(
         &helper_path,
         "fn square(x: int) -> int:\n    return await 1\n",
@@ -367,13 +384,20 @@ fn gof_run_reports_imported_file_diagnostics_with_their_path() {
     )
     .expect("main module should be written");
 
-    gof_command()
-        .arg("run")
-        .arg(&main_path)
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(helper_display))
-        .stderr(predicate::str::contains("GOF3009"));
+    let assert = gof_command().arg("run").arg(&main_path).assert().failure();
+
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).to_string();
+    let normalized_stderr = stderr.replace("\\\\?\\", "");
+    let normalized_helper_path = normalize_path_for_assert(&helper_path);
+
+    assert!(
+        normalized_stderr.contains(&normalized_helper_path),
+        "stderr should contain imported file path.\nexpected path: {normalized_helper_path}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("GOF3009"),
+        "stderr should contain GOF3009.\nstderr: {stderr}"
+    );
 }
 
 #[test]

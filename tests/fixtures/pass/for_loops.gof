@@ -1,0 +1,18 @@
+fn main() -> int:
+    values = [2, 3, 4]
+    mut total: int = 0
+
+    for value in values:
+        total = total + value
+
+    mut names = dict()
+    names = insert(names, "go", 1)
+    names = insert(names, "lang", 2)
+
+    for key in names:
+        total = total + len(key)
+
+    for ch in "ok":
+        total = total + len(ch)
+
+    return total

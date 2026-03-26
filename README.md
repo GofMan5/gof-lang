@@ -1,312 +1,114 @@
 # gof
 
-`gof` is a new programming language project that aims for:
-
-- Python-like readability and low ceremony
-- Go-like concurrency and operational practicality
-- Rust-grade engineering discipline and reliability
-- a clean path to native performance without semantic chaos
-
-This repository currently contains a bootstrap compiler, formatter, evaluator, test harness, and language specification for the actively supported subset of `gof`.
-
-## Status
-
-`gof` is in active bootstrap development.
-
-What is already real:
-
-- indentation-aware syntax
-- top-level functions
-- same-directory imports
-- typed parameters and return contracts
-- immutable bindings by default, `mut` for reassignment
-- `if` / `else`
-- `while`
-- logical operators `and`, `or`, `not`
-- lists, indexing, builtin `len(...)`
-- builtin list and string helpers through `append(...)` and `contains(...)`
-- builtin correctness contracts through `assert(...)`
-- builtin file I/O through `read_file(...)` and `write_file(...)`
-- builtin dictionary values through `dict()` and `insert(...)`
-- task spawning through `go`
-- waiting on tasks through `await`
-- bootstrap channels through `channel()`, `send(...)`, `recv(...)`, and `select`
-- builtin output through `print(...)`
-- user-defined `struct` types with typed fields
-- user-defined `enum` types with unit variants
-- exhaustive `match` over enum values
-- explicit struct receiver methods
-- struct constructors like `Point(3, 4)`
-- enum variant values like `Status.Ready`
-- field access like `point.x`
-- method calls like `point.total(5)`
-- deterministic formatter
-- fixture-based conformance tests
-- compiler pipeline through `Lexer -> CST -> AST -> HIR -> Typed HIR -> MIR -> SSA -> backend artifact`
-- `gof build --native`, which already emits a host executable by packaging the bootstrap evaluator
-
-What is not finished yet:
-
-- direct native code generation without embedding the bootstrap evaluator
-- real standard library beyond the current bootstrap helpers
-- package registry and full resolver
-- production-grade runtime and channel semantics
-
-Important: `gof build` still emits a structured SSA/backend artifact by default. `gof build --native` already produces a real executable, but it currently wraps the bootstrap evaluator instead of using a finalized direct codegen backend.
-
-## Design Principles
-
-- `gof` is not a Python compatibility layer
-- readability must not destroy optimizability
-- safety and predictability beat surface-level convenience
-- bootstrap shortcuts are not allowed to become permanent architecture
-- new features must land with tests, diagnostics, examples, and spec updates
-
-Project operating rules are documented in:
-
-- [GOVERNANCE.md](./GOVERNANCE.md) for project governance and engineering policy
-- [CONTRIBUTING.md](./CONTRIBUTING.md) for contribution workflow and quality gates
-- [roadmap.md](./roadmap.md) for milestones and checkpoints
-- [docs/book](./docs/book/) for the versioned learning path and language book
-- [Public book site](https://gofman5.github.io/gof-lang/) for the hosted GitHub Pages version
-- [Russian book site](https://gofman5.github.io/gof-lang/ru/) for the hosted Russian version
-- [spec/language-v1.md](./spec/language-v1.md) for the current language contract
-- [spec/diagnostics.md](./spec/diagnostics.md) for the diagnostics contract
-
-## Example
+A programming language with Python-like readability, Go-like concurrency, and Rust-grade engineering discipline.
 
 ```gof
 struct Point:
     x: int
     y: int
 
-fn score(point: Point) -> int:
-    return point.x + point.y
+fn score(p: Point) -> int:
+    return p.x + p.y
 
 fn main() -> int:
-    point: Point = Point(20, 22)
-    return score(point)
+    p: Point = Point(20, 22)
+    return score(p)
 ```
 
-Running this program prints:
+> **Bootstrap stage.** The compiler, evaluator, and toolchain are functional and actively developed.
+> Native builds work via `gof build --native`. Direct codegen backend is in progress.
 
-```text
-42
-```
+## Install
 
-## Quick Start
-
-Run a fixture:
-
-```bash
-cargo run -q -p gof-cli --bin gof -- run tests/fixtures/pass/hello.gof
-```
-
-Install the latest released `gof` binary on Unix-like systems:
+**Unix/macOS:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.sh | bash
 ```
 
-Install the latest released `gof` binary on Windows PowerShell:
+**Windows (PowerShell):**
 
 ```powershell
 irm https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.ps1 | iex
 ```
 
-Run the same installer command later to update to the newest release.
-The Windows install flow now downloads and runs an `Inno Setup`-built `setup.exe`, which installs `gof` into the current user profile and updates PATH.
+Run the same command again to update. The installer places the binary in `~/.gof/bin` and updates PATH.
 
-Install a specific tagged release on Unix-like systems:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.sh | bash -s -- v0.1.0
-```
-
-The installer places the binary in `$HOME/.gof/bin` by default and updates your shell path.
-
-Run an example:
+## Usage
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- run examples/geometry.gof
+gof run examples/geometry.gof          # run a program
+gof build app.gof --native             # build a native executable
+gof fmt src/main.gof                   # format
+gof test tests/fixtures                # run conformance suite
 ```
 
-Format a file:
+## What works today
+
+| Area | Status |
+|------|--------|
+| Functions, typed params, return contracts | stable |
+| `struct`, `enum`, exhaustive `match` | stable |
+| Methods, field access, constructors | stable |
+| `if`/`else`, `while`, `for`-iteration, logical ops | stable |
+| Lists, dicts, indexing | stable |
+| File I/O, `assert`, `print` | stable |
+| Same-directory imports | stable |
+| `go`, `await`, channels, `select` | bootstrap |
+| `gof build --native` | bootstrap (wraps evaluator) |
+| Formatter, conformance tests | stable |
+
+See the [language spec](spec/language-v1.md) for the full contract.
+
+## Documentation
+
+| | |
+|---|---|
+| **[The gof Book](https://gofman5.github.io/gof-lang/)** | Learning path — start here |
+| **[Книга gof (RU)](https://gofman5.github.io/gof-lang/ru/)** | Русская версия |
+| [Examples](examples/) | Runnable programs |
+| [Language spec](spec/language-v1.md) | Formal contract |
+| [Diagnostics spec](spec/diagnostics.md) | Error behavior |
+| [Roadmap](roadmap.md) | Milestones and current focus |
+| [RFCs](rfcs/) | Language evolution proposals |
+| [ADRs](adrs/) | Architecture decisions |
+
+## Building from source
+
+Requires Rust toolchain (see [rust-toolchain.toml](rust-toolchain.toml)).
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- fmt path/to/file.gof
+cargo test --workspace            # run all tests
+cargo run -p gof-cli -- run app.gof   # run via cargo
 ```
 
-Check formatting without rewriting:
+Preview the book locally:
 
 ```bash
-cargo run -q -p gof-cli --bin gof -- fmt path/to/file.gof --check
+mdbook build docs/book && mdbook build docs/book-ru
 ```
 
-Run the fixture suite:
+## Project structure
 
-```bash
-cargo run -q -p gof-cli --bin gof -- test tests/fixtures
+```
+compiler/    compiler frontend, typing, IR, evaluator
+runtime/     runtime contracts
+stdlib/      standard library (in progress)
+tools/       CLI toolchain (gof-cli)
+tests/       conformance fixtures
+benchmarks/  benchmark harness
+spec/        language and diagnostics contracts
+rfcs/        language proposals
+adrs/        architecture decisions
+docs/book/   English book
+docs/book-ru/ Russian book
+examples/    runnable .gof programs
 ```
 
-Build the current backend artifact:
+## Contributing
 
-```bash
-cargo run -q -p gof-cli --bin gof -- build examples/geometry.gof
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md) and [GOVERNANCE.md](GOVERNANCE.md).
 
-Build a bootstrap-native host executable:
+## License
 
-```bash
-cargo run -q -p gof-cli --bin gof -- build examples/hello_print.gof --native
-```
-
-Run all workspace tests:
-
-```bash
-cargo test --workspace
-```
-
-Preview the learning book locally:
-
-```bash
-cargo install mdbook
-mdbook build docs/book
-mdbook build docs/book-ru
-```
-
-This builds a bilingual static site into `target/docs-site`.
-
-Hosted docs are intended to publish automatically from `main` through GitHub Pages, with English at the root and Russian under `/ru/`.
-
-Create or refresh the rolling snapshot prerelease from your local machine:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/publish-snapshot.ps1
-```
-
-Push and refresh the snapshot in one step:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/push-and-release.ps1
-```
-
-## Current Language Surface
-
-The current bootstrap subset supports:
-
-- `import name`
-- `struct`
-- `enum`
-- `fn`
-- typed parameters
-- explicit return annotations
-- `return`
-- `if` / `else`
-- `while`
-- immutable and mutable bindings
-- integer, string, and boolean literals
-- list literals
-- arithmetic with `+`, `-`, `*`
-- logical operators with short-circuit semantics
-- comparisons with `==`, `!=`, `<`, `<=`, `>`, `>=`
-- top-level function calls
-- struct constructors
-- enum variant references
-- exhaustive `match` over enum values
-- struct receiver methods via `fn TypeName.method(...)`
-- field access
-- method calls
-- list indexing
-- dict indexing with string keys
-- builtin `len(...)`
-- builtin `print(...)`
-- builtin `append(...)`
-- builtin `contains(...)`
-- builtin `assert(...)`
-- builtin `read_file(...)`
-- builtin `write_file(...)`
-- builtin `dict()`
-- builtin `insert(...)`
-- builtin `channel()`
-- builtin `send(...)`
-- builtin `recv(...)`
-- `go` and `await`
-- `select` over receive arms
-
-See [examples/README.md](./examples/README.md) for runnable examples.
-
-## Learning gof
-
-`gof` should be learned from repository-versioned docs, not from a drifting wiki.
-
-Use this order:
-
-1. [docs/book](./docs/book/) for the English teaching path
-2. [docs/book-ru](./docs/book-ru/) for the Russian teaching path
-3. [examples/README.md](./examples/README.md) for runnable examples
-4. [spec/language-v1.md](./spec/language-v1.md) for the exact contract
-5. [spec/diagnostics.md](./spec/diagnostics.md) for error behavior
-
-The book is intended to grow with the language. Every new public feature should update:
-
-- the book
-- examples
-- spec
-- diagnostics when needed
-
-## Repository Layout
-
-- `compiler/` - language frontend, typing, IR lowering, and bootstrap evaluator
-- `runtime/` - runtime contracts and runtime-facing code
-- `stdlib/` - future standard library home
-- `tools/` - CLI toolchain
-- `tests/` - conformance tests and fixtures
-- `benchmarks/` - benchmark harness
-- `spec/` - language and diagnostics contracts
-- `rfcs/` - language evolution proposals
-- `adrs/` - architecture decisions
-
-## Quality Bar
-
-The project targets:
-
-- explicit architectural layering
-- strong diagnostics
-- 100% coverage target for deterministic compiler/runtime/tooling code
-- benchmark-backed performance work
-- no public hacks and no fake-complete features
-
-If a feature is not specified, tested, and integrated through the pipeline, it is not considered done.
-
-## Roadmap
-
-The active roadmap is maintained in [roadmap.md](./roadmap.md).
-
-Current priority order:
-
-1. richer stdlib beyond the current bootstrap helpers
-2. production-grade concurrency semantics beyond the current channel baseline
-3. package system and direct native backend hardening
-4. runtime and performance hardening
-
-## CI and Release Automation
-
-The repository now includes:
-
-- CI on every push and on every pull request
-- formatting checks
-- full workspace tests on Linux and Windows
-- benchmark harness smoke builds
-- example smoke runs
-- docs smoke builds for the `mdBook`
-- release-package smoke builds on Linux, Windows, and macOS for every push and pull request
-- release packaging workflows for Linux, Windows, and macOS
-- GitHub Pages deployment for the book from `docs/book`
-
-Release artifacts are built automatically from version tags and can be consumed by the install scripts in `scripts/install.sh` and `scripts/install.ps1`.
-Windows release assets now include both `gof-windows-x86_64.zip` and `gof-windows-x86_64-setup.exe`.
-
-For local maintainer workflows, `scripts/publish-snapshot.ps1` and `scripts/push-and-release.ps1` can also build the current commit and refresh the rolling `snapshot-main` prerelease directly through the GitHub Releases API.
-
-To activate hosted docs in repository settings, set GitHub Pages to use **GitHub Actions** as the build and deployment source.
+[MIT](LICENSE)

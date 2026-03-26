@@ -1,0 +1,7 @@
+fn main() -> int:
+    value: int = 7
+
+    for item in value:
+        return item
+
+    return 0
