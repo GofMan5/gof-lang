@@ -1,0 +1,35 @@
+fn api_base() -> string:
+    configured = env("GOF_TELEGRAM_API_BASE")
+    match configured:
+        Result.Ok(value):
+            return value
+        Result.Err(error):
+            return "https://api.telegram.org"
+
+fn fetch_updates(base: string, token: string, offset: int) -> Result[json, RuntimeError]:
+    body = http_get(base + "/bot" + token + "/getUpdates?timeout=1&offset=" + to_string(offset))?
+    return json_parse(body)
+
+fn send_pong(base: string, token: string, chat_id: int) -> Result[int, RuntimeError]:
+    http_get(base + "/bot" + token + "/sendMessage?chat_id=" + to_string(chat_id) + "&text=pong")?
+    return Result.Ok(chat_id)
+
+fn main() -> Result[int, RuntimeError]:
+    token = env("TELEGRAM_BOT_TOKEN")?
+    payload = fetch_updates(api_base(), token, 0)?
+    updates = json_get(payload, "result")?
+
+    if json_len(updates)? == 0:
+        return Result.Ok(0)
+
+    first = json_index(updates, 0)?
+    update_id = json_int(json_get(first, "update_id")?)?
+    message = json_get(first, "message")?
+    chat = json_get(message, "chat")?
+    chat_id = json_int(json_get(chat, "id")?)?
+    text = json_string(json_get(message, "text")?)?
+
+    if text == "/ping":
+        send_pong(api_base(), token, chat_id)?
+
+    return Result.Ok(update_id)

@@ -1,6 +1,6 @@
-fn main() -> int:
+fn main() -> Result[int, RuntimeError]:
     ch: channel = channel()
-    send(ch, 4)
+    send(ch, 4)?
     select:
         value = recv(ch):
-            return value + 1
+            return Result.Ok(value? + 1)

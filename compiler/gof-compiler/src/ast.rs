@@ -56,6 +56,14 @@ pub struct EnumDecl {
 #[derive(Debug, Clone, Serialize)]
 pub struct EnumVariant {
     pub name: String,
+    pub fields: Vec<EnumVariantField>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EnumVariantField {
+    pub name: String,
+    pub ty: TypeRef,
     pub span: Span,
 }
 
@@ -69,6 +77,7 @@ pub struct Param {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypeRef {
     pub name: String,
+    pub args: Vec<TypeRef>,
     pub span: Span,
 }
 
@@ -104,6 +113,8 @@ pub enum Stmt {
         body: Vec<Stmt>,
         span: Span,
     },
+    Break(Span),
+    Continue(Span),
     Match {
         value: Expr,
         arms: Vec<MatchArm>,
@@ -118,9 +129,19 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MatchArm {
-    pub pattern: Expr,
+    pub pattern: MatchPattern,
     pub body: Vec<Stmt>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum MatchPattern {
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +153,12 @@ pub struct SelectArm {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct DictEntry {
+    pub key: Expr,
+    pub value: Expr,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum Expr {
     Int(i64, Span),
     String(String, Span),
@@ -139,6 +166,10 @@ pub enum Expr {
     Ident(String, Span),
     List {
         items: Vec<Expr>,
+        span: Span,
+    },
+    Dict {
+        entries: Vec<DictEntry>,
         span: Span,
     },
     Call {
@@ -170,6 +201,10 @@ pub enum Expr {
         value: Box<Expr>,
         span: Span,
     },
+    Propagate {
+        value: Box<Expr>,
+        span: Span,
+    },
     Unary {
         op: UnaryOp,
         value: Box<Expr>,
@@ -188,6 +223,8 @@ pub enum BinaryOp {
     Add,
     Sub,
     Mul,
+    Div,
+    Mod,
     And,
     Or,
     Eq,
@@ -201,6 +238,7 @@ pub enum BinaryOp {
 #[derive(Debug, Clone, Copy, Serialize)]
 pub enum UnaryOp {
     Not,
+    Neg,
 }
 
 pub fn parse(cst: &CstModule) -> Result<Module, Diagnostics> {
@@ -274,6 +312,7 @@ impl<'a> Parser<'a> {
             (
                 Some(TypeRef {
                     name: head,
+                    args: Vec::new(),
                     span: head_span,
                 }),
                 self.expect_ident("expected a method name after `TypeName.`"),
@@ -389,20 +428,12 @@ impl<'a> Parser<'a> {
         let name = self.expect_ident("expected a field name");
         let span = self.previous().span;
         self.expect(TokenDiscriminant::Colon, "expected `:` after field name");
-        let ty_name = self.expect_ident("expected a type name after `:`");
-        let ty_span = self.previous().span;
+        let ty = self.parse_type_ref("expected a type name after `:`");
         self.expect(
             TokenDiscriminant::Newline,
             "expected a newline after struct field",
         );
-        StructField {
-            name,
-            ty: TypeRef {
-                name: ty_name,
-                span: ty_span,
-            },
-            span,
-        }
+        StructField { name, ty, span }
     }
 
     fn parse_enum_variants(&mut self, message: &'static str) -> Vec<EnumVariant> {
@@ -423,12 +454,41 @@ impl<'a> Parser<'a> {
 
     fn parse_enum_variant(&mut self) -> EnumVariant {
         let name = self.expect_ident("expected an enum variant name");
-        let span = self.previous().span;
+        let start = self.previous().span;
+        let mut end = start;
+        let mut fields = Vec::new();
+        if self.matches(TokenDiscriminant::LParen) {
+            loop {
+                let field_name = self.expect_ident("expected an enum payload field name");
+                let field_span = self.previous().span;
+                self.expect(
+                    TokenDiscriminant::Colon,
+                    "expected `:` after the enum payload field name",
+                );
+                let ty = self.parse_type_ref("expected a type name after `:`");
+                fields.push(EnumVariantField {
+                    name: field_name,
+                    ty,
+                    span: field_span,
+                });
+                if !self.matches(TokenDiscriminant::Comma) {
+                    break;
+                }
+            }
+            end = self.expect(
+                TokenDiscriminant::RParen,
+                "expected `)` after enum payload fields",
+            );
+        }
         self.expect(
             TokenDiscriminant::Newline,
             "expected a newline after enum variant",
         );
-        EnumVariant { name, span }
+        EnumVariant {
+            name,
+            fields,
+            span: Span::new(start.line, start.column, end.end_column),
+        }
     }
 
     fn parse_stmt(&mut self) -> Stmt {
@@ -498,6 +558,24 @@ impl<'a> Parser<'a> {
                 body,
                 span,
             };
+        }
+
+        if self.matches(TokenDiscriminant::Break) {
+            let span = self.previous().span;
+            self.expect(
+                TokenDiscriminant::Newline,
+                "expected a newline after `break`",
+            );
+            return Stmt::Break(span);
+        }
+
+        if self.matches(TokenDiscriminant::Continue) {
+            let span = self.previous().span;
+            self.expect(
+                TokenDiscriminant::Newline,
+                "expected a newline after `continue`",
+            );
+            return Stmt::Continue(span);
         }
 
         if self.matches(TokenDiscriminant::Match) {
@@ -602,7 +680,7 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_match_arm(&mut self) -> MatchArm {
-        let pattern = self.parse_expr();
+        let pattern = self.parse_match_pattern();
         let span = pattern.span();
         self.expect(
             TokenDiscriminant::Colon,
@@ -613,6 +691,39 @@ impl<'a> Parser<'a> {
             pattern,
             body,
             span,
+        }
+    }
+
+    fn parse_match_pattern(&mut self) -> MatchPattern {
+        let enum_name = self.expect_ident("expected an enum name in match arm pattern");
+        let start = self.previous().span;
+        self.expect(
+            TokenDiscriminant::Dot,
+            "expected `.` after the enum name in match arm pattern",
+        );
+        let variant = self.expect_ident("expected an enum variant name in match arm pattern");
+        let mut end = self.previous().span;
+        let mut bindings = Vec::new();
+        if self.matches(TokenDiscriminant::LParen) {
+            loop {
+                bindings.push(
+                    self.expect_ident("expected a binding name in the payload match pattern"),
+                );
+                if !self.matches(TokenDiscriminant::Comma) {
+                    break;
+                }
+            }
+            end = self.expect(
+                TokenDiscriminant::RParen,
+                "expected `)` after the payload match bindings",
+            );
+        }
+
+        MatchPattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+            span: Span::new(start.line, start.column, end.end_column),
         }
     }
 
@@ -770,12 +881,22 @@ impl<'a> Parser<'a> {
     fn parse_multiplicative(&mut self) -> Expr {
         let mut expr = self.parse_unary();
 
-        while self.matches(TokenDiscriminant::Star) {
+        while self.matches(TokenDiscriminant::Star)
+            || self.matches(TokenDiscriminant::Slash)
+            || self.matches(TokenDiscriminant::Percent)
+        {
+            let op = if self.previous_kind_matches(TokenDiscriminant::Star) {
+                BinaryOp::Mul
+            } else if self.previous_kind_matches(TokenDiscriminant::Slash) {
+                BinaryOp::Div
+            } else {
+                BinaryOp::Mod
+            };
             let rhs = self.parse_unary();
             let span = Span::new(expr.span().line, expr.span().column, rhs.span().end_column);
             expr = Expr::Binary {
                 lhs: Box::new(expr),
-                op: BinaryOp::Mul,
+                op,
                 rhs: Box::new(rhs),
                 span,
             };
@@ -798,6 +919,16 @@ impl<'a> Parser<'a> {
             let start = self.previous().span;
             let value = self.parse_unary();
             return Expr::Await {
+                span: Span::new(start.line, start.column, value.span().end_column),
+                value: Box::new(value),
+            };
+        }
+
+        if self.matches(TokenDiscriminant::Minus) {
+            let start = self.previous().span;
+            let value = self.parse_unary();
+            return Expr::Unary {
+                op: UnaryOp::Neg,
                 span: Span::new(start.line, start.column, value.span().end_column),
                 value: Box::new(value),
             };
@@ -881,6 +1012,16 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            if self.matches(TokenDiscriminant::Question) {
+                let start = expr.span();
+                let end = self.previous().span;
+                expr = Expr::Propagate {
+                    value: Box::new(expr),
+                    span: Span::new(start.line, start.column, end.end_column),
+                };
+                continue;
+            }
+
             break;
         }
 
@@ -937,6 +1078,28 @@ impl<'a> Parser<'a> {
                     span: Span::new(token.span.line, token.span.column, end.end_column),
                 }
             }
+            TokenKind::LBrace => {
+                let mut entries = Vec::new();
+                if !self.check(TokenDiscriminant::RBrace) {
+                    loop {
+                        let key = self.parse_expr();
+                        self.expect(
+                            TokenDiscriminant::Colon,
+                            "expected `:` between dict key and value",
+                        );
+                        let value = self.parse_expr();
+                        entries.push(DictEntry { key, value });
+                        if !self.matches(TokenDiscriminant::Comma) {
+                            break;
+                        }
+                    }
+                }
+                let end = self.expect(TokenDiscriminant::RBrace, "expected `}` after dict literal");
+                Expr::Dict {
+                    entries,
+                    span: Span::new(token.span.line, token.span.column, end.end_column),
+                }
+            }
             _ => {
                 self.diagnostics.push(
                     Diagnostic::error(
@@ -957,9 +1120,7 @@ impl<'a> Parser<'a> {
             return None;
         }
 
-        let name = self.expect_ident("expected a type name after `:`");
-        let span = self.previous().span;
-        Some(TypeRef { name, span })
+        Some(self.parse_type_ref("expected a type name after `:`"))
     }
 
     fn parse_optional_return_type_ref(&mut self) -> Option<TypeRef> {
@@ -967,9 +1128,35 @@ impl<'a> Parser<'a> {
             return None;
         }
 
-        let name = self.expect_ident("expected a type name after `->`");
-        let span = self.previous().span;
-        Some(TypeRef { name, span })
+        Some(self.parse_type_ref("expected a type name after `->`"))
+    }
+
+    fn parse_type_ref(&mut self, message: &'static str) -> TypeRef {
+        let name = self.expect_ident(message);
+        let start = self.previous().span;
+        let mut end = start;
+        let mut args = Vec::new();
+
+        if self.matches(TokenDiscriminant::LBracket) {
+            loop {
+                let arg = self.parse_type_ref("expected a type argument");
+                args.push(arg);
+                if !self.matches(TokenDiscriminant::Comma) {
+                    break;
+                }
+            }
+
+            end = self.expect(
+                TokenDiscriminant::RBracket,
+                "expected `]` after type arguments",
+            );
+        }
+
+        TypeRef {
+            name,
+            args,
+            span: Span::new(start.line, start.column, end.end_column),
+        }
     }
 
     fn expect(&mut self, expected: TokenDiscriminant, message: &'static str) -> Span {
@@ -1079,14 +1266,24 @@ impl Expr {
             | Expr::Bool(_, span)
             | Expr::Ident(_, span)
             | Expr::List { span, .. }
+            | Expr::Dict { span, .. }
             | Expr::Call { span, .. }
             | Expr::Field { span, .. }
             | Expr::MethodCall { span, .. }
             | Expr::Index { span, .. }
             | Expr::Go { span, .. }
             | Expr::Await { span, .. }
+            | Expr::Propagate { span, .. }
             | Expr::Unary { span, .. }
             | Expr::Binary { span, .. } => *span,
+        }
+    }
+}
+
+impl MatchPattern {
+    pub fn span(&self) -> Span {
+        match self {
+            MatchPattern::EnumVariant { span, .. } => *span,
         }
     }
 }
@@ -1102,6 +1299,8 @@ enum TokenDiscriminant {
     While,
     For,
     In,
+    Break,
+    Continue,
     Match,
     Select,
     Go,
@@ -1115,6 +1314,7 @@ enum TokenDiscriminant {
     RParen,
     LBracket,
     RBracket,
+    RBrace,
     Dot,
     Colon,
     Comma,
@@ -1125,10 +1325,13 @@ enum TokenDiscriminant {
     LessEqual,
     Greater,
     GreaterEqual,
+    Question,
     Arrow,
     Plus,
     Minus,
     Star,
+    Slash,
+    Percent,
     Newline,
     Indent,
     Dedent,
@@ -1148,6 +1351,8 @@ impl TokenDiscriminant {
                 | (Self::While, TokenKind::While)
                 | (Self::For, TokenKind::For)
                 | (Self::In, TokenKind::In)
+                | (Self::Break, TokenKind::Break)
+                | (Self::Continue, TokenKind::Continue)
                 | (Self::Match, TokenKind::Match)
                 | (Self::Select, TokenKind::Select)
                 | (Self::Go, TokenKind::Go)
@@ -1161,6 +1366,7 @@ impl TokenDiscriminant {
                 | (Self::RParen, TokenKind::RParen)
                 | (Self::LBracket, TokenKind::LBracket)
                 | (Self::RBracket, TokenKind::RBracket)
+                | (Self::RBrace, TokenKind::RBrace)
                 | (Self::Dot, TokenKind::Dot)
                 | (Self::Colon, TokenKind::Colon)
                 | (Self::Comma, TokenKind::Comma)
@@ -1171,10 +1377,13 @@ impl TokenDiscriminant {
                 | (Self::LessEqual, TokenKind::LessEqual)
                 | (Self::Greater, TokenKind::Greater)
                 | (Self::GreaterEqual, TokenKind::GreaterEqual)
+                | (Self::Question, TokenKind::Question)
                 | (Self::Arrow, TokenKind::Arrow)
                 | (Self::Plus, TokenKind::Plus)
                 | (Self::Minus, TokenKind::Minus)
                 | (Self::Star, TokenKind::Star)
+                | (Self::Slash, TokenKind::Slash)
+                | (Self::Percent, TokenKind::Percent)
                 | (Self::Newline, TokenKind::Newline)
                 | (Self::Indent, TokenKind::Indent)
                 | (Self::Dedent, TokenKind::Dedent)
@@ -1193,6 +1402,8 @@ impl TokenDiscriminant {
             Self::While => "`while`",
             Self::For => "`for`",
             Self::In => "`in`",
+            Self::Break => "`break`",
+            Self::Continue => "`continue`",
             Self::Match => "`match`",
             Self::Select => "`select`",
             Self::Go => "`go`",
@@ -1206,6 +1417,7 @@ impl TokenDiscriminant {
             Self::RParen => "`)`",
             Self::LBracket => "`[`",
             Self::RBracket => "`]`",
+            Self::RBrace => "`}`",
             Self::Dot => "`.`",
             Self::Colon => "`:`",
             Self::Comma => "`,`",
@@ -1216,10 +1428,13 @@ impl TokenDiscriminant {
             Self::LessEqual => "`<=`",
             Self::Greater => "`>`",
             Self::GreaterEqual => "`>=`",
+            Self::Question => "`?`",
             Self::Arrow => "`->`",
             Self::Plus => "`+`",
             Self::Minus => "`-`",
             Self::Star => "`*`",
+            Self::Slash => "`/`",
+            Self::Percent => "`%`",
             Self::Newline => "a newline",
             Self::Indent => "an indented block",
             Self::Dedent => "a dedent",
@@ -1241,7 +1456,7 @@ fn token_debug_name(kind: &TokenKind) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryOp, Expr, Stmt, parse};
+    use super::{BinaryOp, Expr, MatchPattern, Stmt, UnaryOp, parse};
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
@@ -1291,6 +1506,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_parameterized_builtin_type_refs() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main(values: list[int], jobs: task[list[string]]) -> dict[int]:\n    mut ch: channel[int] = channel()\n    send(ch, values[0])\n    return {\"ok\": recv(ch)}\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        let function = &module.functions[0];
+
+        let values_ty = function.params[0]
+            .ty
+            .as_ref()
+            .expect("values type should exist");
+        assert_eq!(values_ty.name, "list");
+        assert_eq!(values_ty.args.len(), 1);
+        assert_eq!(values_ty.args[0].name, "int");
+
+        let jobs_ty = function.params[1]
+            .ty
+            .as_ref()
+            .expect("jobs type should exist");
+        assert_eq!(jobs_ty.name, "task");
+        assert_eq!(jobs_ty.args[0].name, "list");
+        assert_eq!(jobs_ty.args[0].args[0].name, "string");
+
+        let return_ty = function
+            .return_type
+            .as_ref()
+            .expect("return type should exist");
+        assert_eq!(return_ty.name, "dict");
+        assert_eq!(return_ty.args[0].name, "int");
+
+        match &function.body[0] {
+            Stmt::Bind { ty, .. } => {
+                let ty = ty.as_ref().expect("binding type should exist");
+                assert_eq!(ty.name, "channel");
+                assert_eq!(ty.args[0].name, "int");
+            }
+            other => panic!("expected typed bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_explicit_return_annotations() {
         let source = SourceFile::new(
             "test.gof",
@@ -1335,6 +1593,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_break_and_continue() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> int:\n    mut total = 0\n    for value in [1, 2, 3]:\n        if value == 2:\n            continue\n        total = total + value\n        if total > 3:\n            break\n    return total\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+
+        match &module.functions[0].body[1] {
+            Stmt::For { body, .. } => {
+                assert!(matches!(
+                    &body[0],
+                    Stmt::If { then_body, .. } if matches!(&then_body[0], Stmt::Continue(_))
+                ));
+                assert!(matches!(
+                    &body[2],
+                    Stmt::If { then_body, .. } if matches!(&then_body[0], Stmt::Break(_))
+                ));
+            }
+            other => panic!("expected for loop, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parses_go_and_await() {
         let source = SourceFile::new(
             "test.gof",
@@ -1369,6 +1651,27 @@ mod tests {
                 value: Expr::List { .. },
                 ..
             }
+        ));
+        assert!(matches!(
+            &module.functions[0].body[1],
+            Stmt::Return(Expr::Index { .. }, _)
+        ));
+    }
+
+    #[test]
+    fn parses_dict_literals_and_indexing() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> int:\n    values = {\"ok\": 2, \"warn\": 3}\n    return values[\"ok\"]\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[0],
+            Stmt::Assign {
+                value: Expr::Dict { entries, .. },
+                ..
+            } if entries.len() == 2
         ));
         assert!(matches!(
             &module.functions[0].body[1],
@@ -1427,6 +1730,52 @@ mod tests {
                 _
             ) if matches!(lhs.as_ref(), Expr::Field { field, .. } if field == "Ready")
                 && matches!(rhs.as_ref(), Expr::Field { field, .. } if field == "Busy")
+        ));
+    }
+
+    #[test]
+    fn parses_payload_enums_and_destructuring_patterns() {
+        let source = SourceFile::new(
+            "test.gof",
+            "enum JobState:\n    Ready\n    Running(pid: int)\n    Failed(message: string)\n\nfn main() -> int:\n    state = JobState.Running(42)\n    match state:\n        JobState.Ready:\n            return 0\n        JobState.Running(pid):\n            return pid\n        JobState.Failed(message):\n            return len(message)\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+
+        assert_eq!(module.enums[0].variants[1].name, "Running");
+        assert_eq!(module.enums[0].variants[1].fields.len(), 1);
+        assert_eq!(module.enums[0].variants[1].fields[0].name, "pid");
+        assert_eq!(module.enums[0].variants[1].fields[0].ty.name, "int");
+
+        assert!(matches!(
+            &module.functions[0].body[0],
+            Stmt::Assign {
+                value: Expr::MethodCall { method, args, .. },
+                ..
+            } if method == "Running" && args.len() == 1
+        ));
+
+        assert!(matches!(
+            &module.functions[0].body[1],
+            Stmt::Match { arms, .. }
+                if matches!(
+                    &arms[1].pattern,
+                    MatchPattern::EnumVariant {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } if enum_name == "JobState" && variant == "Running" && bindings == &vec!["pid".to_string()]
+                )
+                && matches!(
+                    &arms[2].pattern,
+                    MatchPattern::EnumVariant {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } if enum_name == "JobState" && variant == "Failed" && bindings == &vec!["message".to_string()]
+                )
         ));
     }
 
@@ -1496,5 +1845,55 @@ mod tests {
                 _
             ) if matches!(lhs.as_ref(), Expr::Binary { op: BinaryOp::And, .. })
         ));
+    }
+
+    #[test]
+    fn parses_unary_minus_and_numeric_surface() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> int:\n    return -6 / 3 % 2 + -(1 + 1)\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[0],
+            Stmt::Return(
+                Expr::Binary {
+                    op: BinaryOp::Add,
+                    lhs,
+                    rhs,
+                    ..
+                },
+                _
+            ) if matches!(
+                lhs.as_ref(),
+                Expr::Binary {
+                    op: BinaryOp::Mod,
+                    lhs,
+                    ..
+                } if matches!(lhs.as_ref(), Expr::Binary { op: BinaryOp::Div, .. })
+            ) && matches!(rhs.as_ref(), Expr::Unary { op: UnaryOp::Neg, .. })
+        ));
+    }
+
+    #[test]
+    fn parses_result_annotations_and_propagation() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn parse_port() -> Result[int, string]:\n    return Result.Ok(41)\n\nfn main() -> Result[int, string]:\n    port = parse_port()?\n    return Result.Ok(port + 1)\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+
+        let parse_return = module.functions[0]
+            .return_type
+            .as_ref()
+            .expect("parse_port should have a return annotation");
+        assert_eq!(parse_return.name, "Result");
+        assert_eq!(parse_return.args.len(), 2);
+        assert_eq!(parse_return.args[0].name, "int");
+        assert_eq!(parse_return.args[1].name, "string");
+
+        assert_eq!(module.functions[1].body.len(), 2);
     }
 }

@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOp, EnumDecl, EnumVariant, Expr, Module, Param, SelectArm, Stmt, StructDecl, StructField,
-    TypeRef, UnaryOp,
+    BinaryOp, EnumDecl, EnumVariant, EnumVariantField, Expr, MatchPattern, Module, Param,
+    SelectArm, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -48,6 +48,14 @@ pub struct HirEnum {
 #[derive(Debug, Clone, Serialize)]
 pub struct HirEnumVariant {
     pub name: String,
+    pub fields: Vec<HirEnumVariantField>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HirEnumVariantField {
+    pub name: String,
+    pub ty: HirTypeRef,
     pub span: Span,
 }
 
@@ -61,6 +69,7 @@ pub struct HirParam {
 #[derive(Debug, Clone, Serialize)]
 pub struct HirTypeRef {
     pub name: String,
+    pub args: Vec<HirTypeRef>,
     pub span: Span,
 }
 
@@ -96,6 +105,8 @@ pub enum HirStmt {
         body: Vec<HirStmt>,
         span: Span,
     },
+    Break(Span),
+    Continue(Span),
     Match {
         value: HirExpr,
         arms: Vec<HirMatchArm>,
@@ -110,9 +121,19 @@ pub enum HirStmt {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct HirMatchArm {
-    pub pattern: HirExpr,
+    pub pattern: HirMatchPattern,
     pub body: Vec<HirStmt>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum HirMatchPattern {
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +145,12 @@ pub struct HirSelectArm {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct HirDictEntry {
+    pub key: HirExpr,
+    pub value: HirExpr,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum HirExpr {
     Int(i64, Span),
     String(String, Span),
@@ -131,6 +158,10 @@ pub enum HirExpr {
     Local(String, Span),
     List {
         items: Vec<HirExpr>,
+        span: Span,
+    },
+    Dict {
+        entries: Vec<HirDictEntry>,
         span: Span,
     },
     Call {
@@ -159,6 +190,10 @@ pub enum HirExpr {
         span: Span,
     },
     Await {
+        value: Box<HirExpr>,
+        span: Span,
+    },
+    Propagate {
         value: Box<HirExpr>,
         span: Span,
     },
@@ -223,7 +258,20 @@ fn lower_enum(decl: &EnumDecl) -> HirEnum {
 fn lower_enum_variant(variant: &EnumVariant) -> HirEnumVariant {
     HirEnumVariant {
         name: variant.name.clone(),
+        fields: variant
+            .fields
+            .iter()
+            .map(lower_enum_variant_field)
+            .collect(),
         span: variant.span,
+    }
+}
+
+fn lower_enum_variant_field(field: &EnumVariantField) -> HirEnumVariantField {
+    HirEnumVariantField {
+        name: field.name.clone(),
+        ty: lower_type_ref(&field.ty),
+        span: field.span,
     }
 }
 
@@ -238,6 +286,7 @@ fn lower_param(param: &Param) -> HirParam {
 fn lower_type_ref(ty: &TypeRef) -> HirTypeRef {
     HirTypeRef {
         name: ty.name.clone(),
+        args: ty.args.iter().map(lower_type_ref).collect(),
         span: ty.span,
     }
 }
@@ -294,6 +343,8 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
             body: body.iter().map(lower_stmt).collect(),
             span: *span,
         },
+        Stmt::Break(span) => HirStmt::Break(*span),
+        Stmt::Continue(span) => HirStmt::Continue(*span),
         Stmt::Match { value, arms, span } => HirStmt::Match {
             value: lower_expr(value),
             arms: arms.iter().map(lower_match_arm).collect(),
@@ -309,9 +360,25 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
 
 fn lower_match_arm(arm: &crate::ast::MatchArm) -> HirMatchArm {
     HirMatchArm {
-        pattern: lower_expr(&arm.pattern),
+        pattern: lower_match_pattern(&arm.pattern),
         body: arm.body.iter().map(lower_stmt).collect(),
         span: arm.span,
+    }
+}
+
+fn lower_match_pattern(pattern: &MatchPattern) -> HirMatchPattern {
+    match pattern {
+        MatchPattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+            span,
+        } => HirMatchPattern::EnumVariant {
+            enum_name: enum_name.clone(),
+            variant: variant.clone(),
+            bindings: bindings.clone(),
+            span: *span,
+        },
     }
 }
 
@@ -332,6 +399,16 @@ fn lower_expr(expr: &Expr) -> HirExpr {
         Expr::Ident(value, span) => HirExpr::Local(value.clone(), *span),
         Expr::List { items, span } => HirExpr::List {
             items: items.iter().map(lower_expr).collect(),
+            span: *span,
+        },
+        Expr::Dict { entries, span } => HirExpr::Dict {
+            entries: entries
+                .iter()
+                .map(|entry| HirDictEntry {
+                    key: lower_expr(&entry.key),
+                    value: lower_expr(&entry.value),
+                })
+                .collect(),
             span: *span,
         },
         Expr::Call { callee, args, span } => HirExpr::Call {
@@ -376,6 +453,10 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             value: Box::new(lower_expr(value)),
             span: *span,
         },
+        Expr::Propagate { value, span } => HirExpr::Propagate {
+            value: Box::new(lower_expr(value)),
+            span: *span,
+        },
         Expr::Unary { op, value, span } => HirExpr::Unary {
             op: *op,
             value: Box::new(lower_expr(value)),
@@ -398,12 +479,14 @@ impl HirExpr {
             | HirExpr::Bool(_, span)
             | HirExpr::Local(_, span)
             | HirExpr::List { span, .. }
+            | HirExpr::Dict { span, .. }
             | HirExpr::Call { span, .. }
             | HirExpr::Field { span, .. }
             | HirExpr::MethodCall { span, .. }
             | HirExpr::Index { span, .. }
             | HirExpr::Go { span, .. }
             | HirExpr::Await { span, .. }
+            | HirExpr::Propagate { span, .. }
             | HirExpr::Unary { span, .. }
             | HirExpr::Binary { span, .. } => *span,
         }

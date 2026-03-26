@@ -42,15 +42,17 @@ The bootstrap compiler in this repository currently supports:
 
 - local same-directory imports through `import name`
 - top-level `struct`
-- top-level `enum` with unit variants
+- top-level `enum` with unit and payload variants
 - top-level `fn`
-- function parameters with optional builtin or known user-defined type annotations
+- function parameters with optional builtin, parameterized builtin, or known user-defined type annotations
 - explicit function return type annotations through `fn name(...) -> type:`
 - block indentation with `INDENT` / `DEDENT`
 - `return`
 - `if` / `else`
 - `while`
 - `for binding in iterable:`
+- `break`
+- `continue`
 - `go` for spawning top-level named function calls
 - `await` for waiting on task values
 - module-level inference of function return types when they can be derived from return expressions
@@ -60,16 +62,24 @@ The bootstrap compiler in this repository currently supports:
 - typed mutable bindings through `mut name: type = expr`
 - reassignment only for previously mutable bindings
 - integer and string literals
+- unary minus through `-expr`
 - boolean literals through `true` / `false`
+- builtin `json` values through operational helpers
 - list literals through `[expr, ...]`
+- dict literals through `{"key": expr, ...}`
 - identifiers
 - logical operators through `and`, `or`, and `not`
-- additive and multiplicative expressions
+- additive and multiplicative expressions plus integer division and modulo
 - comparison expressions
 - named function calls
 - struct constructor calls through `TypeName(...)`
 - enum variant references through `EnumName.Variant`
-- statement-level exhaustive `match` over enum values
+- payload enum construction through `EnumName.Variant(value, ...)`
+- builtin `Result[T, E]` plus `Result.Ok(value)` and `Result.Err(error)`
+- statement-level exhaustive `match` over enum and `Result` values
+- payload destructuring in `match` arms through `EnumName.Variant(binding, ...)`
+- payload destructuring in `match` arms through `Result.Ok(binding)` and `Result.Err(binding)`
+- postfix propagation through `expr?`
 - statement-level `select` over receive operations
 - struct receiver methods through `fn TypeName.method(...)`
 - field access through `value.field`
@@ -78,11 +88,20 @@ The bootstrap compiler in this repository currently supports:
 - builtin `len(...)` for lists, strings, and dicts
 - builtin `print(...)` for one printable value
 - builtin `assert(...)` for boolean correctness contracts
-- builtin `read_file(...)` and `write_file(...)` for bootstrap file I/O
+- builtin `argv()`, `env(...)`, and `cwd()` for process and environment access
+- builtin `read_file(...)`, `write_file(...)`, `exists(...)`, `read_dir(...)`, `mkdir(...)`, and `remove_file(...)` for bootstrap filesystem work
+- builtin `path_join(...)`, `path_dir(...)`, `path_base(...)`, and `path_ext(...)` for explicit string-based path handling
 - builtin `dict()` and `insert(...)` for bootstrap key/value data
+- builtin `keys(dict)` and `values(dict)` for deterministic dict views
 - builtin `append(list, value)` for pure list growth
 - builtin `contains(haystack, needle)` for list membership and string substring checks
-- builtin `channel()`, `send(...)`, and `recv(...)` for bootstrap message passing
+- builtin `trim(...)`, `split(...)`, `join(...)`, `starts_with(...)`, and `ends_with(...)` for explicit string work
+- builtin `parse_int(...)` and `to_string(...)` for explicit numeric and text conversion
+- builtin `range(...)` for explicit integer sequence construction
+- builtin `channel()`, `close(...)`, `send(...)`, and `recv(...)` for bootstrap message passing
+- builtin `cancel_token()`, `cancel(...)`, and `is_cancelled(...)` for cooperative cancellation
+- builtin `json_parse(...)`, `json_stringify(...)`, `json_get(...)`, `json_index(...)`, `json_len(...)`, `json_string(...)`, and `json_int(...)` for explicit JSON handling
+- builtin `http_get(...)` for bootstrap HTTP reads
 
 ## Bootstrap binding rules
 
@@ -91,10 +110,10 @@ The bootstrap compiler in this repository currently supports:
 - `mut name = expr` creates a mutable local
 - `mut name: type = expr` creates a mutable local constrained by the declared builtin type or struct type
 - reassigning an immutable local is a compile error
-- function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `task`, `unit`, `list`, `dict`, `channel`, and known struct names
+- function parameters can currently be annotated with builtin types `int`, `string`, `bool`, `unit`, `json`, `cancel_token`, and parameterized builtin annotations like `list[int]`, `dict[int]`, `channel[int]`, `task[int]`, and `Result[int, RuntimeError]`
 - function parameters can currently also be annotated with known enum names
 - function return types can currently be annotated with the same builtin types plus known struct and enum names
-- local bindings and return contracts can currently use the builtin `list`, `dict`, and `channel` annotations
+- local bindings and return contracts can currently use parameterized builtin annotations like `list[int]`, `dict[int]`, `channel[int]`, `task[int]`, and `Result[int, RuntimeError]`
 - `import name` currently resolves `name.gof` next to the importing source file and merges top-level functions, structs, and enums into one bootstrap module graph
 - import cycles are rejected during module graph loading
 - duplicate top-level function names across the module graph are rejected
@@ -103,14 +122,21 @@ The bootstrap compiler in this repository currently supports:
 - struct, enum, and function names cannot conflict at top level because constructors, type references, and enum variant access must stay unambiguous
 - plain function calls currently target only top-level named functions
 - struct constructors currently use positional field order from the declaration
-- unit enum variants are values and currently do not carry payloads
+- enum variants may be unit variants or payload variants with named fields
 - enum equality currently works only between values of the same enum type
 - enum declarations currently require unique variant names
 - enum variant references currently require a known variant declared on the target enum
-- `match value:` currently requires `value` to resolve to a known enum
-- each `match` arm currently must use `EnumName.Variant`
-- each unit variant can appear at most once inside one `match`
-- `match` currently requires an arm for every unit variant declared on the enum
+- payload enum construction currently requires the exact number of payload values
+- payload enum construction currently requires payload values compatible with the declared payload field types
+- `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
+- `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
+- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `Json(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
+- `match value:` currently requires `value` to resolve to a known enum or `Result`
+- each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
+- `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
+- each variant can appear at most once inside one `match`
+- payload `match` arms currently require the exact number of payload bindings
+- `match` currently requires an arm for every variant declared on the enum or both `Result.Ok` and `Result.Err` for a result value
 - field access currently requires a struct target and a known field name
 - methods currently require an explicit receiver declaration `fn TypeName.method(...)`
 - method declarations currently require a known struct receiver type
@@ -118,11 +144,24 @@ The bootstrap compiler in this repository currently supports:
 - method calls currently require a struct receiver value and a known method on that struct
 - `and` and `or` currently require boolean operands and preserve short-circuit evaluation
 - `not` currently requires a boolean operand
+- unary `-` currently requires an `int` operand
+- `+`, `-`, `*`, `/`, and `%` currently operate on `int`
+- `+` also currently concatenates two `string` values
+- `/` and `%` currently report a runtime diagnostic when the right-hand operand resolves to zero
+- postfix `expr?` currently requires the operand to resolve to `Result[T, E]`
+- postfix `expr?` currently unwraps `Result.Ok(value)` to `value`
+- postfix `expr?` currently returns early with `Result.Err(error)` from the enclosing function
+- postfix `expr?` currently requires the enclosing function to resolve to a compatible `Result[_, E]`
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
-- `read_file(path)` and `write_file(path, contents)` are currently builtins recognized by the compiler and evaluator
+- `argv()`, `env(name)`, and `cwd()` are currently builtins recognized by the compiler and evaluator
+- `read_file(path)`, `write_file(path, contents)`, `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` are currently builtins recognized by the compiler and evaluator
+- `path_join(left, right)`, `path_dir(path)`, `path_base(path)`, and `path_ext(path)` are currently builtins recognized by the compiler and evaluator
 - `dict()` and `insert(dict, key, value)` are currently builtins recognized by the compiler and evaluator
+- `keys(dict)` and `values(dict)` are currently builtins recognized by the compiler and evaluator
+- dict literal keys currently must resolve to `string`
+- dict literal values currently must resolve to one compatible type when the bootstrap type layer can determine them
 - `append(list, value)` is currently a builtin recognized by the compiler and evaluator
 - `contains(haystack, needle)` is currently a builtin recognized by the compiler and evaluator
 - `channel()`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
@@ -132,8 +171,39 @@ The bootstrap compiler in this repository currently supports:
 - `write_file` currently accepts exactly one string path plus one string contents value and returns `unit`
 - `dict` currently accepts no arguments and returns an empty dict value
 - `insert` currently accepts `(dict, string, value)` and returns a new dict
+- `keys` currently accepts exactly one dict and returns `list[string]` in deterministic key order
+- `values` currently accepts exactly one dict and returns `list[value]` in the same deterministic key order as `keys(dict)`
 - `append` currently accepts exactly one list plus one compatible value and returns a new list
 - `contains` currently accepts `(list, value)`, `(string, string)`, or `(dict, string)` and returns `bool`
+- `trim` currently accepts exactly one string and returns a trimmed string
+- `split` currently accepts `(string, string)` and returns `list[string]`
+- `split` currently rejects an empty separator to keep bootstrap string semantics explicit
+- `join` currently accepts `(list[string], string)` and returns `string`
+- `starts_with` and `ends_with` currently accept `(string, string)` and return `bool`
+- `parse_int` currently accepts exactly one string and returns `int`
+- `parse_int` currently reports a runtime diagnostic when the text is not a valid base-10 integer
+- `to_string` currently accepts exactly one printable value and returns `string`
+- `range` currently accepts `(stop)`, `(start, stop)`, or `(start, stop, step)` and returns `list[int]`
+- `range` currently requires every argument to resolve to `int`
+- `range` currently rejects a zero step
+- `argv` currently accepts no arguments and returns `list[string]`
+- `env` currently accepts exactly one string name and returns `Result[string, RuntimeError]`
+- `cwd` currently accepts no arguments and returns `Result[string, RuntimeError]`
+- `read_file` currently accepts exactly one string path and returns `Result[string, RuntimeError]`
+- `write_file` currently accepts exactly one string path plus one string contents value and returns `Result[unit, RuntimeError]`
+- `exists` currently accepts exactly one string path and returns `bool`
+- `read_dir` currently accepts exactly one string path and returns `Result[list[string], RuntimeError]`
+- `mkdir` and `remove_file` currently accept exactly one string path and return `Result[unit, RuntimeError]`
+- `path_join` currently accepts two strings and returns one joined string path
+- `path_dir`, `path_base`, and `path_ext` currently accept exactly one string path and return one string component
+- `json_parse` currently accepts exactly one string and returns `Result[json, RuntimeError]`
+- `json_stringify` currently accepts exactly one `json` value and returns `Result[string, RuntimeError]`
+- `json_get` currently accepts `(json, string)` and returns `Result[json, RuntimeError]`
+- `json_index` currently accepts `(json, int)` and returns `Result[json, RuntimeError]`
+- `json_len` currently accepts exactly one `json` value and returns `Result[int, RuntimeError]`
+- `json_string` currently accepts exactly one `json` value and returns `Result[string, RuntimeError]`
+- `json_int` currently accepts exactly one `json` value and returns `Result[int, RuntimeError]`
+- `http_get` currently accepts exactly one string URL and returns `Result[string, RuntimeError]`
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires either a list target with an integer index or a dict target with a string key
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result
@@ -143,18 +213,28 @@ The bootstrap compiler in this repository currently supports:
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
 - `channel()` currently creates a bootstrap channel value backed by the runtime queue model
-- `send(channel, value)` currently enqueues one value when the bootstrap channel is available
-- `recv(channel)` currently yields the next value sent on the channel
+- `close(channel)` currently closes the channel and wakes blocked receive operations
+- `send(channel, value)` currently returns `Result[unit, RuntimeError]`
+- `send(channel, value, token)` currently supports cooperative cancellation for blocked send operations
+- `recv(channel)` currently returns `Result[value, RuntimeError]`
+- `recv(channel, token)` currently supports cooperative cancellation for blocked receive operations
+- `cancel_token()` currently creates a cooperative cancellation token
+- `cancel(token)` currently marks the token as cancelled
+- `is_cancelled(token)` currently reports whether the token was cancelled
 - `select:` currently requires one or more receive arms
-- each `select` arm currently must be written as either `recv(channel):` or `value = recv(channel):`
-- `select` currently polls its arms until one receive succeeds and then executes only that arm body
-- channels currently have no close operation, no explicit buffering syntax, and no fairness contract beyond first completed receive
+- each `select` arm currently must be written as either `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
+- `select` currently polls its arms until one receive operation resolves to either `Result.Ok(...)` or `Result.Err(...)` and then executes only that arm body
+- channels currently have no explicit buffering syntax and no fairness contract beyond first completed receive
+- most operational bootstrap builtins now return `Result[..., RuntimeError]`; runtime diagnostics remain for invariant failures, assertion failures, bad helper contracts, and a small set of bootstrap evaluator gaps
 - control-flow conditions must evaluate to `bool`
 - `for binding in iterable:` currently supports lists, strings, and dicts
 - list iteration currently yields list elements in order
 - string iteration currently yields one-character `string` values
 - dict iteration currently yields string keys in deterministic key order
 - the loop binding created by `for` is immutable inside each iteration scope
+- `break` currently exits the nearest enclosing `while` or `for`
+- `continue` currently skips to the next iteration of the nearest enclosing `while` or `for`
+- using `break` or `continue` outside a loop is a compile error
 - using `for` on a non-iterable value is a compile error
 
 Everything else is specified as future work and intentionally blocked from pretending to be stable.

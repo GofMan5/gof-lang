@@ -1,0 +1,7 @@
+fn main() -> int:
+    outcome: Result[int, string] = Result.Ok(7)
+    match outcome:
+        Result.Ok(value, extra):
+            return value
+        Result.Err(error):
+            return len(error)

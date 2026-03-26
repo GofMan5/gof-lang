@@ -1,8 +1,8 @@
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{
-    HirEnum, HirExpr, HirFunction, HirMatchArm, HirModule, HirSelectArm, HirStmt, HirStruct,
-    HirTypeRef,
+    HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule, HirSelectArm, HirStmt,
+    HirStruct, HirTypeRef,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -14,12 +14,15 @@ pub enum Type {
     Int,
     String,
     Bool,
+    Json,
+    CancelToken,
     Struct(String),
     Enum(String),
     List(Box<Type>),
     Dict(Box<Type>),
     Channel(Box<Type>),
     Task(Box<Type>),
+    Result(Box<Type>, Box<Type>),
     Unknown,
     Unit,
 }
@@ -41,6 +44,10 @@ impl Type {
         Self::Channel(Box::new(inner))
     }
 
+    fn result(ok: Type, err: Type) -> Self {
+        Self::Result(Box::new(ok), Box::new(err))
+    }
+
     fn is_unknown(&self) -> bool {
         matches!(self, Self::Unknown)
     }
@@ -50,12 +57,17 @@ impl Type {
             Self::Int => "int".to_string(),
             Self::String => "string".to_string(),
             Self::Bool => "bool".to_string(),
+            Self::Json => "json".to_string(),
+            Self::CancelToken => "cancel_token".to_string(),
             Self::Struct(name) => name.clone(),
             Self::Enum(name) => name.clone(),
             Self::List(inner) => format!("list[{}]", inner.display_name()),
             Self::Dict(inner) => format!("dict[{}]", inner.display_name()),
             Self::Channel(inner) => format!("channel[{}]", inner.display_name()),
             Self::Task(inner) => format!("task[{}]", inner.display_name()),
+            Self::Result(ok, err) => {
+                format!("Result[{}, {}]", ok.display_name(), err.display_name())
+            }
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
         }
@@ -101,6 +113,13 @@ pub struct TypedStructField {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedEnumVariant {
     pub name: String,
+    pub fields: Vec<TypedEnumVariantField>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedEnumVariantField {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -121,6 +140,8 @@ pub enum TypedStmt {
         name: String,
         value: TypedExpr,
     },
+    Break,
+    Continue,
     If {
         condition: TypedExpr,
         then_body: Vec<TypedStmt>,
@@ -147,8 +168,24 @@ pub enum TypedStmt {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedMatchArm {
-    pub pattern: TypedExpr,
+    pub pattern: TypedMatchPattern,
     pub body: Vec<TypedStmt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum TypedMatchPattern {
+    EnumVariant {
+        enum_name: String,
+        variant: String,
+        bindings: Vec<TypedMatchBinding>,
+        span: Span,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedMatchBinding {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,6 +193,12 @@ pub struct TypedSelectArm {
     pub binding: Option<String>,
     pub operation: TypedExpr,
     pub body: Vec<TypedStmt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TypedDictEntry {
+    pub key: TypedExpr,
+    pub value: TypedExpr,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -174,6 +217,9 @@ pub enum TypedExprKind {
     List {
         items: Vec<TypedExpr>,
     },
+    Dict {
+        entries: Vec<TypedDictEntry>,
+    },
     Call {
         callee: String,
         args: Vec<TypedExpr>,
@@ -191,6 +237,7 @@ pub enum TypedExprKind {
     EnumVariant {
         enum_name: String,
         variant: String,
+        args: Vec<TypedExpr>,
     },
     Field {
         target: Box<TypedExpr>,
@@ -205,6 +252,9 @@ pub enum TypedExprKind {
         args: Vec<TypedExpr>,
     },
     Await {
+        value: Box<TypedExpr>,
+    },
+    Propagate {
         value: Box<TypedExpr>,
     },
     Unary {
@@ -247,12 +297,93 @@ struct StructFieldSignature {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EnumVariantSignature {
     name: String,
+    fields: Vec<EnumVariantFieldSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct EnumVariantFieldSignature {
+    name: String,
+    ty: Type,
 }
 
 #[derive(Debug, Clone)]
 struct LocalBinding {
     mutable: bool,
     ty: Type,
+}
+
+#[derive(Debug, Clone)]
+enum MatchTargetKind {
+    Enum(String),
+    Result { ok: Type, err: Type },
+}
+
+impl MatchTargetKind {
+    fn display_name(&self) -> &str {
+        match self {
+            Self::Enum(name) => name,
+            Self::Result { .. } => "Result",
+        }
+    }
+}
+
+fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
+    HashMap::from([(
+        "RuntimeError".to_string(),
+        EnumSignature {
+            variants: vec![
+                EnumVariantSignature {
+                    name: "EnvMissing".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "name".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "Io".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "ChannelClosed".to_string(),
+                    fields: Vec::new(),
+                },
+                EnumVariantSignature {
+                    name: "Cancelled".to_string(),
+                    fields: Vec::new(),
+                },
+                EnumVariantSignature {
+                    name: "Json".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "HttpRequest".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "HttpStatus".to_string(),
+                    fields: vec![
+                        EnumVariantFieldSignature {
+                            name: "code".to_string(),
+                            ty: Type::Int,
+                        },
+                        EnumVariantFieldSignature {
+                            name: "body".to_string(),
+                            ty: Type::String,
+                        },
+                    ],
+                },
+            ],
+        },
+    )])
 }
 
 #[derive(Debug, Clone)]
@@ -329,14 +460,47 @@ enum CallKind {
     BuiltinPrint,
     BuiltinAppend,
     BuiltinContains,
+    BuiltinTrim,
+    BuiltinSplit,
+    BuiltinJoin,
+    BuiltinStartsWith,
+    BuiltinEndsWith,
+    BuiltinParseInt,
+    BuiltinToString,
+    BuiltinRange,
     BuiltinAssert,
+    BuiltinArgv,
+    BuiltinEnv,
+    BuiltinCwd,
+    BuiltinExists,
+    BuiltinReadDir,
+    BuiltinMkdir,
+    BuiltinRemoveFile,
+    BuiltinPathJoin,
+    BuiltinPathDir,
+    BuiltinPathBase,
+    BuiltinPathExt,
     BuiltinReadFile,
     BuiltinWriteFile,
     BuiltinDict,
     BuiltinInsert,
+    BuiltinKeys,
+    BuiltinValues,
     BuiltinChannel,
+    BuiltinClose,
     BuiltinSend,
     BuiltinRecv,
+    BuiltinCancelToken,
+    BuiltinCancel,
+    BuiltinIsCancelled,
+    BuiltinJsonParse,
+    BuiltinJsonStringify,
+    BuiltinJsonGet,
+    BuiltinJsonIndex,
+    BuiltinJsonLen,
+    BuiltinJsonString,
+    BuiltinJsonInt,
+    BuiltinHttpGet,
     Function,
     Struct,
     Enum,
@@ -345,16 +509,18 @@ enum CallKind {
 
 pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
     let mut diagnostics = Diagnostics::default();
+    let builtin_enums = builtin_enum_signatures();
     let known_structs = module
         .structs
         .iter()
         .map(|decl| decl.name.clone())
         .collect::<HashSet<_>>();
-    let known_enums = module
+    let mut known_enums = module
         .enums
         .iter()
         .map(|decl| decl.name.clone())
         .collect::<HashSet<_>>();
+    known_enums.extend(builtin_enums.keys().cloned());
     let struct_signatures = module
         .structs
         .iter()
@@ -365,16 +531,17 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
             )
         })
         .collect::<HashMap<_, _>>();
-    let enum_signatures = module
+    let mut enum_signatures = module
         .enums
         .iter()
         .map(|decl| {
             (
                 decl.name.clone(),
-                lower_enum_signature(decl, &mut diagnostics),
+                lower_enum_signature(decl, &known_structs, &known_enums, &mut diagnostics),
             )
         })
         .collect::<HashMap<_, _>>();
+    enum_signatures.extend(builtin_enums);
     let mut signatures = HashMap::new();
     let mut method_signatures = HashMap::new();
     for function in &module.functions {
@@ -635,7 +802,9 @@ fn lower_function(
         struct_signatures,
         enum_signatures,
         diagnostics,
+        0,
         false,
+        &signature.return_type,
         &function.source_path,
     );
     let inferred_return_type =
@@ -721,7 +890,12 @@ fn lower_struct_signature(
     }
 }
 
-fn lower_enum_signature(decl: &HirEnum, diagnostics: &mut Diagnostics) -> EnumSignature {
+fn lower_enum_signature(
+    decl: &HirEnum,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    diagnostics: &mut Diagnostics,
+) -> EnumSignature {
     let mut seen_variants = HashSet::new();
     EnumSignature {
         variants: decl
@@ -743,6 +917,20 @@ fn lower_enum_signature(decl: &HirEnum, diagnostics: &mut Diagnostics) -> EnumSi
 
                 EnumVariantSignature {
                     name: variant.name.clone(),
+                    fields: variant
+                        .fields
+                        .iter()
+                        .map(|field| EnumVariantFieldSignature {
+                            name: field.name.clone(),
+                            ty: resolve_type_annotation(
+                                Some(&field.ty),
+                                known_structs,
+                                known_enums,
+                                &decl.source_path,
+                                diagnostics,
+                            ),
+                        })
+                        .collect(),
                 }
             })
             .collect(),
@@ -780,6 +968,14 @@ fn lower_enum(decl: &HirEnum, enum_signatures: &HashMap<String, EnumSignature>) 
             .iter()
             .map(|variant| TypedEnumVariant {
                 name: variant.name.clone(),
+                fields: variant
+                    .fields
+                    .iter()
+                    .map(|field| TypedEnumVariantField {
+                        name: field.name.clone(),
+                        ty: field.ty.clone(),
+                    })
+                    .collect(),
             })
             .collect(),
     }
@@ -795,7 +991,9 @@ fn lower_block(
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
+    loop_depth: usize,
     nested_scope: bool,
+    function_return_type: &Type,
     source_path: &Path,
 ) -> Vec<TypedStmt> {
     if nested_scope {
@@ -815,6 +1013,8 @@ fn lower_block(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                loop_depth,
+                function_return_type,
                 source_path,
             )
         })
@@ -837,6 +1037,8 @@ fn lower_stmt(
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
+    loop_depth: usize,
+    function_return_type: &Type,
     source_path: &Path,
 ) -> TypedStmt {
     match stmt {
@@ -850,6 +1052,7 @@ fn lower_stmt(
             struct_signatures,
             enum_signatures,
             diagnostics,
+            function_return_type,
             source_path,
         )),
         HirStmt::Bind {
@@ -882,6 +1085,7 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let declared_type = resolve_type_annotation(
@@ -932,6 +1136,7 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             if let Some(existing) = scopes.get_mut(name) {
@@ -982,6 +1187,14 @@ fn lower_stmt(
                 }
             }
         }
+        HirStmt::Break(span) => {
+            validate_loop_control("break", *span, loop_depth, diagnostics, source_path);
+            TypedStmt::Break
+        }
+        HirStmt::Continue(span) => {
+            validate_loop_control("continue", *span, loop_depth, diagnostics, source_path);
+            TypedStmt::Continue
+        }
         HirStmt::If {
             condition,
             then_body,
@@ -998,6 +1211,7 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             ensure_bool_condition(&condition, diagnostics, source_path);
@@ -1011,7 +1225,9 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                loop_depth,
                 true,
+                function_return_type,
                 source_path,
             );
             let else_body = lower_block(
@@ -1024,7 +1240,9 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                loop_depth,
                 true,
+                function_return_type,
                 source_path,
             );
             TypedStmt::If {
@@ -1048,6 +1266,7 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             ensure_bool_condition(&condition, diagnostics, source_path);
@@ -1061,7 +1280,9 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                loop_depth + 1,
                 true,
+                function_return_type,
                 source_path,
             );
             TypedStmt::While { condition, body }
@@ -1082,6 +1303,7 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let binding_type =
@@ -1104,7 +1326,9 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                loop_depth + 1,
                 false,
+                function_return_type,
                 source_path,
             );
             scopes.pop();
@@ -1125,6 +1349,7 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let arms = lower_match_arms(
@@ -1137,6 +1362,8 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                loop_depth,
+                function_return_type,
                 source_path,
                 &value,
                 *span,
@@ -1154,6 +1381,8 @@ fn lower_stmt(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                loop_depth,
+                function_return_type,
                 source_path,
                 *span,
             );
@@ -1169,6 +1398,7 @@ fn lower_stmt(
             struct_signatures,
             enum_signatures,
             diagnostics,
+            function_return_type,
             source_path,
         )),
     }
@@ -1184,22 +1414,31 @@ fn lower_match_arms(
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
+    loop_depth: usize,
+    function_return_type: &Type,
     source_path: &Path,
     value: &TypedExpr,
     span: Span,
 ) -> Vec<TypedMatchArm> {
-    let match_enum_name = match &value.ty {
-        Type::Enum(name) => Some(name.clone()),
+    let match_target = match &value.ty {
+        Type::Enum(name) => Some(MatchTargetKind::Enum(name.clone())),
+        Type::Result(ok, err) => Some(MatchTargetKind::Result {
+            ok: ok.as_ref().clone(),
+            err: err.as_ref().clone(),
+        }),
         Type::Unknown => None,
         other => {
             diagnostics.push(
                 Diagnostic::error(
                     "GOF3032",
                     "`match` currently requires an enum value",
-                    format!("this match target resolves to `{}`", other.display_name()),
+                    format!(
+                        "this match target resolves to `{}` instead of an enum-like value",
+                        other.display_name()
+                    ),
                     value.span,
                 )
-                .with_fix_it("match over a value whose type is a known enum")
+                .with_fix_it("match over an enum value or a `Result[T, E]` expression")
                 .with_source_path(source_path.to_path_buf()),
             );
             None
@@ -1210,25 +1449,37 @@ fn lower_match_arms(
     let typed_arms = arms
         .iter()
         .map(|arm| {
-            let pattern = lower_expr(
+            let (pattern, bindings) = lower_match_pattern(
                 &arm.pattern,
-                scopes,
-                signatures,
-                method_signatures,
-                known_structs,
-                known_enums,
-                struct_signatures,
+                match_target.as_ref(),
+                &mut seen_variants,
                 enum_signatures,
                 diagnostics,
                 source_path,
             );
-            validate_match_pattern(
-                &pattern,
-                match_enum_name.as_deref(),
-                &mut seen_variants,
-                diagnostics,
-                source_path,
-            );
+            scopes.push();
+            for binding in &bindings {
+                if scopes.contains_in_current(&binding.name) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3006",
+                            format!("duplicate binding `{}`", binding.name),
+                            "payload match bindings must be unique within the same match arm",
+                            arm.span,
+                        )
+                        .with_fix_it("rename or remove the duplicate payload binding")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                } else {
+                    scopes.define_current(
+                        binding.name.clone(),
+                        LocalBinding {
+                            mutable: false,
+                            ty: binding.ty.clone(),
+                        },
+                    );
+                }
+            }
             let body = lower_block(
                 &arm.body,
                 scopes,
@@ -1239,16 +1490,19 @@ fn lower_match_arms(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
-                true,
+                loop_depth,
+                false,
+                function_return_type,
                 source_path,
             );
+            scopes.pop();
             TypedMatchArm { pattern, body }
         })
         .collect::<Vec<_>>();
 
-    if let Some(enum_name) = match_enum_name {
+    if let Some(match_target) = match_target {
         ensure_match_exhaustive(
-            &enum_name,
+            &match_target,
             &seen_variants,
             enum_signatures,
             diagnostics,
@@ -1270,6 +1524,8 @@ fn lower_select_arms(
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
+    loop_depth: usize,
+    function_return_type: &Type,
     source_path: &Path,
     span: Span,
 ) -> Vec<TypedSelectArm> {
@@ -1298,6 +1554,7 @@ fn lower_select_arms(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             validate_select_operation(&operation, diagnostics, source_path);
@@ -1336,7 +1593,9 @@ fn lower_select_arms(
                     struct_signatures,
                     enum_signatures,
                     diagnostics,
+                    loop_depth,
                     false,
+                    function_return_type,
                     source_path,
                 );
                 scopes.pop();
@@ -1383,90 +1642,205 @@ fn resolve_for_binding_type(
     }
 }
 
-fn validate_match_pattern(
-    pattern: &TypedExpr,
-    match_enum_name: Option<&str>,
+fn lower_match_pattern(
+    pattern: &HirMatchPattern,
+    match_target: Option<&MatchTargetKind>,
     seen_variants: &mut HashSet<String>,
+    enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
-) {
-    let Some(expected_enum) = match_enum_name else {
-        return;
+) -> (TypedMatchPattern, Vec<TypedMatchBinding>) {
+    let Some(match_target) = match_target else {
+        return (fallback_match_pattern(pattern), Vec::new());
     };
 
-    let TypedExprKind::EnumVariant { enum_name, variant } = &pattern.kind else {
-        diagnostics.push(
-            Diagnostic::error(
-                "GOF3031",
-                "match arms must use enum variants",
-                "each match arm pattern must be written as `EnumName.Variant`",
-                pattern.span,
-            )
-            .with_fix_it("replace this pattern with a unit enum variant like `Status.Ready`")
-            .with_source_path(source_path.to_path_buf()),
-        );
-        return;
-    };
+    let HirMatchPattern::EnumVariant {
+        enum_name,
+        variant,
+        bindings,
+        span,
+    } = pattern;
 
-    if enum_name != expected_enum {
+    if enum_name != match_target.display_name() {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3031",
                 "match arm uses a variant from a different enum",
                 format!(
-                    "this match targets `{expected_enum}`, but the arm pattern belongs to `{enum_name}`"
+                    "this match targets `{}`, but the arm pattern belongs to `{enum_name}`",
+                    match_target.display_name()
                 ),
-                pattern.span,
+                *span,
             )
-            .with_fix_it(format!("use a `{expected_enum}.Variant` pattern here"))
+            .with_fix_it(format!(
+                "use a `{}.Variant` pattern here",
+                match_target.display_name()
+            ))
             .with_source_path(source_path.to_path_buf()),
         );
-        return;
+        return (fallback_match_pattern(pattern), Vec::new());
     }
+
+    let variant_fields = match match_target {
+        MatchTargetKind::Enum(expected_enum) => {
+            let Some(signature) = enum_signatures.get(expected_enum) else {
+                return (fallback_match_pattern(pattern), Vec::new());
+            };
+
+            let Some(variant_signature) = signature
+                .variants
+                .iter()
+                .find(|candidate| candidate.name == *variant)
+            else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3028",
+                        format!("unknown variant `{variant}` on `{enum_name}`"),
+                        "enum match patterns must use a variant declared on the enum",
+                        *span,
+                    )
+                    .with_fix_it("use one of the variants declared on the enum")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return (fallback_match_pattern(pattern), Vec::new());
+            };
+            variant_signature.fields.clone()
+        }
+        MatchTargetKind::Result { ok, err } => match variant.as_str() {
+            "Ok" => vec![EnumVariantFieldSignature {
+                name: "value".to_string(),
+                ty: ok.clone(),
+            }],
+            "Err" => vec![EnumVariantFieldSignature {
+                name: "error".to_string(),
+                ty: err.clone(),
+            }],
+            _ => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3072",
+                        format!("unknown result variant `Result.{variant}`"),
+                        "the builtin result type exposes only `Result.Ok(value)` and `Result.Err(error)`",
+                        *span,
+                    )
+                    .with_fix_it("use `Result.Ok(value)` or `Result.Err(error)`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return (fallback_match_pattern(pattern), Vec::new());
+            }
+        },
+    };
 
     if !seen_variants.insert(variant.clone()) {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3030",
-                format!("duplicate match arm for `{expected_enum}.{variant}`"),
-                "each unit enum variant can appear only once in a match over the same enum",
-                pattern.span,
+                format!(
+                    "duplicate match arm for `{}.{variant}`",
+                    match_target.display_name()
+                ),
+                "each variant can appear only once in a match over the same value space",
+                *span,
             )
             .with_fix_it("remove the duplicate arm or replace it with another enum variant")
             .with_source_path(source_path.to_path_buf()),
         );
     }
+
+    if bindings.len() != variant_fields.len() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3071",
+                format!(
+                    "match arm for `{enum_name}.{variant}` destructures the wrong number of payload values"
+                ),
+                format!(
+                    "expected {} binding(s), got {}",
+                    variant_fields.len(),
+                    bindings.len()
+                ),
+                *span,
+            )
+            .with_fix_it(format!(
+                "rewrite the arm as `{}.{}`{}",
+                enum_name,
+                variant,
+                if variant_fields.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(
+                        "({})",
+                        variant_fields
+                            .iter()
+                            .map(|field| field.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                }
+            ))
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    let typed_bindings = bindings
+        .iter()
+        .zip(variant_fields.iter())
+        .map(|(binding, field)| TypedMatchBinding {
+            name: binding.clone(),
+            ty: field.ty.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    (
+        TypedMatchPattern::EnumVariant {
+            enum_name: enum_name.clone(),
+            variant: variant.clone(),
+            bindings: typed_bindings.clone(),
+            span: *span,
+        },
+        typed_bindings,
+    )
 }
 
 fn ensure_match_exhaustive(
-    enum_name: &str,
+    match_target: &MatchTargetKind,
     seen_variants: &HashSet<String>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     span: Span,
     source_path: &Path,
 ) {
-    let Some(signature) = enum_signatures.get(enum_name) else {
-        return;
+    let missing = match match_target {
+        MatchTargetKind::Enum(enum_name) => {
+            let Some(signature) = enum_signatures.get(enum_name) else {
+                return;
+            };
+            signature
+                .variants
+                .iter()
+                .filter(|variant| !seen_variants.contains(&variant.name))
+                .map(|variant| variant.name.clone())
+                .collect::<Vec<_>>()
+        }
+        MatchTargetKind::Result { .. } => ["Ok".to_string(), "Err".to_string()]
+            .into_iter()
+            .filter(|variant| !seen_variants.contains(variant))
+            .collect::<Vec<_>>(),
     };
-
-    let missing = signature
-        .variants
-        .iter()
-        .filter(|variant| !seen_variants.contains(&variant.name))
-        .map(|variant| variant.name.clone())
-        .collect::<Vec<_>>();
 
     if !missing.is_empty() {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3033",
-                format!("non-exhaustive match over `{enum_name}`"),
+                format!(
+                    "non-exhaustive match over `{}`",
+                    match_target.display_name()
+                ),
                 format!(
                     "missing arm(s): {}",
                     missing
                         .iter()
-                        .map(|variant| format!("{enum_name}.{variant}"))
+                        .map(|variant| format!("{}.{variant}", match_target.display_name()))
                         .collect::<Vec<_>>()
                         .join(", ")
                 ),
@@ -1475,6 +1849,28 @@ fn ensure_match_exhaustive(
             .with_fix_it("add match arms for every remaining enum variant")
             .with_source_path(source_path.to_path_buf()),
         );
+    }
+}
+
+fn fallback_match_pattern(pattern: &HirMatchPattern) -> TypedMatchPattern {
+    match pattern {
+        HirMatchPattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+            span,
+        } => TypedMatchPattern::EnumVariant {
+            enum_name: enum_name.clone(),
+            variant: variant.clone(),
+            bindings: bindings
+                .iter()
+                .map(|binding| TypedMatchBinding {
+                    name: binding.clone(),
+                    ty: Type::Unknown,
+                })
+                .collect(),
+            span: *span,
+        },
     }
 }
 
@@ -1493,6 +1889,41 @@ fn ensure_bool_condition(condition: &TypedExpr, diagnostics: &mut Diagnostics, s
     }
 }
 
+fn validate_loop_control(
+    keyword: &str,
+    span: Span,
+    loop_depth: usize,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if loop_depth > 0 {
+        return;
+    }
+
+    let (code, note) = match keyword {
+        "break" => (
+            "GOF3053",
+            "`break` currently works only inside `while` and `for` loop bodies",
+        ),
+        "continue" => (
+            "GOF3054",
+            "`continue` currently works only inside `while` and `for` loop bodies",
+        ),
+        _ => unreachable!("loop control validator supports only break and continue"),
+    };
+
+    diagnostics.push(
+        Diagnostic::error(
+            code,
+            format!("`{keyword}` is only valid inside a loop"),
+            note,
+            span,
+        )
+        .with_fix_it("move this statement into a surrounding `while` or `for` loop")
+        .with_source_path(source_path.to_path_buf()),
+    );
+}
+
 fn lower_expr(
     expr: &HirExpr,
     scopes: &ScopeStack,
@@ -1503,6 +1934,7 @@ fn lower_expr(
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
+    function_return_type: &Type,
     source_path: &Path,
 ) -> TypedExpr {
     match expr {
@@ -1535,6 +1967,7 @@ fn lower_expr(
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
+                        function_return_type,
                         source_path,
                     )
                 })
@@ -1543,6 +1976,47 @@ fn lower_expr(
             TypedExpr {
                 kind: TypedExprKind::List { items: typed_items },
                 ty: Type::list(element_type),
+                span: *span,
+            }
+        }
+        HirExpr::Dict { entries, span } => {
+            let typed_entries = entries
+                .iter()
+                .map(|entry| TypedDictEntry {
+                    key: lower_expr(
+                        &entry.key,
+                        scopes,
+                        signatures,
+                        method_signatures,
+                        known_structs,
+                        known_enums,
+                        struct_signatures,
+                        enum_signatures,
+                        diagnostics,
+                        function_return_type,
+                        source_path,
+                    ),
+                    value: lower_expr(
+                        &entry.value,
+                        scopes,
+                        signatures,
+                        method_signatures,
+                        known_structs,
+                        known_enums,
+                        struct_signatures,
+                        enum_signatures,
+                        diagnostics,
+                        function_return_type,
+                        source_path,
+                    ),
+                })
+                .collect::<Vec<_>>();
+            let value_type = infer_dict_value_type(&typed_entries, diagnostics, source_path);
+            TypedExpr {
+                kind: TypedExprKind::Dict {
+                    entries: typed_entries,
+                },
+                ty: Type::dict(value_type),
                 span: *span,
             }
         }
@@ -1583,6 +2057,7 @@ fn lower_expr(
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
+                        function_return_type,
                         source_path,
                     )
                 })
@@ -1614,14 +2089,47 @@ fn lower_expr(
                     | CallKind::BuiltinPrint
                     | CallKind::BuiltinAppend
                     | CallKind::BuiltinContains
+                    | CallKind::BuiltinTrim
+                    | CallKind::BuiltinSplit
+                    | CallKind::BuiltinJoin
+                    | CallKind::BuiltinStartsWith
+                    | CallKind::BuiltinEndsWith
+                    | CallKind::BuiltinParseInt
+                    | CallKind::BuiltinToString
+                    | CallKind::BuiltinRange
                     | CallKind::BuiltinAssert
+                    | CallKind::BuiltinArgv
+                    | CallKind::BuiltinEnv
+                    | CallKind::BuiltinCwd
+                    | CallKind::BuiltinExists
+                    | CallKind::BuiltinReadDir
+                    | CallKind::BuiltinMkdir
+                    | CallKind::BuiltinRemoveFile
+                    | CallKind::BuiltinPathJoin
+                    | CallKind::BuiltinPathDir
+                    | CallKind::BuiltinPathBase
+                    | CallKind::BuiltinPathExt
                     | CallKind::BuiltinReadFile
                     | CallKind::BuiltinWriteFile
                     | CallKind::BuiltinDict
                     | CallKind::BuiltinInsert
+                    | CallKind::BuiltinKeys
+                    | CallKind::BuiltinValues
                     | CallKind::BuiltinChannel
+                    | CallKind::BuiltinClose
                     | CallKind::BuiltinSend
                     | CallKind::BuiltinRecv
+                    | CallKind::BuiltinCancelToken
+                    | CallKind::BuiltinCancel
+                    | CallKind::BuiltinIsCancelled
+                    | CallKind::BuiltinJsonParse
+                    | CallKind::BuiltinJsonStringify
+                    | CallKind::BuiltinJsonGet
+                    | CallKind::BuiltinJsonIndex
+                    | CallKind::BuiltinJsonLen
+                    | CallKind::BuiltinJsonString
+                    | CallKind::BuiltinJsonInt
+                    | CallKind::BuiltinHttpGet
                     | CallKind::Enum
                     | CallKind::Unknown => TypedExprKind::Call {
                         callee: callee.clone(),
@@ -1642,8 +2150,21 @@ fn lower_expr(
             span,
         } => {
             if let HirExpr::Local(name, target_span) = target.as_ref() {
+                if scopes.get(name).is_none() && name == "Result" {
+                    let ty =
+                        resolve_result_variant_reference(field, diagnostics, *span, source_path);
+                    return TypedExpr {
+                        kind: TypedExprKind::EnumVariant {
+                            enum_name: name.clone(),
+                            variant: field.clone(),
+                            args: Vec::new(),
+                        },
+                        ty,
+                        span: Span::new(target_span.line, target_span.column, span.end_column),
+                    };
+                }
                 if scopes.get(name).is_none() && enum_signatures.contains_key(name) {
-                    let ty = infer_enum_variant_type(
+                    let (ty, payload_fields) = resolve_enum_variant_reference(
                         name,
                         field,
                         diagnostics,
@@ -1651,10 +2172,38 @@ fn lower_expr(
                         enum_signatures,
                         source_path,
                     );
+                    let args = if payload_fields.is_empty() {
+                        Vec::new()
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3069",
+                                format!("enum variant `{name}.{field}` requires payload values"),
+                                format!(
+                                    "this variant expects {} payload value(s)",
+                                    payload_fields.len()
+                                ),
+                                *span,
+                            )
+                            .with_fix_it(format!(
+                                "construct it as `{}.{}`({})",
+                                name,
+                                field,
+                                payload_fields
+                                    .iter()
+                                    .map(|payload| payload.name.clone())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ))
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                        Vec::new()
+                    };
                     return TypedExpr {
                         kind: TypedExprKind::EnumVariant {
                             enum_name: name.clone(),
                             variant: field.clone(),
+                            args,
                         },
                         ty,
                         span: Span::new(target_span.line, target_span.column, span.end_column),
@@ -1672,6 +2221,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let ty = infer_field_type(
@@ -1697,6 +2247,83 @@ fn lower_expr(
             args,
             span,
         } => {
+            if let HirExpr::Local(name, target_span) = target.as_ref() {
+                if scopes.get(name).is_none() && name == "Result" {
+                    let typed_args = args
+                        .iter()
+                        .map(|arg| {
+                            lower_expr(
+                                arg,
+                                scopes,
+                                signatures,
+                                method_signatures,
+                                known_structs,
+                                known_enums,
+                                struct_signatures,
+                                enum_signatures,
+                                diagnostics,
+                                function_return_type,
+                                source_path,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let ty = resolve_result_variant_call(
+                        method,
+                        &typed_args,
+                        *span,
+                        diagnostics,
+                        source_path,
+                    );
+                    return TypedExpr {
+                        kind: TypedExprKind::EnumVariant {
+                            enum_name: name.clone(),
+                            variant: method.clone(),
+                            args: typed_args,
+                        },
+                        ty,
+                        span: Span::new(target_span.line, target_span.column, span.end_column),
+                    };
+                }
+                if scopes.get(name).is_none() && enum_signatures.contains_key(name) {
+                    let typed_args = args
+                        .iter()
+                        .map(|arg| {
+                            lower_expr(
+                                arg,
+                                scopes,
+                                signatures,
+                                method_signatures,
+                                known_structs,
+                                known_enums,
+                                struct_signatures,
+                                enum_signatures,
+                                diagnostics,
+                                function_return_type,
+                                source_path,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let ty = resolve_enum_variant_call(
+                        name,
+                        method,
+                        &typed_args,
+                        *span,
+                        enum_signatures,
+                        diagnostics,
+                        source_path,
+                    );
+                    return TypedExpr {
+                        kind: TypedExprKind::EnumVariant {
+                            enum_name: name.clone(),
+                            variant: method.clone(),
+                            args: typed_args,
+                        },
+                        ty,
+                        span: Span::new(target_span.line, target_span.column, span.end_column),
+                    };
+                }
+            }
+
             let target = lower_expr(
                 target,
                 scopes,
@@ -1707,6 +2334,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let typed_args = args
@@ -1722,6 +2350,7 @@ fn lower_expr(
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
+                        function_return_type,
                         source_path,
                     )
                 })
@@ -1761,6 +2390,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let index = lower_expr(
@@ -1773,6 +2403,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
 
@@ -1805,6 +2436,7 @@ fn lower_expr(
                             struct_signatures,
                             enum_signatures,
                             diagnostics,
+                            function_return_type,
                             source_path,
                         )
                     })
@@ -1861,6 +2493,7 @@ fn lower_expr(
                     struct_signatures,
                     enum_signatures,
                     diagnostics,
+                    function_return_type,
                     source_path,
                 );
                 diagnostics.push(
@@ -1895,6 +2528,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let ty = match &value.ty {
@@ -1923,6 +2557,35 @@ fn lower_expr(
                 span: *span,
             }
         }
+        HirExpr::Propagate { value, span } => {
+            let value = lower_expr(
+                value,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                function_return_type,
+                source_path,
+            );
+            let ty = validate_propagate_expr(
+                &value,
+                function_return_type,
+                *span,
+                diagnostics,
+                source_path,
+            );
+            TypedExpr {
+                kind: TypedExprKind::Propagate {
+                    value: Box::new(value),
+                },
+                ty,
+                span: *span,
+            }
+        }
         HirExpr::Unary { op, value, span } => {
             let value = lower_expr(
                 value,
@@ -1934,6 +2597,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             validate_unary_expr(*op, &value, diagnostics, source_path);
@@ -1958,6 +2622,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             let rhs = lower_expr(
@@ -1970,6 +2635,7 @@ fn lower_expr(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
+                function_return_type,
                 source_path,
             );
             validate_binary_expr(*op, &lhs, &rhs, diagnostics, source_path);
@@ -2010,8 +2676,77 @@ fn validate_call(
         CallKind::BuiltinContains => {
             validate_contains_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinTrim => {
+            validate_trim_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinSplit => {
+            validate_split_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinJoin => {
+            validate_join_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinStartsWith => {
+            validate_starts_with_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinEndsWith => {
+            validate_ends_with_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinParseInt => {
+            validate_parse_int_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinToString => {
+            validate_to_string_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinRange => {
+            validate_range_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinAssert => {
             validate_assert_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinArgv => {
+            validate_no_argument_call("argv", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinEnv => {
+            validate_env_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinCwd => {
+            validate_no_argument_call("cwd", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinExists => {
+            validate_single_string_argument_call("exists", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinReadDir => {
+            validate_single_string_argument_call("read_dir", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinMkdir => {
+            validate_single_string_argument_call("mkdir", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinRemoveFile => {
+            validate_single_string_argument_call(
+                "remove_file",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        CallKind::BuiltinPathJoin => {
+            validate_two_string_argument_call("path_join", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinPathDir => {
+            validate_single_string_argument_call("path_dir", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinPathBase => {
+            validate_single_string_argument_call(
+                "path_base",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        CallKind::BuiltinPathExt => {
+            validate_single_string_argument_call("path_ext", args, span, diagnostics, source_path);
         }
         CallKind::BuiltinReadFile => {
             validate_read_file_call(args, span, diagnostics, source_path);
@@ -2025,14 +2760,62 @@ fn validate_call(
         CallKind::BuiltinInsert => {
             validate_insert_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinKeys => {
+            validate_keys_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinValues => {
+            validate_values_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinChannel => {
             validate_channel_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinClose => {
+            validate_close_call(args, span, diagnostics, source_path);
         }
         CallKind::BuiltinSend => {
             validate_send_call(args, span, diagnostics, source_path);
         }
         CallKind::BuiltinRecv => {
             validate_recv_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinCancelToken => {
+            validate_no_argument_call("cancel_token", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinCancel => {
+            validate_cancel_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinIsCancelled => {
+            validate_is_cancelled_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinJsonParse => {
+            validate_single_string_argument_call(
+                "json_parse",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        CallKind::BuiltinJsonStringify => {
+            validate_json_stringify_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinJsonGet => {
+            validate_json_get_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinJsonIndex => {
+            validate_json_index_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinJsonLen => {
+            validate_json_len_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinJsonString => {
+            validate_json_string_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinJsonInt => {
+            validate_json_int_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinHttpGet => {
+            validate_single_string_argument_call("http_get", args, span, diagnostics, source_path);
         }
         CallKind::Function => match signatures.get(callee) {
             Some(signature) if signature.arity == args.len() => {
@@ -2118,12 +2901,12 @@ fn validate_call(
             .with_source_path(source_path.to_path_buf()),
         ),
         CallKind::Unknown => diagnostics.push(
-            Diagnostic::error(
-                "GOF3004",
-                format!("unknown function or struct `{callee}`"),
-                "calls currently resolve only to top-level functions, builtin helpers like `len`, `print`, `append`, `contains`, `assert`, `read_file`, `write_file`, `dict`, `insert`, `channel`, `send`, `recv`, or struct constructors; enums use `EnumName.Variant`",
-                span,
-            )
+                Diagnostic::error(
+                    "GOF3004",
+                    format!("unknown function or struct `{callee}`"),
+                    "calls currently resolve only to top-level functions, supported builtin helpers, or struct constructors; enums use `EnumName.Variant`",
+                    span,
+                )
             .with_fix_it("define the function or struct before calling it")
             .with_source_path(source_path.to_path_buf()),
         ),
@@ -2230,16 +3013,118 @@ fn resolve_type_annotation(
     };
 
     match ty.name.as_str() {
-        "int" => Type::Int,
-        "string" => Type::String,
-        "bool" => Type::Bool,
-        "list" => Type::list(Type::Unknown),
-        "dict" => Type::dict(Type::Unknown),
-        "channel" => Type::channel(Type::Unknown),
-        "task" => Type::task(Type::Unknown),
-        "unit" => Type::Unit,
-        name if known_structs.contains(name) => Type::Struct(name.to_string()),
-        name if known_enums.contains(name) => Type::Enum(name.to_string()),
+        "int" => resolve_non_parameterized_builtin(
+            "int",
+            &ty.args,
+            Type::Int,
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
+        "string" => resolve_non_parameterized_builtin(
+            "string",
+            &ty.args,
+            Type::String,
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
+        "bool" => resolve_non_parameterized_builtin(
+            "bool",
+            &ty.args,
+            Type::Bool,
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
+        "json" => resolve_non_parameterized_builtin(
+            "json",
+            &ty.args,
+            Type::Json,
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
+        "cancel_token" => resolve_non_parameterized_builtin(
+            "cancel_token",
+            &ty.args,
+            Type::CancelToken,
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
+        "unit" => resolve_non_parameterized_builtin(
+            "unit",
+            &ty.args,
+            Type::Unit,
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
+        "list" => resolve_single_argument_type(
+            "list",
+            &ty.args,
+            Type::list,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
+        "dict" => resolve_single_argument_type(
+            "dict",
+            &ty.args,
+            Type::dict,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
+        "channel" => resolve_single_argument_type(
+            "channel",
+            &ty.args,
+            Type::channel,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
+        "task" => resolve_single_argument_type(
+            "task",
+            &ty.args,
+            Type::task,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
+        "Result" => resolve_result_type(
+            &ty.args,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
+        name if known_structs.contains(name) => resolve_named_type_without_args(
+            name,
+            &ty.args,
+            Type::Struct(name.to_string()),
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
+        name if known_enums.contains(name) => resolve_named_type_without_args(
+            name,
+            &ty.args,
+            Type::Enum(name.to_string()),
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
         _ => {
             diagnostics.push(
                 Diagnostic::error(
@@ -2256,6 +3141,133 @@ fn resolve_type_annotation(
     }
 }
 
+fn resolve_non_parameterized_builtin(
+    name: &str,
+    args: &[HirTypeRef],
+    ty: Type,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    if args.is_empty() {
+        ty
+    } else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3067",
+                format!("`{name}` does not take type arguments"),
+                format!("remove the `[ ... ]` from `{name}`"),
+                span,
+            )
+            .with_fix_it(format!("use `{name}` without type arguments"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        Type::Unknown
+    }
+}
+
+fn resolve_named_type_without_args(
+    name: &str,
+    args: &[HirTypeRef],
+    ty: Type,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    if args.is_empty() {
+        ty
+    } else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3067",
+                format!("`{name}` does not support type arguments in the bootstrap type system"),
+                "only builtin container and task annotations are parameterized in this language stage",
+                span,
+            )
+            .with_fix_it(format!("remove the type arguments from `{name}`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        Type::Unknown
+    }
+}
+
+fn resolve_single_argument_type(
+    name: &str,
+    args: &[HirTypeRef],
+    constructor: fn(Type) -> Type,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    source_path: &Path,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+) -> Type {
+    if args.is_empty() {
+        return constructor(Type::Unknown);
+    }
+
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3067",
+                format!("`{name}` requires exactly one type argument"),
+                format!("use `{name}[T]` with one inner type"),
+                span,
+            )
+            .with_fix_it(format!("rewrite this annotation as `{name}[some_type]`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    constructor(resolve_type_annotation(
+        Some(&args[0]),
+        known_structs,
+        known_enums,
+        source_path,
+        diagnostics,
+    ))
+}
+
+fn resolve_result_type(
+    args: &[HirTypeRef],
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    source_path: &Path,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+) -> Type {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3067",
+                "`Result` requires exactly two type arguments",
+                "use `Result[T, E]` with an ok type and an error type",
+                span,
+            )
+            .with_fix_it("rewrite this annotation as `Result[some_value_type, some_error_type]`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    Type::result(
+        resolve_type_annotation(
+            Some(&args[0]),
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+        ),
+        resolve_type_annotation(
+            Some(&args[1]),
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+        ),
+    )
+}
+
 fn resolve_call_kind(
     callee: &str,
     signatures: &HashMap<String, FunctionSignature>,
@@ -2270,8 +3282,46 @@ fn resolve_call_kind(
         CallKind::BuiltinAppend
     } else if callee == "contains" {
         CallKind::BuiltinContains
+    } else if callee == "trim" {
+        CallKind::BuiltinTrim
+    } else if callee == "split" {
+        CallKind::BuiltinSplit
+    } else if callee == "join" {
+        CallKind::BuiltinJoin
+    } else if callee == "starts_with" {
+        CallKind::BuiltinStartsWith
+    } else if callee == "ends_with" {
+        CallKind::BuiltinEndsWith
+    } else if callee == "parse_int" {
+        CallKind::BuiltinParseInt
+    } else if callee == "to_string" {
+        CallKind::BuiltinToString
+    } else if callee == "range" {
+        CallKind::BuiltinRange
     } else if callee == "assert" {
         CallKind::BuiltinAssert
+    } else if callee == "argv" {
+        CallKind::BuiltinArgv
+    } else if callee == "env" {
+        CallKind::BuiltinEnv
+    } else if callee == "cwd" {
+        CallKind::BuiltinCwd
+    } else if callee == "exists" {
+        CallKind::BuiltinExists
+    } else if callee == "read_dir" {
+        CallKind::BuiltinReadDir
+    } else if callee == "mkdir" {
+        CallKind::BuiltinMkdir
+    } else if callee == "remove_file" {
+        CallKind::BuiltinRemoveFile
+    } else if callee == "path_join" {
+        CallKind::BuiltinPathJoin
+    } else if callee == "path_dir" {
+        CallKind::BuiltinPathDir
+    } else if callee == "path_base" {
+        CallKind::BuiltinPathBase
+    } else if callee == "path_ext" {
+        CallKind::BuiltinPathExt
     } else if callee == "read_file" {
         CallKind::BuiltinReadFile
     } else if callee == "write_file" {
@@ -2280,12 +3330,40 @@ fn resolve_call_kind(
         CallKind::BuiltinDict
     } else if callee == "insert" {
         CallKind::BuiltinInsert
+    } else if callee == "keys" {
+        CallKind::BuiltinKeys
+    } else if callee == "values" {
+        CallKind::BuiltinValues
     } else if callee == "channel" {
         CallKind::BuiltinChannel
+    } else if callee == "close" {
+        CallKind::BuiltinClose
     } else if callee == "send" {
         CallKind::BuiltinSend
     } else if callee == "recv" {
         CallKind::BuiltinRecv
+    } else if callee == "cancel_token" {
+        CallKind::BuiltinCancelToken
+    } else if callee == "cancel" {
+        CallKind::BuiltinCancel
+    } else if callee == "is_cancelled" {
+        CallKind::BuiltinIsCancelled
+    } else if callee == "json_parse" {
+        CallKind::BuiltinJsonParse
+    } else if callee == "json_stringify" {
+        CallKind::BuiltinJsonStringify
+    } else if callee == "json_get" {
+        CallKind::BuiltinJsonGet
+    } else if callee == "json_index" {
+        CallKind::BuiltinJsonIndex
+    } else if callee == "json_len" {
+        CallKind::BuiltinJsonLen
+    } else if callee == "json_string" {
+        CallKind::BuiltinJsonString
+    } else if callee == "json_int" {
+        CallKind::BuiltinJsonInt
+    } else if callee == "http_get" {
+        CallKind::BuiltinHttpGet
     } else if signatures.contains_key(callee) {
         CallKind::Function
     } else if struct_signatures.contains_key(callee) {
@@ -2309,14 +3387,68 @@ fn call_return_type(
         CallKind::BuiltinPrint => Type::Unit,
         CallKind::BuiltinAppend => infer_append_return_type(args),
         CallKind::BuiltinContains => Type::Bool,
+        CallKind::BuiltinTrim => Type::String,
+        CallKind::BuiltinSplit => infer_split_return_type(args),
+        CallKind::BuiltinJoin => Type::String,
+        CallKind::BuiltinStartsWith => Type::Bool,
+        CallKind::BuiltinEndsWith => Type::Bool,
+        CallKind::BuiltinParseInt => Type::Int,
+        CallKind::BuiltinToString => Type::String,
+        CallKind::BuiltinRange => Type::list(Type::Int),
         CallKind::BuiltinAssert => Type::Unit,
-        CallKind::BuiltinReadFile => Type::String,
-        CallKind::BuiltinWriteFile => Type::Unit,
+        CallKind::BuiltinArgv => Type::list(Type::String),
+        CallKind::BuiltinEnv => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
+        CallKind::BuiltinCwd => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
+        CallKind::BuiltinExists => Type::Bool,
+        CallKind::BuiltinReadDir => Type::result(
+            Type::list(Type::String),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        CallKind::BuiltinMkdir | CallKind::BuiltinRemoveFile => {
+            Type::result(Type::Unit, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinPathJoin
+        | CallKind::BuiltinPathDir
+        | CallKind::BuiltinPathBase
+        | CallKind::BuiltinPathExt => Type::String,
+        CallKind::BuiltinReadFile => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinWriteFile => {
+            Type::result(Type::Unit, Type::Enum("RuntimeError".to_string()))
+        }
         CallKind::BuiltinDict => Type::dict(Type::Unknown),
         CallKind::BuiltinInsert => infer_insert_return_type(args),
+        CallKind::BuiltinKeys => infer_keys_return_type(args),
+        CallKind::BuiltinValues => infer_values_return_type(args),
         CallKind::BuiltinChannel => Type::channel(Type::Unknown),
-        CallKind::BuiltinSend => Type::Unit,
-        CallKind::BuiltinRecv => infer_recv_return_type(args),
+        CallKind::BuiltinClose => Type::Unit,
+        CallKind::BuiltinSend => Type::result(Type::Unit, Type::Enum("RuntimeError".to_string())),
+        CallKind::BuiltinRecv => Type::result(
+            infer_recv_return_type(args),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        CallKind::BuiltinCancelToken => Type::CancelToken,
+        CallKind::BuiltinCancel => Type::Unit,
+        CallKind::BuiltinIsCancelled => Type::Bool,
+        CallKind::BuiltinJsonParse => {
+            Type::result(Type::Json, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinJsonStringify => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinJsonGet | CallKind::BuiltinJsonIndex => {
+            Type::result(Type::Json, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinJsonLen | CallKind::BuiltinJsonInt => {
+            Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinJsonString => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinHttpGet => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
         CallKind::Function => signatures
             .get(callee)
             .map(|signature| signature.return_type.clone())
@@ -2333,17 +3465,32 @@ fn validate_unary_expr(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
-    if matches!(op, UnaryOp::Not) && !matches!(value.ty, Type::Bool | Type::Unknown) {
-        diagnostics.push(
-            Diagnostic::error(
-                "GOF3026",
-                "`not` requires a `bool` operand",
-                format!("this operand resolves to `{}`", value.ty.display_name()),
-                value.span,
-            )
-            .with_fix_it("apply `not` only to boolean expressions")
-            .with_source_path(source_path.to_path_buf()),
-        );
+    match op {
+        UnaryOp::Not if !matches!(value.ty, Type::Bool | Type::Unknown) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3026",
+                    "`not` requires a `bool` operand",
+                    format!("this operand resolves to `{}`", value.ty.display_name()),
+                    value.span,
+                )
+                .with_fix_it("apply `not` only to boolean expressions")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+        UnaryOp::Neg if !matches!(value.ty, Type::Int | Type::Unknown) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3065",
+                    "unary `-` requires an `int` operand",
+                    format!("this operand resolves to `{}`", value.ty.display_name()),
+                    value.span,
+                )
+                .with_fix_it("apply unary `-` only to integer expressions")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+        _ => {}
     }
 }
 
@@ -2351,6 +3498,8 @@ fn infer_unary_type(op: UnaryOp, value: &Type) -> Type {
     match (op, value) {
         (UnaryOp::Not, Type::Bool) => Type::Bool,
         (UnaryOp::Not, Type::Unknown) => Type::Unknown,
+        (UnaryOp::Neg, Type::Int) => Type::Int,
+        (UnaryOp::Neg, Type::Unknown) => Type::Unknown,
         _ => Type::Unknown,
     }
 }
@@ -2387,12 +3536,44 @@ fn validate_binary_expr(
                 .with_source_path(source_path.to_path_buf()),
             );
         }
+        return;
+    }
+
+    if matches!(
+        op,
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod
+    ) {
+        let ints_ok = matches!(lhs.ty, Type::Int | Type::Unknown)
+            && matches!(rhs.ty, Type::Int | Type::Unknown);
+        let string_add_ok = matches!(op, BinaryOp::Add)
+            && matches!(lhs.ty, Type::String | Type::Unknown)
+            && matches!(rhs.ty, Type::String | Type::Unknown);
+        if !ints_ok && !string_add_ok {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3066",
+                    format!("`{}` requires numeric operands", binary_op_name(op)),
+                    format!(
+                        "the operands resolve to `{}` and `{}`",
+                        lhs.ty.display_name(),
+                        rhs.ty.display_name()
+                    ),
+                    lhs.span,
+                )
+                .with_fix_it("use integer operands, or use `+` only for two strings")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
     }
 }
 
 fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
     match (lhs, op, rhs) {
-        (Type::Int, BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul, Type::Int) => Type::Int,
+        (
+            Type::Int,
+            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod,
+            Type::Int,
+        ) => Type::Int,
         (Type::String, BinaryOp::Add, Type::String) => Type::String,
         (Type::Bool, BinaryOp::And | BinaryOp::Or, Type::Bool) => Type::Bool,
         (
@@ -2416,7 +3597,30 @@ fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
             Type::Bool
         }
         (Type::Enum(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Enum(rhs)) if lhs == rhs => Type::Bool,
+        (
+            Type::Result(lhs_ok, lhs_err),
+            BinaryOp::Eq | BinaryOp::Ne,
+            Type::Result(rhs_ok, rhs_err),
+        ) if types_compatible(lhs_ok, rhs_ok) && types_compatible(lhs_err, rhs_err) => Type::Bool,
         _ => Type::Unknown,
+    }
+}
+
+fn binary_op_name(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Add => "+",
+        BinaryOp::Sub => "-",
+        BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Mod => "%",
+        BinaryOp::And => "and",
+        BinaryOp::Or => "or",
+        BinaryOp::Eq => "==",
+        BinaryOp::Ne => "!=",
+        BinaryOp::Lt => "<",
+        BinaryOp::Le => "<=",
+        BinaryOp::Gt => ">",
+        BinaryOp::Ge => ">=",
     }
 }
 
@@ -2472,24 +3676,27 @@ fn infer_field_type(
     }
 }
 
-fn infer_enum_variant_type(
+fn resolve_enum_variant_reference(
     enum_name: &str,
     variant: &str,
     diagnostics: &mut Diagnostics,
     span: Span,
     enum_signatures: &HashMap<String, EnumSignature>,
     source_path: &Path,
-) -> Type {
+) -> (Type, Vec<EnumVariantFieldSignature>) {
     let Some(signature) = enum_signatures.get(enum_name) else {
-        return Type::Unknown;
+        return (Type::Unknown, Vec::new());
     };
 
-    if signature
+    if let Some(variant_signature) = signature
         .variants
         .iter()
-        .any(|candidate| candidate.name == variant)
+        .find(|candidate| candidate.name == variant)
     {
-        Type::Enum(enum_name.to_string())
+        (
+            Type::Enum(enum_name.to_string()),
+            variant_signature.fields.clone(),
+        )
     } else {
         diagnostics.push(
             Diagnostic::error(
@@ -2501,8 +3708,218 @@ fn infer_enum_variant_type(
             .with_fix_it("use one of the variants declared on the enum")
             .with_source_path(source_path.to_path_buf()),
         );
-        Type::Unknown
+        (Type::Unknown, Vec::new())
     }
+}
+
+fn resolve_enum_variant_call(
+    enum_name: &str,
+    variant: &str,
+    args: &[TypedExpr],
+    span: Span,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    let (ty, fields) = resolve_enum_variant_reference(
+        enum_name,
+        variant,
+        diagnostics,
+        span,
+        enum_signatures,
+        source_path,
+    );
+    if ty.is_unknown() {
+        return ty;
+    }
+
+    if fields.len() != args.len() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3069",
+                format!("wrong number of payload values for `{enum_name}.{variant}`"),
+                format!(
+                    "expected {} payload value(s), got {}",
+                    fields.len(),
+                    args.len()
+                ),
+                span,
+            )
+            .with_fix_it(format!(
+                "pass {} payload value(s) to `{}.{}`",
+                fields.len(),
+                enum_name,
+                variant
+            ))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return ty;
+    }
+
+    for (index, (expected, actual)) in fields.iter().zip(args.iter()).enumerate() {
+        ensure_type_compatibility(
+            &expected.ty,
+            &actual.ty,
+            actual.span,
+            diagnostics,
+            format!(
+                "payload value {} for `{enum_name}.{variant}` has incompatible type",
+                index + 1
+            ),
+            format!(
+                "payload field `{}` expects `{}`, but the argument resolves to `{}`",
+                expected.name,
+                expected.ty.display_name(),
+                actual.ty.display_name()
+            ),
+            source_path,
+        );
+    }
+
+    ty
+}
+
+fn resolve_result_variant_reference(
+    variant: &str,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+    source_path: &Path,
+) -> Type {
+    let note = match variant {
+        "Ok" => "construct it as `Result.Ok(value)`",
+        "Err" => "construct it as `Result.Err(error)`",
+        _ => "",
+    };
+
+    if matches!(variant, "Ok" | "Err") {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3072",
+                format!("result variant `Result.{variant}` requires a payload value"),
+                "both `Result.Ok` and `Result.Err` carry exactly one payload value",
+                span,
+            )
+            .with_fix_it(note)
+            .with_source_path(source_path.to_path_buf()),
+        );
+    } else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3072",
+                format!("unknown result variant `Result.{variant}`"),
+                "the builtin result type exposes only `Result.Ok(value)` and `Result.Err(error)`",
+                span,
+            )
+            .with_fix_it("use `Result.Ok(value)` or `Result.Err(error)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    Type::Unknown
+}
+
+fn resolve_result_variant_call(
+    variant: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    if !matches!(variant, "Ok" | "Err") {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3072",
+                format!("unknown result variant `Result.{variant}`"),
+                "the builtin result type exposes only `Result.Ok(value)` and `Result.Err(error)`",
+                span,
+            )
+            .with_fix_it("use `Result.Ok(value)` or `Result.Err(error)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3073",
+                format!("wrong number of payload values for `Result.{variant}`"),
+                format!("expected 1 payload value, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!(
+                "pass exactly one payload value to `Result.{variant}`"
+            ))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    match variant {
+        "Ok" => Type::result(args[0].ty.clone(), Type::Unknown),
+        "Err" => Type::result(Type::Unknown, args[0].ty.clone()),
+        _ => Type::Unknown,
+    }
+}
+
+fn validate_propagate_expr(
+    value: &TypedExpr,
+    function_return_type: &Type,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    let (ok_type, error_type) = match &value.ty {
+        Type::Result(ok, error) => (ok.as_ref().clone(), error.as_ref().clone()),
+        Type::Unknown => return Type::Unknown,
+        other => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3074",
+                    "postfix `?` requires a `Result[T, E]` operand",
+                    format!("this operand resolves to `{}`", other.display_name()),
+                    span,
+                )
+                .with_fix_it("apply `?` only to expressions that return `Result[T, E]`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            return Type::Unknown;
+        }
+    };
+
+    match function_return_type {
+        Type::Result(_, function_error_type) => {
+            ensure_type_compatibility(
+                function_error_type,
+                &error_type,
+                span,
+                diagnostics,
+                "postfix `?` propagates an incompatible result error type".to_string(),
+                format!(
+                    "the operand can propagate `{}`, but this function currently returns `{}`",
+                    error_type.display_name(),
+                    function_return_type.display_name()
+                ),
+                source_path,
+            );
+        }
+        Type::Unknown => {}
+        other => diagnostics.push(
+            Diagnostic::error(
+                "GOF3075",
+                "postfix `?` requires a surrounding `Result` return contract",
+                format!(
+                    "this function currently resolves to `{}`, so it cannot propagate `Err(...)` with `?`",
+                    other.display_name()
+                ),
+                span,
+            )
+            .with_fix_it("declare or infer the enclosing function as returning `Result[T, E]`")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+
+    ok_type
 }
 
 fn infer_return_type(
@@ -2530,10 +3947,12 @@ fn collect_return_types(
     for stmt in stmts {
         match stmt {
             TypedStmt::Return(expr) => {
+                let candidate =
+                    wrap_type_with_propagation(&expr.ty, expr_propagated_error_type(expr));
                 merge_return_candidate(
                     function_name,
                     returns,
-                    &expr.ty,
+                    &candidate,
                     expr.span,
                     diagnostics,
                     source_path,
@@ -2575,7 +3994,11 @@ fn collect_return_types(
                     );
                 }
             }
-            TypedStmt::Bind { .. } | TypedStmt::Assign { .. } | TypedStmt::Expr(_) => {}
+            TypedStmt::Bind { .. }
+            | TypedStmt::Assign { .. }
+            | TypedStmt::Break
+            | TypedStmt::Continue
+            | TypedStmt::Expr(_) => {}
         }
     }
 }
@@ -2631,6 +4054,82 @@ fn merge_return_candidate(
     }
 }
 
+fn wrap_type_with_propagation(base: &Type, propagated_error: Option<Type>) -> Type {
+    let Some(propagated_error) = propagated_error else {
+        return base.clone();
+    };
+
+    match base {
+        Type::Result(ok, error) => Type::result(
+            ok.as_ref().clone(),
+            merge_return_types(error, &propagated_error).unwrap_or(propagated_error),
+        ),
+        _ => Type::result(base.clone(), propagated_error),
+    }
+}
+
+fn expr_propagated_error_type(expr: &TypedExpr) -> Option<Type> {
+    let direct = match &expr.kind {
+        TypedExprKind::Propagate { value } => match &value.ty {
+            Type::Result(_, error) => Some(error.as_ref().clone()),
+            _ => Some(Type::Unknown),
+        },
+        _ => None,
+    };
+
+    merge_optional_error_type(
+        direct,
+        match &expr.kind {
+            TypedExprKind::List { items } => items.iter().fold(None, |acc, item| {
+                merge_optional_error_type(acc, expr_propagated_error_type(item))
+            }),
+            TypedExprKind::Dict { entries } => entries.iter().fold(None, |acc, entry| {
+                let acc = merge_optional_error_type(acc, expr_propagated_error_type(&entry.key));
+                merge_optional_error_type(acc, expr_propagated_error_type(&entry.value))
+            }),
+            TypedExprKind::Call { args, .. }
+            | TypedExprKind::StructInit { args, .. }
+            | TypedExprKind::EnumVariant { args, .. }
+            | TypedExprKind::Spawn { args, .. } => args.iter().fold(None, |acc, arg| {
+                merge_optional_error_type(acc, expr_propagated_error_type(arg))
+            }),
+            TypedExprKind::MethodCall { target, args, .. } => {
+                let acc = expr_propagated_error_type(target);
+                args.iter().fold(acc, |acc, arg| {
+                    merge_optional_error_type(acc, expr_propagated_error_type(arg))
+                })
+            }
+            TypedExprKind::Field { target, .. }
+            | TypedExprKind::Await { value: target }
+            | TypedExprKind::Unary { value: target, .. }
+            | TypedExprKind::Propagate { value: target } => expr_propagated_error_type(target),
+            TypedExprKind::Index { target, index } => merge_optional_error_type(
+                expr_propagated_error_type(target),
+                expr_propagated_error_type(index),
+            ),
+            TypedExprKind::Binary { lhs, rhs, .. } => merge_optional_error_type(
+                expr_propagated_error_type(lhs),
+                expr_propagated_error_type(rhs),
+            ),
+            TypedExprKind::Int(_)
+            | TypedExprKind::String(_)
+            | TypedExprKind::Bool(_)
+            | TypedExprKind::Local(_) => None,
+        },
+    )
+}
+
+fn merge_optional_error_type(current: Option<Type>, candidate: Option<Type>) -> Option<Type> {
+    match (current, candidate) {
+        (None, None) => None,
+        (Some(current), None) => Some(current),
+        (None, Some(candidate)) => Some(candidate),
+        (Some(current), Some(candidate)) => {
+            Some(merge_return_types(&current, &candidate).unwrap_or(Type::Unknown))
+        }
+    }
+}
+
 fn merge_return_types(current: &Type, candidate: &Type) -> Option<Type> {
     if current == candidate {
         return Some(current.clone());
@@ -2656,6 +4155,11 @@ fn merge_return_types(current: &Type, candidate: &Type) -> Option<Type> {
         }
         (Type::Task(current), Type::Task(candidate)) => {
             merge_return_types(current, candidate).map(Type::task)
+        }
+        (Type::Result(current_ok, current_err), Type::Result(candidate_ok, candidate_err)) => {
+            let ok = merge_return_types(current_ok, candidate_ok)?;
+            let err = merge_return_types(current_err, candidate_err)?;
+            Some(Type::result(ok, err))
         }
         _ => None,
     }
@@ -2696,6 +4200,9 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::Dict(expected), Type::Dict(actual)) => types_compatible(expected, actual),
         (Type::Channel(expected), Type::Channel(actual)) => types_compatible(expected, actual),
         (Type::Task(expected), Type::Task(actual)) => types_compatible(expected, actual),
+        (Type::Result(expected_ok, expected_err), Type::Result(actual_ok, actual_err)) => {
+            types_compatible(expected_ok, actual_ok) && types_compatible(expected_err, actual_err)
+        }
         (expected, actual) => expected == actual,
     }
 }
@@ -2735,6 +4242,52 @@ fn infer_list_element_type(
     } else {
         element_type
     }
+}
+
+fn infer_dict_value_type(
+    entries: &[TypedDictEntry],
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    let mut value_type = Type::Unknown;
+
+    for entry in entries {
+        if !matches!(entry.key.ty, Type::String | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3049",
+                    "dict literal keys must resolve to `string`",
+                    format!("this key resolves to `{}`", entry.key.ty.display_name()),
+                    entry.key.span,
+                )
+                .with_fix_it("use a string key like `{\"name\": value}`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+
+        match merge_return_types(&value_type, &entry.value.ty) {
+            Some(merged) => value_type = merged,
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3050",
+                        "dict literal contains incompatible value types",
+                        format!(
+                            "the dict started as `dict[{}]`, but this value resolves to `{}`",
+                            value_type.display_name(),
+                            entry.value.ty.display_name()
+                        ),
+                        entry.value.span,
+                    )
+                    .with_fix_it("make every dict value resolve to one compatible type")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return Type::Unknown;
+            }
+        }
+    }
+
+    value_type
 }
 
 fn infer_index_type(
@@ -3000,6 +4553,373 @@ fn validate_contains_call(
     }
 }
 
+fn validate_trim_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `trim`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `trim(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3057",
+                "`trim` requires a string value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string value like `trim(\"  gof  \")`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_split_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `split`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `split(text, separator)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3055",
+                "`split` requires a string value as its first argument",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string value as the first argument to `split`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3055",
+                "`split` requires a string separator",
+                format!("this separator resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a string separator like `\",\"` to `split`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if let TypedExprKind::String(separator) = &args[1].kind {
+        if separator.is_empty() {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3055",
+                    "`split` requires a non-empty separator",
+                    "an empty separator would make the bootstrap string contract ambiguous",
+                    args[1].span,
+                )
+                .with_fix_it("pass a visible separator such as `\",\"` or `\"-\"`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+}
+
+fn validate_join_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `join`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `join(parts, separator)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) => {
+            if !matches!(inner.as_ref(), Type::String | Type::Unknown) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3056",
+                        "`join` requires a list of strings as its first argument",
+                        format!("this list stores `{}`", inner.display_name()),
+                        args[0].span,
+                    )
+                    .with_fix_it("pass a `list[string]` value to `join`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+        }
+        Type::Unknown => {}
+        other => diagnostics.push(
+            Diagnostic::error(
+                "GOF3056",
+                "`join` requires a list of strings as its first argument",
+                format!("this argument resolves to `{}`", other.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a `list[string]` value to `join`")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3056",
+                "`join` requires a string separator",
+                format!("this separator resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a string separator as the second argument to `join`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_starts_with_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    validate_string_pair_call(
+        args,
+        span,
+        diagnostics,
+        source_path,
+        "starts_with",
+        "GOF3058",
+        "call `starts_with(text, prefix)`",
+    );
+}
+
+fn validate_ends_with_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    validate_string_pair_call(
+        args,
+        span,
+        diagnostics,
+        source_path,
+        "ends_with",
+        "GOF3059",
+        "call `ends_with(text, suffix)`",
+    );
+}
+
+fn validate_parse_int_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `parse_int`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `parse_int(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3060",
+                "`parse_int` requires a string value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string like `\"42\"` or `trim(text)` to `parse_int`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_to_string_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `to_string`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `to_string(value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !is_printable_type(&args[0].ty) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3062",
+                "`to_string` requires a printable value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it(
+                "pass an int, string, bool, list, dict, struct, or enum value to `to_string`",
+            )
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_range_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !(1..=3).contains(&args.len()) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `range`",
+                format!("expected 1, 2, or 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `range(stop)`, `range(start, stop)`, or `range(start, stop, step)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    for (index, arg) in args.iter().enumerate() {
+        if !matches!(arg.ty, Type::Int | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3063",
+                    format!("`range` argument {} must resolve to `int`", index + 1),
+                    format!("this argument resolves to `{}`", arg.ty.display_name()),
+                    arg.span,
+                )
+                .with_fix_it("pass integer values to `range`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+
+    if args.len() == 3 {
+        if let TypedExprKind::Int(0) = args[2].kind {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3064",
+                    "`range` step cannot be zero",
+                    "a zero step would never make forward progress",
+                    args[2].span,
+                )
+                .with_fix_it("pass a non-zero integer step to `range`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+}
+
+fn validate_string_pair_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+    callee: &'static str,
+    code: &'static str,
+    fix_it: &str,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{callee}`"),
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(fix_it)
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                code,
+                format!("`{callee}` requires a string value as its first argument"),
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it(format!(
+                "pass a string value as the first argument to `{callee}`"
+            ))
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                code,
+                format!("`{callee}` requires a string value as its second argument"),
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it(format!(
+                "pass a string value as the second argument to `{callee}`"
+            ))
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_assert_call(
     args: &[TypedExpr],
     span: Span,
@@ -3042,6 +4962,439 @@ fn validate_assert_call(
                 args[1].span,
             )
             .with_fix_it("pass a string as the second argument to `assert`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_no_argument_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}()` without arguments"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_single_string_argument_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(path_or_text)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3076",
+                format!("`{name}` requires a string argument"),
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string value")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_two_string_argument_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(left, right)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    for (index, arg) in args.iter().enumerate() {
+        if !matches!(arg.ty, Type::String | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3076",
+                    format!("`{name}` requires string arguments"),
+                    format!(
+                        "argument {} resolves to `{}`",
+                        index + 1,
+                        arg.ty.display_name()
+                    ),
+                    arg.span,
+                )
+                .with_fix_it("pass string values for both arguments")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+}
+
+fn validate_env_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    validate_single_string_argument_call("env", args, span, diagnostics, source_path);
+}
+
+fn validate_close_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `close`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `close(channel_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Channel(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3081",
+                "`close` requires a channel value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a channel value to `close`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_cancel_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `cancel`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `cancel(token)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::CancelToken | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3082",
+                "`cancel` requires a cancellation token",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a value created by `cancel_token()`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_is_cancelled_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `is_cancelled`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `is_cancelled(token)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::CancelToken | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3082",
+                "`is_cancelled` requires a cancellation token",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a value created by `cancel_token()`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_json_stringify_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `json_stringify`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `json_stringify(value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Json | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3083",
+                "`json_stringify` requires a `json` value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a value returned from `json_parse(...)` or another json helper")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_json_get_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `json_get`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `json_get(value, \"key\")`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Json | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3083",
+                "`json_get` requires a `json` value as its first argument",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a value returned from `json_parse(...)` or `json_get(...)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3076",
+                "`json_get` requires a string key",
+                format!("this key resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a string key")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_json_index_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `json_index`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `json_index(value, index)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Json | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3083",
+                "`json_index` requires a `json` value as its first argument",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a value returned from `json_parse(...)` or `json_get(...)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+    if !matches!(args[1].ty, Type::Int | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3084",
+                "`json_index` requires an integer index",
+                format!("this index resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass an integer index like `0`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_json_len_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `json_len`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `json_len(value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+    if !matches!(args[0].ty, Type::Json | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3083",
+                "`json_len` requires a `json` value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a `json` value")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_json_string_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `json_string`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `json_string(value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+    if !matches!(args[0].ty, Type::Json | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3083",
+                "`json_string` requires a `json` value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a `json` value")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_json_int_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `json_int`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `json_int(value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+    if !matches!(args[0].ty, Type::Json | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3083",
+                "`json_int` requires a `json` value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a `json` value")
             .with_source_path(source_path.to_path_buf()),
         );
     }
@@ -3211,24 +5564,81 @@ fn validate_insert_call(
     }
 }
 
+fn validate_keys_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `keys`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `keys(dict_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Dict(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3051",
+                "`keys` requires a dict value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a dict value like `keys(metrics)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_values_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `values`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `values(dict_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Dict(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3052",
+                "`values` requires a dict value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a dict value like `values(metrics)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_channel_call(
     args: &[TypedExpr],
     span: Span,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
-    if !args.is_empty() {
-        diagnostics.push(
-            Diagnostic::error(
-                "GOF3005",
-                "wrong number of arguments for `channel`",
-                format!("expected 0 arguments, got {}", args.len()),
-                span,
-            )
-            .with_fix_it("call `channel()` without arguments")
-            .with_source_path(source_path.to_path_buf()),
-        );
-    }
+    validate_no_argument_call("channel", args, span, diagnostics, source_path);
 }
 
 fn validate_send_call(
@@ -3237,15 +5647,15 @@ fn validate_send_call(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
-    if args.len() != 2 {
+    if !(2..=3).contains(&args.len()) {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3005",
                 "wrong number of arguments for `send`",
-                format!("expected 2 arguments, got {}", args.len()),
+                format!("expected 2 or 3 arguments, got {}", args.len()),
                 span,
             )
-            .with_fix_it("call `send(channel_value, item)`")
+            .with_fix_it("call `send(channel_value, item)` or `send(channel_value, item, token)`")
             .with_source_path(source_path.to_path_buf()),
         );
         return;
@@ -3277,6 +5687,19 @@ fn validate_send_call(
             .with_source_path(source_path.to_path_buf()),
         ),
     }
+
+    if args.len() == 3 && !matches!(args[2].ty, Type::CancelToken | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3082",
+                "`send` requires a cancellation token as its optional third argument",
+                format!("this argument resolves to `{}`", args[2].ty.display_name()),
+                args[2].span,
+            )
+            .with_fix_it("pass a value created by `cancel_token()` as the third argument")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
 }
 
 fn validate_recv_call(
@@ -3285,15 +5708,15 @@ fn validate_recv_call(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
-    if args.len() != 1 {
+    if !(1..=2).contains(&args.len()) {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3005",
                 "wrong number of arguments for `recv`",
-                format!("expected 1 argument, got {}", args.len()),
+                format!("expected 1 or 2 arguments, got {}", args.len()),
                 span,
             )
-            .with_fix_it("call `recv(channel_value)`")
+            .with_fix_it("call `recv(channel_value)` or `recv(channel_value, token)`")
             .with_source_path(source_path.to_path_buf()),
         );
         return;
@@ -3308,6 +5731,19 @@ fn validate_recv_call(
                 args[0].span,
             )
             .with_fix_it("pass a channel value to `recv`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if args.len() == 2 && !matches!(args[1].ty, Type::CancelToken | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3082",
+                "`recv` requires a cancellation token as its optional second argument",
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a value created by `cancel_token()` as the second argument")
             .with_source_path(source_path.to_path_buf()),
         );
     }
@@ -3327,6 +5763,17 @@ fn infer_append_return_type(args: &[TypedExpr]) -> Type {
     }
 }
 
+fn infer_split_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 2 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::String | Type::Unknown => Type::list(Type::String),
+        _ => Type::Unknown,
+    }
+}
+
 fn infer_insert_return_type(args: &[TypedExpr]) -> Type {
     if args.len() != 3 {
         return Type::Unknown;
@@ -3341,8 +5788,31 @@ fn infer_insert_return_type(args: &[TypedExpr]) -> Type {
     }
 }
 
-fn infer_recv_return_type(args: &[TypedExpr]) -> Type {
+fn infer_keys_return_type(args: &[TypedExpr]) -> Type {
     if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::Dict(_) | Type::Unknown => Type::list(Type::String),
+        _ => Type::Unknown,
+    }
+}
+
+fn infer_values_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::Dict(inner) => Type::list(inner.as_ref().clone()),
+        Type::Unknown => Type::list(Type::Unknown),
+        _ => Type::Unknown,
+    }
+}
+
+fn infer_recv_return_type(args: &[TypedExpr]) -> Type {
+    if !(1..=2).contains(&args.len()) {
         return Type::Unknown;
     }
 
@@ -3358,7 +5828,7 @@ fn validate_select_operation(
     source_path: &Path,
 ) {
     match &operation.kind {
-        TypedExprKind::Call { callee, args } if callee == "recv" && args.len() == 1 => {}
+        TypedExprKind::Call { callee, args } if callee == "recv" && (1..=2).contains(&args.len()) => {}
         TypedExprKind::Call { callee, .. } => diagnostics.push(
             Diagnostic::error(
                 "GOF3047",
@@ -3366,17 +5836,17 @@ fn validate_select_operation(
                 format!("this arm uses `{callee}(...)` instead"),
                 operation.span,
             )
-            .with_fix_it("replace the arm operation with `recv(channel_value)`")
+            .with_fix_it("replace the arm operation with `recv(channel_value)` or `recv(channel_value, token)`")
             .with_source_path(source_path.to_path_buf()),
         ),
         _ => diagnostics.push(
             Diagnostic::error(
                 "GOF3047",
                 "`select` arms currently require `recv(channel)` operations",
-                "select arms must be written as `recv(channel):` or `value = recv(channel):`",
+                "select arms must be written as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, or `value = recv(channel, token):`",
                 operation.span,
             )
-            .with_fix_it("replace this arm with a `recv(channel)` operation")
+            .with_fix_it("replace this arm with a `recv(channel)` or `recv(channel, token)` operation")
             .with_source_path(source_path.to_path_buf()),
         ),
     }
@@ -3384,20 +5854,26 @@ fn validate_select_operation(
 
 fn is_printable_type(ty: &Type) -> bool {
     match ty {
-        Type::Int | Type::String | Type::Bool | Type::Struct(_) | Type::Enum(_) | Type::Unknown => {
-            true
-        }
+        Type::Int
+        | Type::String
+        | Type::Bool
+        | Type::Json
+        | Type::Struct(_)
+        | Type::Enum(_)
+        | Type::Unknown => true,
         Type::List(inner) | Type::Dict(inner) => !matches!(
             inner.as_ref(),
-            Type::Task(_) | Type::Unit | Type::Channel(_)
+            Type::Task(_) | Type::Unit | Type::Channel(_) | Type::CancelToken
         ),
-        Type::Channel(_) | Type::Task(_) | Type::Unit => false,
+        Type::Result(ok, err) => is_printable_type(ok) && is_printable_type(err),
+        Type::Channel(_) | Type::Task(_) | Type::CancelToken | Type::Unit => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Type, TypedExprKind, TypedStmt, lower};
+    use super::{Type, TypedExprKind, TypedMatchPattern, TypedStmt, lower};
+    use crate::ast::BinaryOp;
     use crate::ast::parse;
     use crate::cst::CstModule;
     use crate::hir::lower as lower_hir;
@@ -3539,6 +6015,41 @@ mod tests {
     }
 
     #[test]
+    fn supports_dict_literals() {
+        let module = lower_source(
+            "fn main() -> int:\n    values: dict = {\"ok\": 2, \"warn\": 3}\n    return values[\"ok\"] + len(values)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Dict(Box::new(Type::Int)));
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Dict { entries } if entries.len() == 2)
+                );
+            }
+            other => panic!("expected dict bind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_dict_literal_keys() {
+        let diagnostics = lower_source("fn main() -> dict:\n    return {1: 2}\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3049"]);
+    }
+
+    #[test]
+    fn rejects_incompatible_dict_literal_values() {
+        let diagnostics =
+            lower_source("fn main() -> dict:\n    return {\"ok\": 1, \"bad\": \"oops\"}\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3050"]);
+    }
+
+    #[test]
     fn rejects_invalid_len_operand() {
         let diagnostics = lower_source("fn main() -> int:\n    return len(true)\n")
             .expect_err("typing should fail");
@@ -3566,6 +6077,150 @@ mod tests {
         match &module.functions[0].body[1] {
             TypedStmt::Return(expr) => assert_eq!(expr.ty, Type::Bool),
             other => panic!("expected bool return, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_string_helper_builtins() {
+        let module = lower_source(
+            "fn main() -> int:\n    line = trim(\"  gof,lang  \")\n    parts = split(line, \",\")\n    merged = join(parts, \"-\")\n    assert(starts_with(merged, \"gof\"), \"expected prefix\")\n    assert(ends_with(merged, \"lang\"), \"expected suffix\")\n    return len(merged) + len(parts)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "split")
+                );
+            }
+            other => panic!("expected split bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[2] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "join")
+                );
+            }
+            other => panic!("expected join bind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_conversion_builtins() {
+        let module = lower_source(
+            "fn main() -> int:\n    parsed = parse_int(trim(\" 41 \"))\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return parsed + len(rendered)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "parse_int")
+                );
+            }
+            other => panic!("expected parse_int bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected rendered bind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_parameterized_builtin_type_annotations() {
+        let module = lower_source(
+            "fn first(values: list[int]) -> int:\n    return values[0]\nfn main() -> Result[dict[int], RuntimeError]:\n    ch: channel[int] = channel()\n    send(ch, first([7, 9]))?\n    return Result.Ok({\"ok\": recv(ch)?})\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(
+            module.functions[0].params[0].ty,
+            Type::List(Box::new(Type::Int))
+        );
+        assert_eq!(
+            module.functions[1].return_type,
+            Type::Result(
+                Box::new(Type::Dict(Box::new(Type::Int))),
+                Box::new(Type::Enum("RuntimeError".to_string()))
+            )
+        );
+        assert!(matches!(&module.functions[1].body[1], TypedStmt::Expr(_)));
+        assert!(matches!(&module.functions[1].body[2], TypedStmt::Return(_)));
+    }
+
+    #[test]
+    fn rejects_invalid_type_argument_arity() {
+        let diagnostics =
+            lower_source("fn main(values: list[int, string]) -> int:\n    return 1\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3067"]);
+    }
+
+    #[test]
+    fn supports_unary_minus_division_and_modulo() {
+        let module = lower_source("fn main() -> int:\n    base = -6 / 3\n    return base % 4\n")
+            .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+                assert!(matches!(
+                    &value.kind,
+                    TypedExprKind::Binary {
+                        op: BinaryOp::Div,
+                        ..
+                    }
+                ));
+            }
+            other => panic!("expected numeric bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Return(expr) => {
+                assert_eq!(expr.ty, Type::Int);
+                assert!(matches!(
+                    &expr.kind,
+                    TypedExprKind::Binary {
+                        op: BinaryOp::Mod,
+                        ..
+                    }
+                ));
+            }
+            other => panic!("expected modulo return, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_numeric_operands() {
+        let diagnostics = lower_source("fn main() -> int:\n    return -\"oops\"\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3065"]);
+    }
+
+    #[test]
+    fn supports_range_builtin() {
+        let module = lower_source(
+            "fn main() -> int:\n    values = range(1, 7, 2)\n    mut total = 0\n    for value in values:\n        total = total + value\n    return total\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "range")
+                );
+            }
+            other => panic!("expected range bind, got {other:?}"),
         }
     }
 
@@ -3608,9 +6263,31 @@ mod tests {
     }
 
     #[test]
+    fn supports_break_and_continue_inside_loops() {
+        let module = lower_source(
+            "fn main() -> int:\n    mut total = 0\n    for value in [1, 2, 3, 4]:\n        if value == 2:\n            continue\n        total = total + value\n        if total > 3:\n            break\n    return total\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::For { body, .. } => {
+                assert!(matches!(
+                    &body[0],
+                    TypedStmt::If { then_body, .. } if matches!(&then_body[0], TypedStmt::Continue)
+                ));
+                assert!(matches!(
+                    &body[2],
+                    TypedStmt::If { then_body, .. } if matches!(&then_body[0], TypedStmt::Break)
+                ));
+            }
+            other => panic!("expected for loop, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_dict_assert_and_file_builtins() {
         let module = lower_source(
-            "fn main() -> int:\n    mut store: dict = dict()\n    store = insert(store, \"size\", 3)\n    assert(contains(store, \"size\"), \"missing size\")\n    write_file(\"out.txt\", read_file(\"in.txt\"))\n    return store[\"size\"] + len(store)\n",
+            "fn main() -> Result[int, RuntimeError]:\n    mut store: dict = dict()\n    store = insert(store, \"size\", 3)\n    assert(contains(store, \"size\"), \"missing size\")\n    write_file(\"out.txt\", read_file(\"in.txt\")?)?\n    return Result.Ok(store[\"size\"] + len(store))\n",
         )
         .expect("typing should succeed");
 
@@ -3628,20 +6305,56 @@ mod tests {
             other => panic!("expected dict assign, got {other:?}"),
         }
 
+        assert_eq!(
+            module.functions[0].return_type,
+            Type::Result(
+                Box::new(Type::Int),
+                Box::new(Type::Enum("RuntimeError".to_string()))
+            )
+        );
+    }
+
+    #[test]
+    fn supports_dict_view_builtins() {
+        let module = lower_source(
+            "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    return len(names) + counts[0] + counts[1] + counts[2]\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "keys")
+                );
+            }
+            other => panic!("expected keys bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[2] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "values")
+                );
+            }
+            other => panic!("expected values bind, got {other:?}"),
+        }
+
         assert_eq!(module.functions[0].return_type, Type::Int);
     }
 
     #[test]
     fn supports_channel_and_select_baseline() {
         let module = lower_source(
-            "fn main() -> int:\n    ch: channel = channel()\n    send(ch, 7)\n    select:\n        value = recv(ch):\n            return value + 1\n",
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel()\n    send(ch, 7)?\n    select:\n        received = recv(ch):\n            match received:\n                Result.Ok(value):\n                    return Result.Ok(value + 1)\n                Result.Err(error):\n                    return Result.Err(error)\n",
         )
         .expect("typing should succeed");
 
         match &module.functions[0].body[2] {
             TypedStmt::Select { arms } => {
                 assert_eq!(arms.len(), 1);
-                assert_eq!(arms[0].binding.as_deref(), Some("value"));
+                assert_eq!(arms[0].binding.as_deref(), Some("received"));
             }
             other => panic!("expected select statement, got {other:?}"),
         }
@@ -3690,6 +6403,95 @@ mod tests {
     }
 
     #[test]
+    fn rejects_invalid_split_operands() {
+        let diagnostics = lower_source("fn main() -> list:\n    return split(1, \",\")\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3055"]);
+    }
+
+    #[test]
+    fn rejects_invalid_join_operands() {
+        let diagnostics = lower_source("fn main() -> string:\n    return join([1, 2], \",\")\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3056"]);
+    }
+
+    #[test]
+    fn rejects_invalid_trim_operands() {
+        let diagnostics = lower_source("fn main() -> string:\n    return trim(7)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3057"]);
+    }
+
+    #[test]
+    fn rejects_invalid_starts_with_operands() {
+        let diagnostics = lower_source("fn main() -> bool:\n    return starts_with(\"gof\", 1)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3058"]);
+    }
+
+    #[test]
+    fn rejects_invalid_ends_with_operands() {
+        let diagnostics =
+            lower_source("fn main() -> bool:\n    return ends_with(false, \"gof\")\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3059"]);
+    }
+
+    #[test]
+    fn rejects_invalid_parse_int_operands() {
+        let diagnostics = lower_source("fn main() -> int:\n    return parse_int(1)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3060"]);
+    }
+
+    #[test]
+    fn rejects_invalid_to_string_operands() {
+        let diagnostics = lower_source("fn main() -> string:\n    return to_string(channel())\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3062"]);
+    }
+
+    #[test]
+    fn rejects_invalid_range_operands() {
+        let diagnostics = lower_source("fn main() -> list:\n    return range(\"bad\")\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3063"]);
+    }
+
+    #[test]
+    fn rejects_zero_range_step() {
+        let diagnostics = lower_source("fn main() -> list:\n    return range(0, 5, 0)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3064"]);
+    }
+
+    #[test]
+    fn rejects_invalid_keys_operands() {
+        let diagnostics = lower_source("fn main() -> list:\n    return keys(1)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3051"]);
+    }
+
+    #[test]
+    fn rejects_invalid_values_operands() {
+        let diagnostics = lower_source("fn main() -> list:\n    return values(true)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3052"]);
+    }
+
+    #[test]
     fn rejects_invalid_assert_operands() {
         let diagnostics = lower_source("fn main() -> unit:\n    return assert(1)\n")
             .expect_err("typing should fail");
@@ -3714,6 +6516,22 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3048"]);
+    }
+
+    #[test]
+    fn rejects_break_outside_loops() {
+        let diagnostics = lower_source("fn main() -> int:\n    break\n    return 0\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3053"]);
+    }
+
+    #[test]
+    fn rejects_continue_outside_loops() {
+        let diagnostics = lower_source("fn main() -> int:\n    continue\n    return 0\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3054"]);
     }
 
     #[test]
@@ -3829,9 +6647,52 @@ mod tests {
     }
 
     #[test]
+    fn supports_payload_enums_and_destructuring_matches() {
+        let module = lower_source(
+            "enum JobState:\n    Ready\n    Running(pid: int)\n    Failed(message: string)\n\nfn score(state: JobState) -> int:\n    match state:\n        JobState.Ready:\n            return 0\n        JobState.Running(pid):\n            return pid\n        JobState.Failed(message):\n            return len(message)\n\nfn main() -> int:\n    current: JobState = JobState.Running(42)\n    return score(current)\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(module.enums[0].variants[1].name, "Running");
+        assert_eq!(module.enums[0].variants[1].fields.len(), 1);
+        assert_eq!(module.enums[0].variants[1].fields[0].ty, Type::Int);
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Match { arms, .. } => {
+                assert!(matches!(
+                    &arms[1].pattern,
+                    TypedMatchPattern::EnumVariant {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } if enum_name == "JobState"
+                        && variant == "Running"
+                        && bindings.len() == 1
+                        && bindings[0].name == "pid"
+                        && bindings[0].ty == Type::Int
+                ));
+            }
+            other => panic!("expected payload match, got {other:?}"),
+        }
+
+        match &module.functions[1].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Enum("JobState".to_string()));
+                assert!(matches!(
+                    &value.kind,
+                    TypedExprKind::EnumVariant { enum_name, variant, args }
+                        if enum_name == "JobState" && variant == "Running" && args.len() == 1
+                ));
+            }
+            other => panic!("expected enum constructor bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn rejects_match_on_non_enum_values() {
         let diagnostics = lower_source(
-            "fn main() -> int:\n    value = 1\n    match value:\n        value:\n            return 1\n",
+            "enum Status:\n    Ready\n\nfn main() -> int:\n    value = 1\n    match value:\n        Status.Ready:\n            return 1\n",
         )
         .expect_err("typing should fail");
 
@@ -3866,6 +6727,137 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3031"]);
+    }
+
+    #[test]
+    fn rejects_payload_constructor_arity_mismatches() {
+        let diagnostics = lower_source(
+            "enum JobState:\n    Running(pid: int)\n\nfn main() -> JobState:\n    return JobState.Running()\n",
+        )
+        .expect_err("payload constructor arity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3069"]);
+    }
+
+    #[test]
+    fn rejects_payload_match_destructuring_arity_mismatches() {
+        let diagnostics = lower_source(
+            "enum JobState:\n    Running(pid: int)\n\nfn main() -> int:\n    state: JobState = JobState.Running(7)\n    match state:\n        JobState.Running(pid, extra):\n            return pid\n",
+        )
+        .expect_err("payload match arity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3071"]);
+    }
+
+    #[test]
+    fn supports_result_constructors_propagation_and_match() {
+        let module = lower_source(
+            "enum MathError:\n    TooSmall\n    NotEven(value: int)\n\nfn halve(value: int) -> Result[int, MathError]:\n    if value < 2:\n        return Result.Err(MathError.TooSmall)\n    if value % 2 != 0:\n        return Result.Err(MathError.NotEven(value))\n    return Result.Ok(value / 2)\n\nfn compute() -> Result[int, MathError]:\n    half = halve(84)?\n    return Result.Ok(half)\n\nfn main() -> int:\n    outcome: Result[int, MathError] = compute()\n    match outcome:\n        Result.Ok(value):\n            return value\n        Result.Err(error):\n            match error:\n                MathError.TooSmall:\n                    return 0\n                MathError.NotEven(value):\n                    return value\n",
+        )
+        .expect("typing should succeed");
+
+        let result_type = Type::result(Type::Int, Type::Enum("MathError".to_string()));
+        assert_eq!(module.functions[0].return_type, result_type);
+        assert_eq!(module.functions[1].return_type, result_type);
+
+        match &module.functions[1].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+                assert!(matches!(value.kind, TypedExprKind::Propagate { .. }));
+            }
+            other => panic!("expected propagation bind, got {other:?}"),
+        }
+
+        match &module.functions[2].body[1] {
+            TypedStmt::Match { value, arms } => {
+                assert_eq!(value.ty, result_type);
+                assert!(matches!(
+                    &arms[0].pattern,
+                    TypedMatchPattern::EnumVariant {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } if enum_name == "Result"
+                        && variant == "Ok"
+                        && bindings.len() == 1
+                        && bindings[0].name == "value"
+                        && bindings[0].ty == Type::Int
+                ));
+                assert!(matches!(
+                    &arms[1].pattern,
+                    TypedMatchPattern::EnumVariant {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } if enum_name == "Result"
+                        && variant == "Err"
+                        && bindings.len() == 1
+                        && bindings[0].name == "error"
+                        && bindings[0].ty == Type::Enum("MathError".to_string())
+                ));
+            }
+            other => panic!("expected result match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_result_type_arity() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    value: Result[int] = Result.Ok(1)\n    return 0\n",
+        )
+        .expect_err("result type arity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3067"]);
+    }
+
+    #[test]
+    fn rejects_unknown_result_variants() {
+        let diagnostics =
+            lower_source("fn main() -> Result[int, string]:\n    return Result.Maybe(1)\n")
+                .expect_err("unknown result variant should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3072"]);
+    }
+
+    #[test]
+    fn rejects_invalid_result_payload_arity() {
+        let diagnostics =
+            lower_source("fn main() -> Result[int, string]:\n    return Result.Ok()\n")
+                .expect_err("result payload arity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3073"]);
+    }
+
+    #[test]
+    fn rejects_invalid_propagate_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[int, string]:\n    value = 1?\n    return Result.Ok(value)\n",
+        )
+        .expect_err("propagate operand should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3074"]);
+    }
+
+    #[test]
+    fn rejects_propagation_without_result_return_contract() {
+        let diagnostics = lower_source(
+            "fn parse_port() -> Result[int, string]:\n    return Result.Ok(41)\n\nfn main() -> int:\n    port = parse_port()?\n    return port\n",
+        )
+        .expect_err("non-result return contract should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3075"]);
+    }
+
+    #[test]
+    fn rejects_result_match_payload_arity_mismatches() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    outcome: Result[int, string] = Result.Ok(7)\n    match outcome:\n        Result.Ok(value, extra):\n            return value\n        Result.Err(error):\n            return len(error)\n",
+        )
+        .expect_err("result match arity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3071"]);
     }
 
     #[test]

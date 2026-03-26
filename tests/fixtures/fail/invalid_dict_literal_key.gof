@@ -1,0 +1,2 @@
+fn main() -> dict:
+    return {1: 2}

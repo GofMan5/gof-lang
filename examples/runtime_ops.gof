@@ -1,0 +1,19 @@
+fn main() -> Result[int, RuntimeError]:
+    root = env("GOF_RUNTIME_DIR")?
+    mode = env("GOF_RUNTIME_MODE")?
+    file = path_join(root, "sample.txt")
+
+    write_file(file, "hello")?
+    assert(exists(file), "expected the sample file to exist")
+
+    entries = read_dir(root)?
+    assert(contains(entries, "sample.txt"), "missing sample.txt")
+
+    current = cwd()?
+    assert(len(current) > 0, "cwd should not be empty")
+    assert(path_base(file) == "sample.txt", "bad file base")
+    assert(path_ext(file) == "txt", "bad file extension")
+    assert(len(path_dir(file)) > 0, "bad file directory")
+
+    args = argv()
+    return Result.Ok(len(args) + len(entries) + len(mode))

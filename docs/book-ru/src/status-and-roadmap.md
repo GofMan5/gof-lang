@@ -6,23 +6,27 @@
 - что уже реально реализовано
 - что еще bootstrap или намеренно неполно
 
-Если смешать эти три слоя, можно либо недооценить проект, либо поверить в обещания, которые еще не заработаны.
+Если смешать эти три слоя, можно либо недооценить проект, либо поверить в
+обещания, которые еще не заработаны.
 
 ## Что уже реально есть
 
 В текущем репозитории уже есть:
 
 - typed functions
-- structs, enums и методы
+- structs, payload enums и методы
 - исчерпывающий `match`
-- lists и dicts
+- lists, dicts и parameterized builtin types
+- `Result[T, E]` и postfix `?`
 - `assert`
-- file I/O
-- channels и `select`
+- process, filesystem и path helpers
+- JSON helpers и bootstrap HTTP GET
+- channels, `close`, cancellation tokens и `select`
 - `go` / `await`
 - реальный CLI и bootstrap-native build path
 
-Этого уже достаточно, чтобы учить реальные semantics и запускать нетривиальные examples.
+Этого уже достаточно, чтобы учить реальную семантику, запускать нетривиальные
+examples и собирать первый baseline long-polling Telegram bot.
 
 ## Что еще в работе
 
@@ -33,7 +37,8 @@
 - package system hardening
 - direct native code generation
 
-Это не косметические milestones. Это слои, которые переводят `gof` из “сильного bootstrap-языка” в “серьезный production-язык”.
+Это не косметические milestones. Это слои, которые переводят `gof` из
+“сильного bootstrap-языка” в “серьезный production-язык”.
 
 ## Как правильно использовать roadmap
 

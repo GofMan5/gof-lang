@@ -27,11 +27,13 @@ The real goal is not feature count. Every phase of language development must:
 
 ## Active Focus
 
-- `[~]` M4: minimal useful standard library
+- `[~]` M4: minimal useful standard library for CLI and bot-oriented programs
 - `[~]` M5: concurrency semantics beyond task spawn and await
 - `[~]` M7: bootstrap-native build path on the road to direct codegen
 - Immediate mandatory result: keep stdlib side effects small, explicit, and allocation-transparent
+- Immediate semantic result: keep explicit recoverable error flow moving toward `Result`-based operational APIs
 - Second mandatory result: make message-passing concurrency honest and testable
+- Product pressure result: make the language capable of a real Telegram long-polling bot before touching web-framework ambitions
 - Parallel operational result: keep build, package, install, and update flows aligned with the real toolchain surface
 
 ## Milestone Map
@@ -41,6 +43,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` Repository structure, spec, RFC, ADR, and governance skeleton
 - `[x]` Unified CLI with `build`, `run`, `test`, `fmt`, `mod`, `doc`, `bench`
 - `[x]` Diagnostics contract and fixture-based conformance harness
+- `[x]` Runtime-fail fixture coverage for evaluator-backed language contracts
 - `[x]` Local AGENTS rules for SSS+ quality, tests, and architectural discipline
 - `[x]` Public community standards files
 - `[x]` CI validation on push and pull request
@@ -72,6 +75,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` typed bindings
 - `[x]` explicit return contracts
 - `[x]` module-level return inference
+- `[x]` parameterized builtin type annotations for list/dict/channel/task/Result
 - `[x]` `go` / `await` task typing
 - `[x]` lists, indexing, builtin `len`
 - `[x]` struct declarations, typed fields, constructors, field access
@@ -85,7 +89,10 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` logical operators with short-circuit behavior
 - `[x]` enums with a clear variant model
 - `[x]` branching over states with `match`
+- `[x]` payload enum variants with typed destructuring in `match`
+- `[x]` builtin `Result[T, E]` with postfix propagation and exhaustive result handling
 - `[x]` predictable iteration over core iterable values
+- `[x]` explicit loop control with `break` and `continue`
 - `[ ]` richer equality and comparison rules with explicit semantics
 - `[x]` methods or an equivalent clean receiver story
 - Checkpoints:
@@ -93,8 +100,11 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` CP-M3-2: boolean logic with strict type checking and short-circuit behavior
 - `[x]` CP-M3-3: enums with unit variants, equality, type annotations, and diagnostics
 - `[x]` CP-M3-4: `match` over enum values with an exhaustiveness baseline
+- `[x]` CP-M3-4a: payload enum variants and payload destructuring without dynamic runtime tricks
+- `[x]` CP-M3-4b: `Result.Ok`, `Result.Err`, exhaustive result `match`, and postfix `?`
 - `[x]` CP-M3-5: receiver or method model without namespace hacks
 - `[x]` CP-M3-6: `for ... in ...` over lists, strings, and dict keys
+- `[x]` CP-M3-7: `break` and `continue` without hidden control-flow hacks
 - Exit criteria:
 - user-defined data types can model real domain states
 - branching over state is explicit and safe
@@ -104,17 +114,24 @@ The real goal is not feature count. Every phase of language development must:
 
 - `[x]` output primitive (`print` or equivalent)
 - `[x]` basic file I/O baseline through `read_file(...)` and `write_file(...)`
+- `[x]` process and filesystem helpers on top of explicit `Result`
+- `[x]` path helpers for CLI tooling and bot-oriented programs
 - `[~]` basic string helpers
 - `[~]` basic list helpers that do not hide allocations
 - `[x]` bootstrap dict baseline for key/value data
-- `[ ]` predictable numeric and conversion utilities
+- `[~]` predictable numeric and conversion utilities
+- `[x]` bootstrap JSON helpers for explicit data decoding
+- `[x]` bootstrap HTTP GET client sufficient for long-polling examples
+- `[x]` unary minus, integer division, and modulo in the bootstrap numeric surface
 - `[x]` minimal testing and assert helpers inside the language surface
 - Checkpoints:
 - `[x]` CP-M4-1: I/O baseline for CLI apps
-- `[~]` CP-M4-2: zero-surprise helper APIs for strings and lists
-- `[~]` CP-M4-3: stdlib docs and contract tests
+- `[~]` CP-M4-2: zero-surprise helper APIs for strings, lists, dict construction, and dict views
+- `[x]` CP-M4-3: process, filesystem, and path helpers on explicit `Result`
+- `[x]` CP-M4-4: JSON and HTTP bootstrap path for bot-oriented examples
+- `[~]` CP-M4-5: stdlib docs and contract tests
 - Exit criteria:
-- small but real CLI-style programs are possible without compiler-internal hacks
+- small but real CLI-style and bot-style programs are possible without compiler-internal hacks
 
 ### M5. Concurrency Worth Comparing to Go
 
@@ -122,13 +139,16 @@ The real goal is not feature count. Every phase of language development must:
 - `[x]` typed `await`
 - `[x]` typed channels
 - `[x]` `select`
-- `[ ]` cancellation contract
+- `[~]` cancellation contract
+- `[x]` channel lifecycle with explicit close semantics
 - `[ ]` panic and error propagation across tasks
 - `[ ]` scheduler stress and concurrency benchmarks
 - Checkpoints:
 - `[x]` CP-M5-1: channels with explicit semantics
 - `[x]` CP-M5-2: `select` semantics and diagnostics
-- `[ ]` CP-M5-3: cancellation and propagation rules
+- `[~]` CP-M5-3: cancellation and propagation rules
+- `[x]` CP-M5-3a: `close(channel)` plus `Result`-returning `send` and `recv`
+- `[x]` CP-M5-3b: token-based cooperative cancellation baseline for channel waits
 - Exit criteria:
 - concurrency is useful, typed, testable, and benchmarked
 - no hidden global lock or accidental shared mutable-state semantics
@@ -174,20 +194,29 @@ The real goal is not feature count. Every phase of language development must:
 
 ## Immediate Execution Queue
 
-1. `[ ]` Expand the minimal stdlib beyond raw output:
-- expand string helpers beyond `contains`
-- expand list helpers beyond `append`
-- add dict construction sugar without hiding costs
+1. `[~]` Expand the minimal stdlib beyond raw output:
+- `[x]` expand string helpers beyond `contains` with `trim`, `split`, `join`, `starts_with`, and `ends_with`
+- `[~]` expand list helpers beyond `append` with explicit sequence builders like `range`
+- `[x]` add dict construction sugar without hiding costs
+- `[x]` add deterministic dict view helpers without hiding ordering or allocations
+- `[~]` add predictable conversion helpers through `parse_int` and `to_string`
+- `[x]` add process, path, and filesystem helpers required by real CLI tools
+- `[x]` add a bootstrap JSON and HTTP client slice sufficient for long-polling bots
 - stdlib docs and contract tests
 
-2. `[ ]` Move the bootstrap-native build path closer to direct codegen:
+2. `[~]` Start migrating recoverable operational paths onto explicit results:
+- `[x]` language-defined `Result[T, E]` value surface with postfix `?`
+- `[x]` migrate process, filesystem, and channel lifecycle APIs onto `Result`
+- `[~]` keep runtime diagnostics reserved for invariant failures or temporary bootstrap gaps only
+
+3. `[ ]` Move the bootstrap-native build path closer to direct codegen:
 - reduce wrapper overhead in generated host executables
 - stabilize artifact naming and smoke coverage for `gof build --native`
 - keep direct codegen milestones honest in docs and tooling
 
-3. `[ ]` Deepen concurrency semantics:
+4. `[ ]` Deepen concurrency semantics:
 - select fairness and blocking semantics
-- channel lifecycle and cancellation rules
+- task propagation over `Result` and panic boundaries
 - concurrency contract tests and benchmarks
 
 ## Current Non-Goals

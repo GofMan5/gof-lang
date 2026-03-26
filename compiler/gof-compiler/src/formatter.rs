@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOp, EnumDecl, EnumVariant, Expr, Function, Import, Module, Param, Stmt, StructDecl,
-    StructField, TypeRef, UnaryOp,
+    BinaryOp, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function, Import,
+    MatchPattern, Module, Param, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -84,7 +84,24 @@ fn format_enum(decl: &EnumDecl) -> String {
 
 fn format_enum_variant(variant: &EnumVariant, indent_level: usize) -> String {
     let indent = "    ".repeat(indent_level);
-    format!("{indent}{}", variant.name)
+    if variant.fields.is_empty() {
+        format!("{indent}{}", variant.name)
+    } else {
+        format!(
+            "{indent}{}({})",
+            variant.name,
+            variant
+                .fields
+                .iter()
+                .map(format_enum_variant_field)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn format_enum_variant_field(field: &EnumVariantField) -> String {
+    format!("{}: {}", field.name, format_type_ref(&field.ty))
 }
 
 fn format_function(function: &Function) -> String {
@@ -144,6 +161,8 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             )
         }
         Stmt::Assign { name, value, .. } => format!("{indent}{name} = {}", format_expr(value)),
+        Stmt::Break(_) => format!("{indent}break"),
+        Stmt::Continue(_) => format!("{indent}continue"),
         Stmt::If {
             condition,
             then_body,
@@ -187,7 +206,7 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                     format!(
                         "{}{}:\n{}",
                         "    ".repeat(indent_level + 1),
-                        format_expr(&arm.pattern),
+                        format_match_pattern(&arm.pattern),
                         format_block(&arm.body, indent_level + 2)
                     )
                 })
@@ -220,8 +239,37 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
     }
 }
 
+fn format_match_pattern(pattern: &MatchPattern) -> String {
+    match pattern {
+        MatchPattern::EnumVariant {
+            enum_name,
+            variant,
+            bindings,
+            ..
+        } => {
+            if bindings.is_empty() {
+                format!("{enum_name}.{variant}")
+            } else {
+                format!("{enum_name}.{variant}({})", bindings.join(", "))
+            }
+        }
+    }
+}
+
 fn format_type_ref(ty: &TypeRef) -> String {
-    ty.name.clone()
+    if ty.args.is_empty() {
+        ty.name.clone()
+    } else {
+        format!(
+            "{}[{}]",
+            ty.name,
+            ty.args
+                .iter()
+                .map(format_type_ref)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
 }
 
 fn format_expr(expr: &Expr) -> String {
@@ -233,6 +281,14 @@ fn format_expr(expr: &Expr) -> String {
         Expr::List { items, .. } => format!(
             "[{}]",
             items.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+        ),
+        Expr::Dict { entries, .. } => format!(
+            "{{{}}}",
+            entries
+                .iter()
+                .map(format_dict_entry)
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         Expr::Call { callee, args, .. } => format!(
             "{callee}({})",
@@ -254,7 +310,11 @@ fn format_expr(expr: &Expr) -> String {
         }
         Expr::Go { value, .. } => format!("go {}", format_expr(value)),
         Expr::Await { value, .. } => format!("await {}", format_expr(value)),
-        Expr::Unary { op, value, .. } => format!("{} {}", format_unary_op(*op), format_expr(value)),
+        Expr::Propagate { value, .. } => format!("{}?", format_expr(value)),
+        Expr::Unary { op, value, .. } => match op {
+            UnaryOp::Not => format!("not {}", format_expr(value)),
+            UnaryOp::Neg => format!("-{}", format_expr(value)),
+        },
         Expr::Binary { lhs, op, rhs, .. } => format!(
             "{} {} {}",
             format_expr(lhs),
@@ -264,11 +324,17 @@ fn format_expr(expr: &Expr) -> String {
     }
 }
 
+fn format_dict_entry(entry: &DictEntry) -> String {
+    format!("{}: {}", format_expr(&entry.key), format_expr(&entry.value))
+}
+
 fn format_op(op: BinaryOp) -> &'static str {
     match op {
         BinaryOp::Add => "+",
         BinaryOp::Sub => "-",
         BinaryOp::Mul => "*",
+        BinaryOp::Div => "/",
+        BinaryOp::Mod => "%",
         BinaryOp::And => "and",
         BinaryOp::Or => "or",
         BinaryOp::Eq => "==",
@@ -277,12 +343,6 @@ fn format_op(op: BinaryOp) -> &'static str {
         BinaryOp::Le => "<=",
         BinaryOp::Gt => ">",
         BinaryOp::Ge => ">=",
-    }
-}
-
-fn format_unary_op(op: UnaryOp) -> &'static str {
-    match op {
-        UnaryOp::Not => "not",
     }
 }
 
@@ -356,6 +416,32 @@ mod tests {
     }
 
     #[test]
+    fn formatter_supports_break_and_continue() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn main()->int:\n    mut total=0\n    for value in [1,2,3]:\n        if value==2:\n            continue\n        total=total+value\n        if total>3:\n            break\n    return total\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn main() -> int:\n    mut total = 0\n    for value in [1, 2, 3]:\n        if value == 2:\n            continue\n        total = total + value\n        if total > 3:\n            break\n    return total\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_dict_literals() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn main()->int:\n    values:dict={\"ok\":2,\"warn\":3}\n    return values[\"ok\"]+len(values)\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn main() -> int:\n    values: dict = {\"ok\": 2, \"warn\": 3}\n    return values[\"ok\"] + len(values)\n"
+        );
+    }
+
+    #[test]
     fn formatter_supports_enums_and_variant_references() {
         let source = SourceFile::new(
             "fmt.gof",
@@ -382,6 +468,19 @@ mod tests {
     }
 
     #[test]
+    fn formatter_supports_payload_enums_and_patterns() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "enum JobState:\n    Ready\n    Running(pid:int)\n    Failed(message:string)\n\nfn main()->int:\n    state=JobState.Running(41)\n    match state:\n        JobState.Ready:\n            return 0\n        JobState.Running(pid):\n            return pid\n        JobState.Failed(message):\n            return len(message)\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "enum JobState:\n    Ready\n    Running(pid: int)\n    Failed(message: string)\n\nfn main() -> int:\n    state = JobState.Running(41)\n    match state:\n        JobState.Ready:\n            return 0\n        JobState.Running(pid):\n            return pid\n        JobState.Failed(message):\n            return len(message)\n"
+        );
+    }
+
+    #[test]
     fn formatter_supports_receiver_methods() {
         let source = SourceFile::new(
             "fmt.gof",
@@ -404,6 +503,19 @@ mod tests {
         assert_eq!(
             formatted,
             "fn main() -> int:\n    left: channel = channel()\n    right: channel = channel()\n    select:\n        value = recv(left):\n            return value\n        recv(right):\n            return 2\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_result_annotations_and_propagation() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn parse_port()->Result[int,string]:\n    return Result.Ok(41)\n\nfn main()->Result[int,string]:\n    port=parse_port()?\n    return Result.Ok(port+1)\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn parse_port() -> Result[int, string]:\n    return Result.Ok(41)\n\nfn main() -> Result[int, string]:\n    port = parse_port()?\n    return Result.Ok(port + 1)\n"
         );
     }
 }

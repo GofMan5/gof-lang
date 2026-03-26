@@ -1,0 +1,2 @@
+fn main() -> unit:
+    close(1)

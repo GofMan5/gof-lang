@@ -1,0 +1,7 @@
+fn first(values: list[int]) -> int:
+    return values[0]
+
+fn main() -> Result[dict[int], RuntimeError]:
+    ch: channel[int] = channel()
+    send(ch, first([7, 9]))?
+    return Result.Ok({"ok": recv(ch)?})

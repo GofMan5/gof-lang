@@ -1,0 +1,7 @@
+fn main() -> int:
+    line = trim("  gof,lang  ")
+    parts = split(line, ",")
+    merged = join(parts, "-")
+    assert(starts_with(merged, "gof"), "expected gof prefix")
+    assert(ends_with(merged, "lang"), "expected lang suffix")
+    return len(merged) + len(parts)

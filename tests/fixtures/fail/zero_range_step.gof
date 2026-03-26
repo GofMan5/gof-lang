@@ -1,0 +1,2 @@
+fn main() -> list:
+    return range(0, 5, 0)

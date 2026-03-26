@@ -10,16 +10,27 @@ Today the core scalar values are:
 - `int`
 - `string`
 - `bool`
+- `json`
 
 There is also `unit`, which represents "no meaningful value", and runtime-level
-values such as tasks and channels that appear through specific language features.
+values such as tasks, channels, and cancellation tokens that appear through
+specific language features.
+
+When you need explicit type contracts on built-in containers and async values,
+the current bootstrap surface supports parameterized annotations such as:
+
+- `list[int]`
+- `dict[int]`
+- `channel[int]`
+- `task[int]`
+- `Result[int, RuntimeError]`
 
 ## Lists
 
 Lists are the first built-in sequential container.
 
 ```gof
-values = [10, 20, 30]
+values: list[int] = [10, 20, 30]
 return values[0] + len(values)
 ```
 
@@ -37,29 +48,55 @@ The important teaching point is this:
 
 ## Dicts
 
-The current dict baseline is explicit and immutable-friendly:
+The current dict baseline is explicit, immutable-friendly, and now has literal
+syntax for the common case:
 
 ```gof
-mut store: dict = dict()
-store = insert(store, "ok", 7)
-store = insert(store, "warn", 2)
+store: dict[int] = {"ok": 7, "warn": 2}
 return store["ok"] + len(store)
+```
+
+When you need to build a new dict step by step, `insert(...)` is still the
+honest tool:
+
+```gof
+base: dict[int] = {"ok": 7}
+next = insert(base, "warn", 2)
+return next["warn"]
 ```
 
 Current dict rules:
 
-- keys are strings
-- `dict()` creates an empty dict
+- keys currently must resolve to `string`
+- literal values currently must stay type-compatible
+- `dict()` creates an empty dict when you want to start from nothing
 - `insert(dict, key, value)` returns a new dict
+- `keys(dict)` returns `list[string]` in deterministic key order
+- `values(dict)` returns values in the same deterministic key order
 - indexing requires an existing key
 - `contains(dict, "key")` checks key membership
 - `len(dict)` returns entry count
 
 Current non-goals:
 
-- no dict literals yet
 - no non-string keys
-- no user-visible generic dict syntax
+- no user-defined generic dict syntax
+- no hidden mutation behind literal or helper syntax
+
+## Numeric expressions
+
+The bootstrap numeric surface now supports:
+
+```gof
+value = -(8 + 2) / 5
+rest = value % 2
+```
+
+Current rules:
+
+- unary `-` requires an `int`
+- `/` and `%` are integer-only
+- division and modulo by zero are rejected at runtime
 
 ## Structs
 
@@ -85,22 +122,72 @@ Structs are how you model data that has named parts and stable shape.
 
 ## Enums
 
-Enums are the current way to model finite state.
+Enums are the current way to model finite state, and they now support both
+unit variants and payload variants.
 
 ```gof
-enum Status:
+enum JobState:
     Ready
-    Busy
-    Failed
+    Running(pid: int)
+    Failed(message: string)
 ```
 
 Current enum rules:
 
-- variants are unit variants only
 - variant names must be unique inside the enum
+- payload fields are named and typed in the declaration
+- unit variants are referenced as `EnumName.Variant`
+- payload variants are constructed as `EnumName.Variant(value, ...)`
 - enum equality currently works only within the same enum type
 
 Use `enum` when the question is "which state am I in?" rather than "which fields do I have?"
+
+## Result values
+
+`Result[T, E]` is the current recoverable-error baseline.
+
+```gof
+fn halve(value: int) -> Result[int, string]:
+    if value % 2 != 0:
+        return Result.Err("odd")
+    return Result.Ok(value / 2)
+```
+
+Current rules:
+
+- `Result[T, E]` is a built-in parameterized type
+- `Result.Ok(value)` constructs a success payload
+- `Result.Err(error)` constructs an error payload
+- result values can be handled with exhaustive `match`
+- postfix `expr?` unwraps `Ok(value)` and returns early on `Err(error)`
+- the enclosing function must return a compatible `Result[_, E]`
+
+Operational helpers now use the same contract:
+
+- `env("NAME")` returns `Result[string, RuntimeError]`
+- `read_file(path)` returns `Result[string, RuntimeError]`
+- `recv(channel)` returns `Result[T, RuntimeError]`
+- JSON and HTTP helpers also return `Result`
+
+That matters because error propagation stays uniform across CLI tools, file work,
+concurrency, and bot-style network code.
+
+## RuntimeError
+
+`RuntimeError` is the built-in operational error enum.
+
+It currently includes:
+
+- `EnvMissing(name: string)`
+- `Io(message: string)`
+- `ChannelClosed`
+- `Cancelled`
+- `Json(message: string)`
+- `HttpRequest(message: string)`
+- `HttpStatus(code: int, body: string)`
+
+This is the glue that keeps `?` useful across different operational helpers
+without inventing hidden conversion rules during bootstrap.
 
 ## Methods
 
@@ -127,5 +214,6 @@ A useful rule of thumb:
 - use dicts for string-keyed lookup tables
 - use structs for named shaped data
 - use enums for closed state sets
+- use `Result` for explicit recoverable success/error flow
 
 That distinction makes later control flow and concurrency code much clearer.

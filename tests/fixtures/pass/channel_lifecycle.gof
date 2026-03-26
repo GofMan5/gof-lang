@@ -1,0 +1,24 @@
+fn main() -> int:
+    ch: channel[int] = channel()
+    close(ch)
+    outcome = recv(ch)
+
+    match outcome:
+        Result.Ok(value):
+            return value
+        Result.Err(error):
+            match error:
+                RuntimeError.ChannelClosed:
+                    return 7
+                RuntimeError.Cancelled:
+                    return 0
+                RuntimeError.EnvMissing(name):
+                    return len(name) - len(name)
+                RuntimeError.Io(message):
+                    return len(message) - len(message)
+                RuntimeError.Json(message):
+                    return len(message) - len(message)
+                RuntimeError.HttpRequest(message):
+                    return len(message) - len(message)
+                RuntimeError.HttpStatus(code, body):
+                    return code - code + len(body) - len(body)

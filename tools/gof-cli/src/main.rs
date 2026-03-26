@@ -33,8 +33,8 @@ enum Command {
 #[derive(Args)]
 struct FileInput {
     input: PathBuf,
-    #[arg(short, long)]
-    output: Option<PathBuf>,
+    #[arg(last = true)]
+    args: Vec<String>,
 }
 
 #[derive(Args)]
@@ -121,6 +121,7 @@ fn build(args: BuildArgs) -> Result<()> {
 }
 
 fn run_file(args: FileInput) -> Result<()> {
+    let _program_args = &args.args;
     let source = SourceFile::from_path(&args.input)?;
     let result = run_module_with_output(&source).map_err(|error| render_error(&source, error))?;
     if !result.stdout.is_empty() {
@@ -354,34 +355,53 @@ fn collect_gof_files(root: &Path, fixtures: &mut Vec<PathBuf>) -> Result<()> {
 
 fn run_fixture(path: &Path) -> Result<()> {
     let source = SourceFile::from_path(path)?;
-    let is_fail = path
+    let is_runtime_fail = path
         .components()
-        .any(|component| component.as_os_str() == "fail");
+        .any(|component| component.as_os_str() == "runtime-fail");
+    let is_compile_fail = path
+        .components()
+        .any(|component| component.as_os_str() == "fail")
+        && !is_runtime_fail;
+
     match compile_source(&source, CompileMode::Executable) {
-        Ok(_) if is_fail => bail!("expected fixture to fail"),
+        Ok(_) if is_compile_fail => bail!("expected fixture to fail during compilation"),
+        Ok(_) if is_runtime_fail => match run_module_with_output(&source) {
+            Ok(result) => bail!(
+                "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
+                result.stdout,
+                result.value.cli_text()
+            ),
+            Err(error) => validate_expected_diagnostics(path, &error),
+        },
         Ok(_) => Ok(()),
-        Err(error) if is_fail => {
-            let expected = path.with_extension("diag");
-            if expected.exists() {
-                let expected_contents = fs::read_to_string(&expected)?;
-                let expected_codes = expected_contents
-                    .lines()
-                    .map(str::trim)
-                    .filter(|line| !line.is_empty())
-                    .collect::<Vec<_>>();
-                let actual_codes = error.codes();
-                if actual_codes != expected_codes {
-                    bail!(
-                        "diagnostic mismatch: expected {:?}, got {:?}",
-                        expected_codes,
-                        actual_codes
-                    );
-                }
-            }
-            Ok(())
-        }
+        Err(error) if is_compile_fail => validate_expected_diagnostics(path, &error),
+        Err(error) if is_runtime_fail => Err(anyhow!(
+            "expected runtime failure, but compilation failed instead:\n{}",
+            render_error(&source, error)
+        )),
         Err(error) => Err(render_error(&source, error)),
     }
+}
+
+fn validate_expected_diagnostics(path: &Path, error: &Diagnostics) -> Result<()> {
+    let expected = path.with_extension("diag");
+    if expected.exists() {
+        let expected_contents = fs::read_to_string(&expected)?;
+        let expected_codes = expected_contents
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>();
+        let actual_codes = error.codes();
+        if actual_codes != expected_codes {
+            bail!(
+                "diagnostic mismatch: expected {:?}, got {:?}",
+                expected_codes,
+                actual_codes
+            );
+        }
+    }
+    Ok(())
 }
 
 fn render_error(source: &SourceFile, error: Diagnostics) -> anyhow::Error {

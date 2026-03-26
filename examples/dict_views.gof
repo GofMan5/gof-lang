@@ -1,0 +1,12 @@
+fn main() -> int:
+    metrics: dict = {"critical": 5, "ok": 7, "warn": 2}
+    names = keys(metrics)
+    counts = values(metrics)
+    assert(names[0] == "critical", "expected deterministic order")
+
+    mut total = 0
+    for name in names:
+        total = total + len(name)
+    for count in counts:
+        total = total + count
+    return total

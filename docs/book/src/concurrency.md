@@ -13,7 +13,7 @@ fn square(x: int) -> int:
     return x * x
 
 fn main() -> int:
-    job = go square(12)
+    job: task[int] = go square(12)
     return await job
 ```
 
@@ -28,49 +28,67 @@ The mental model is:
 - `go` creates concurrent work
 - `await` joins that work back into the current flow
 
-## Step 2: channels
+## Step 2: channels and explicit lifecycle
 
 ```gof
-fn main() -> int:
-    ch: channel = channel()
-    send(ch, 4)
-    return recv(ch) + 1
+fn main() -> Result[int, RuntimeError]:
+    ch: channel[int] = channel()
+    send(ch, 4)?
+    return recv(ch)
 ```
 
 Current channel baseline:
 
+- `channel[T]` is a real parameterized builtin type annotation
 - `channel()` creates a bootstrap channel
-- `send(channel, value)` sends one value
-- `recv(channel)` receives one value
+- `close(channel)` closes it explicitly
+- `send(channel, value)` returns `Result[unit, RuntimeError]`
+- `recv(channel)` returns `Result[T, RuntimeError]`
 
-Important honesty note:
+With channel lifecycle, the bootstrap runtime already distinguishes:
 
-> The current source language does not yet expose explicit `channel[T]` syntax.
-> The runtime and type layer already know about channel values, but the public type
-> surface for channel payloads is still intentionally narrow.
+- successful send/receive
+- closed channel
+- cancelled wait
 
 ## Step 3: `select`
 
 ```gof
-fn main() -> int:
-    left: channel = channel()
-    right: channel = channel()
-    send(right, 8)
+fn main() -> Result[int, RuntimeError]:
+    left: channel[int] = channel()
+    right: channel[int] = channel()
+    send(right, 8)?
     select:
         value = recv(left):
-            return 0
+            return Result.Ok(value? + 0)
         value = recv(right):
-            return value + 1
+            return Result.Ok(value? + 1)
 ```
 
 Current `select` contract:
 
 - only receive arms are supported
-- arms must be `recv(channel):` or `value = recv(channel):`
-- the bootstrap runtime polls arms until one receive succeeds
+- arms must be `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
+- the bootstrap runtime polls arms until one receive resolves to `Result.Ok(...)` or `Result.Err(...)`
 
 That is enough to model simple message-passing choices, which is already more honest
 than adding pretty syntax with no execution model behind it.
+
+## Step 4: cancellation
+
+```gof
+fn main() -> bool:
+    token = cancel_token()
+    cancel(token)
+    return is_cancelled(token)
+```
+
+Current cancellation baseline:
+
+- `cancel_token()` creates a cooperative token
+- `cancel(token)` marks the token as cancelled
+- `is_cancelled(token)` reports the current state
+- `send(..., token)` and `recv(..., token)` observe that token while blocking
 
 ## What is still missing
 
@@ -78,10 +96,8 @@ This is a real concurrency baseline, but not the final story.
 
 Still missing:
 
-- cancellation
-- close semantics
 - fairness guarantees
-- richer propagation rules
+- task panic and `Result` propagation hardening
 - production scheduler hardening
 
 ## The right way to read current concurrency docs

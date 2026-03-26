@@ -1,4 +1,4 @@
-fn main() -> int:
-    write_file("out.txt", "abc")
+fn main() -> Result[int, RuntimeError]:
+    write_file("out.txt", "abc")?
     assert(true, "ok")
-    return len(read_file("out.txt"))
+    return Result.Ok(len(read_file("out.txt")?))

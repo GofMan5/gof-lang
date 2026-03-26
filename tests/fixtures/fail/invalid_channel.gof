@@ -1,2 +1,2 @@
-fn main() -> unit:
+fn main() -> Result[unit, RuntimeError]:
     return send(1, 2)

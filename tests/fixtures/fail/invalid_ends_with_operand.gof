@@ -1,0 +1,2 @@
+fn main() -> bool:
+    return ends_with(false, "gof")

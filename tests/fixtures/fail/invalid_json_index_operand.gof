@@ -1,0 +1,3 @@
+fn main() -> Result[json, RuntimeError]:
+    payload = json_parse("[]")?
+    return json_index(payload, "bad")

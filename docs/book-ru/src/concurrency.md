@@ -12,7 +12,7 @@ fn square(x: int) -> int:
     return x * x
 
 fn main() -> int:
-    job = go square(12)
+    job: task[int] = go square(12)
     return await job
 ```
 
@@ -22,44 +22,72 @@ fn main() -> int:
 - результат — task value
 - `await` ждет этот task value
 
-## Шаг 2: каналы
+Ментальная модель такая:
+
+- `go` создает concurrent work
+- `await` возвращает это вычисление обратно в текущий flow
+
+## Шаг 2: каналы и явный lifecycle
 
 ```gof
-fn main() -> int:
-    ch: channel = channel()
-    send(ch, 4)
-    return recv(ch) + 1
+fn main() -> Result[int, RuntimeError]:
+    ch: channel[int] = channel()
+    send(ch, 4)?
+    return recv(ch)
 ```
 
 Текущий channel baseline:
 
+- `channel[T]` уже существует как parameterized builtin type annotation
 - `channel()` создает bootstrap channel
-- `send(channel, value)` отправляет одно значение
-- `recv(channel)` получает одно значение
+- `close(channel)` закрывает канал явно
+- `send(channel, value)` возвращает `Result[unit, RuntimeError]`
+- `recv(channel)` возвращает `Result[T, RuntimeError]`
 
-Важная честная оговорка:
+Сейчас runtime уже различает:
 
-> В source language пока нет явного `channel[T]` syntax. Runtime и type layer уже знают про channel values, но пользовательская surface-модель payload types пока еще узкая.
+- успешную отправку/получение
+- закрытый канал
+- отмененное ожидание
 
 ## Шаг 3: `select`
 
 ```gof
-fn main() -> int:
-    left: channel = channel()
-    right: channel = channel()
-    send(right, 8)
+fn main() -> Result[int, RuntimeError]:
+    left: channel[int] = channel()
+    right: channel[int] = channel()
+    send(right, 8)?
     select:
         value = recv(left):
-            return 0
+            return Result.Ok(value? + 0)
         value = recv(right):
-            return value + 1
+            return Result.Ok(value? + 1)
 ```
 
 Текущий контракт `select`:
 
 - поддерживаются только receive arms
-- arm должен быть `recv(channel):` или `value = recv(channel):`
-- bootstrap runtime опрашивает arms, пока один receive не сработает
+- arm должен быть `recv(channel):`, `value = recv(channel):`, `recv(channel, token):` или `value = recv(channel, token):`
+- bootstrap runtime опрашивает arms, пока один receive не вернет `Result.Ok(...)` или `Result.Err(...)`
+
+Этого уже хватает для честного message-passing выбора без красивого синтаксиса,
+за которым ничего нет.
+
+## Шаг 4: cancellation
+
+```gof
+fn main() -> bool:
+    token = cancel_token()
+    cancel(token)
+    return is_cancelled(token)
+```
+
+Текущий baseline cancellation:
+
+- `cancel_token()` создает cooperative token
+- `cancel(token)` переводит token в cancelled state
+- `is_cancelled(token)` читает текущее состояние
+- `send(..., token)` и `recv(..., token)` наблюдают token во время блокировки
 
 ## Чего еще не хватает
 
@@ -67,10 +95,8 @@ fn main() -> int:
 
 Еще не хватает:
 
-- cancellation
-- close semantics
 - fairness guarantees
-- richer propagation rules
+- жесткого story для task panic и `Result` propagation
 - production scheduler hardening
 
 ## Как правильно читать текущую concurrency-модель

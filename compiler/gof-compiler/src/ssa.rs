@@ -30,8 +30,10 @@ pub enum SsaInstruction {
     ConstEnumVariant {
         enum_name: String,
         variant: String,
+        args: Vec<String>,
     },
     BuildList(Vec<String>),
+    BuildDict(Vec<(String, String)>),
     BuildStruct {
         name: String,
         fields: Vec<String>,
@@ -47,6 +49,8 @@ pub enum SsaInstruction {
         mutable: bool,
         declare: bool,
     },
+    Break,
+    Continue,
     Call {
         callee: String,
         args: Vec<String>,
@@ -61,6 +65,9 @@ pub enum SsaInstruction {
     },
     Await {
         task: String,
+    },
+    Propagate {
+        value: String,
     },
     Unary {
         op: UnaryOp,
@@ -89,7 +96,9 @@ pub enum SsaInstruction {
         value: String,
     },
     MatchArm {
-        pattern: String,
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
     },
     EndMatch,
     BeginSelect,
@@ -141,17 +150,28 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             dest,
             enum_name,
             variant,
+            args,
         } => SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::ConstEnumVariant {
                 enum_name: enum_name.clone(),
                 variant: variant.clone(),
+                args: args.iter().map(|arg| format!("%{arg}")).collect(),
             },
         },
         MirInstruction::BuildList { dest, items } => SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::BuildList(
                 items.iter().map(|item| format!("%{item}")).collect(),
+            ),
+        },
+        MirInstruction::BuildDict { dest, entries } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::BuildDict(
+                entries
+                    .iter()
+                    .map(|(key, value)| (format!("%{key}"), format!("%{value}")))
+                    .collect(),
             ),
         },
         MirInstruction::BuildStruct { dest, name, fields } => SsaValue {
@@ -190,6 +210,14 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
                 declare: *declare,
             },
         },
+        MirInstruction::Break => SsaValue {
+            name: "%break".to_string(),
+            instruction: SsaInstruction::Break,
+        },
+        MirInstruction::Continue => SsaValue {
+            name: "%continue".to_string(),
+            instruction: SsaInstruction::Continue,
+        },
         MirInstruction::Call { dest, callee, args } => SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::Call {
@@ -219,6 +247,12 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             name: format!("%{dest}"),
             instruction: SsaInstruction::Await {
                 task: format!("%{task}"),
+            },
+        },
+        MirInstruction::Propagate { dest, value } => SsaValue {
+            name: format!("%{dest}"),
+            instruction: SsaInstruction::Propagate {
+                value: format!("%{value}"),
             },
         },
         MirInstruction::Unary { dest, op, value } => SsaValue {
@@ -277,10 +311,16 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
                 value: format!("%{value}"),
             },
         },
-        MirInstruction::MatchArm { pattern } => SsaValue {
-            name: format!("%match_arm_{pattern}"),
+        MirInstruction::MatchArm {
+            enum_name,
+            variant,
+            bindings,
+        } => SsaValue {
+            name: format!("%match_arm_{enum_name}_{variant}"),
             instruction: SsaInstruction::MatchArm {
-                pattern: format!("%{pattern}"),
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                bindings: bindings.clone(),
             },
         },
         MirInstruction::EndMatch => SsaValue {

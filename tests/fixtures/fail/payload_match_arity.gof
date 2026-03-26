@@ -1,0 +1,8 @@
+enum JobState:
+    Running(pid: int)
+
+fn main() -> int:
+    state: JobState = JobState.Running(7)
+    match state:
+        JobState.Running(pid, extra):
+            return pid

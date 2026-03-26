@@ -1,0 +1,2 @@
+fn main() -> string:
+    return to_string(channel())

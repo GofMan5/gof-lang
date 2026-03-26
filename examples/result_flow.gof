@@ -1,0 +1,26 @@
+enum MathError:
+    TooSmall
+    NotEven(value: int)
+
+fn halve(value: int) -> Result[int, MathError]:
+    if value < 2:
+        return Result.Err(MathError.TooSmall)
+    if value % 2 != 0:
+        return Result.Err(MathError.NotEven(value))
+    return Result.Ok(value / 2)
+
+fn compute() -> Result[int, MathError]:
+    half = halve(84)?
+    return Result.Ok(half)
+
+fn main() -> int:
+    outcome: Result[int, MathError] = compute()
+    match outcome:
+        Result.Ok(value):
+            return value
+        Result.Err(error):
+            match error:
+                MathError.TooSmall:
+                    return 0
+                MathError.NotEven(value):
+                    return value

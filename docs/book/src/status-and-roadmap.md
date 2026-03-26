@@ -14,16 +14,19 @@ or believe promises that have not been earned yet.
 The current repo already supports:
 
 - typed functions
-- structs, enums, and methods
+- structs, payload enums, and methods
 - exhaustive `match`
-- lists and dicts
+- lists, dicts, and parameterized builtin types
+- `Result[T, E]` and postfix `?`
 - `assert`
-- file I/O
-- channels and `select`
+- process, filesystem, and path helpers
+- JSON helpers and bootstrap HTTP GET
+- channels, `close`, cancellation tokens, and `select`
 - `go` / `await`
 - a real CLI and a bootstrap-native build path
 
 That is already enough to teach real semantics and run non-trivial examples.
+It is also enough to express a first long-polling Telegram bot baseline.
 
 ## Still in progress
 

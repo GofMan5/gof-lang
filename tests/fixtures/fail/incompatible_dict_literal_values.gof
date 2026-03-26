@@ -1,0 +1,2 @@
+fn main() -> dict:
+    return {"ok": 1, "bad": "oops"}

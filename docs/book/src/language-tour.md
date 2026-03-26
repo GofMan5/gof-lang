@@ -16,6 +16,7 @@ That means the language is currently built around:
 - immutable bindings by default
 - visible mutation through `mut`
 - explicit data modeling with `struct` and `enum`
+- explicit loop control through `break` and `continue`
 - explicit concurrency with tasks, channels, and `select`
 
 ## Functions are the main execution unit
@@ -59,12 +60,15 @@ The current bootstrap subset already supports:
 - `int`
 - `string`
 - `bool`
+- `json`
 - lists
 - dicts
 - user-defined structs
 - user-defined enums
+- `Result[T, E]`
 - task values
 - channel values
+- cancellation-token values
 - `unit`
 
 That is enough to write non-trivial examples, but not enough to pretend the full
@@ -79,18 +83,54 @@ Today the bootstrap language surface includes:
 - `assert(...)`
 - `append(...)`
 - `contains(...)`
+- `trim(...)`
+- `split(...)`
+- `join(...)`
+- `starts_with(...)`
+- `ends_with(...)`
+- `parse_int(...)`
+- `to_string(...)`
+- `range(...)`
+- `argv()`
+- `env(...)`
+- `cwd()`
 - `read_file(...)`
 - `write_file(...)`
+- `exists(...)`
+- `read_dir(...)`
+- `mkdir(...)`
+- `remove_file(...)`
+- `path_join(...)`
+- `path_dir(...)`
+- `path_base(...)`
+- `path_ext(...)`
 - `dict()`
 - `insert(...)`
+- `keys(...)`
+- `values(...)`
 - `channel()`
+- `close(...)`
 - `send(...)`
 - `recv(...)`
+- `cancel_token()`
+- `cancel(...)`
+- `is_cancelled(...)`
+- `json_parse(...)`
+- `json_stringify(...)`
+- `json_get(...)`
+- `json_index(...)`
+- `json_len(...)`
+- `json_string(...)`
+- `json_int(...)`
+- `http_get(...)`
 
 The small size is deliberate.
 
 > `gof` would rather have a small standard-library surface with explicit behavior
 > than a large surface that teaches the wrong semantics.
+
+The same rule applies to data literals. Lists and dicts should be readable
+without pretending that allocation or mutation disappeared.
 
 ## A tiny program that already feels like `gof`
 
@@ -116,3 +156,10 @@ This one example already shows the current language shape:
 - explicit return value
 
 That combination is closer to what `gof` wants to be than any single syntax feature.
+
+At the current stage, that same design style already extends to operational code:
+
+- side effects stay explicit through helper calls
+- recoverable failures flow through `Result`
+- concurrency stays message-passing-first
+- bot-oriented programs can be expressed without pretending a web framework already exists

@@ -159,6 +159,68 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_parameterized_builtin_type_annotations() {
+        let source = SourceFile::new(
+            "typed_params.gof",
+            "fn first(values: list[int]) -> int:\n    return values[0]\nfn main() -> Result[dict[int], RuntimeError]:\n    ch: channel[int] = channel()\n    send(ch, first([7, 9]))?\n    return Result.Ok({\"ok\": recv(ch)?})\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(
+            compiled.typed_hir.functions[0].params[0].ty,
+            Type::List(Box::new(Type::Int))
+        );
+        assert_eq!(
+            compiled.typed_hir.functions[1].return_type,
+            Type::Result(
+                Box::new(Type::Dict(Box::new(Type::Int))),
+                Box::new(Type::Enum("RuntimeError".to_string()))
+            )
+        );
+        assert!(matches!(
+            &compiled.typed_hir.functions[1].body[1],
+            crate::typed_hir::TypedStmt::Expr(_)
+        ));
+    }
+
+    #[test]
+    fn pipeline_supports_unary_minus_division_and_modulo() {
+        let source = SourceFile::new(
+            "numeric.gof",
+            "fn main() -> int:\n    base = -6 / 3\n    return base % 4\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Int);
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    value.instruction,
+                    SsaInstruction::Unary {
+                        op: crate::ast::UnaryOp::Neg,
+                        ..
+                    }
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    value.instruction,
+                    SsaInstruction::Binary {
+                        op: crate::ast::BinaryOp::Div | crate::ast::BinaryOp::Mod,
+                        ..
+                    }
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_lists_and_indexing() {
         let source = SourceFile::new(
             "lists.gof",
@@ -186,6 +248,54 @@ mod tests {
                 .iter()
                 .any(|value| matches!(value.instruction, SsaInstruction::Index { .. }))
         );
+    }
+
+    #[test]
+    fn pipeline_supports_dict_literals() {
+        let source = SourceFile::new(
+            "dicts.gof",
+            "fn main() -> int:\n    values: dict = {\"ok\": 2, \"warn\": 3}\n    return values[\"ok\"] + len(values)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Int);
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Dict(Box::new(Type::Int)));
+            }
+            other => panic!("expected dict bind statement, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::BuildDict(_)))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_dict_view_builtins() {
+        let source = SourceFile::new(
+            "dict_views.gof",
+            "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    return len(names) + counts[0]\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.functions[0].return_type, Type::Int);
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+            }
+            other => panic!("expected keys bind statement, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[2] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected values bind statement, got {other:?}"),
+        }
     }
 
     #[test]
@@ -318,6 +428,39 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_payload_enums_and_destructuring_match() {
+        let source = SourceFile::new(
+            "payload_match.gof",
+            "enum JobState:\n    Ready\n    Running(pid: int)\n    Failed(message: string)\n\nfn score(state: JobState) -> int:\n    match state:\n        JobState.Ready:\n            return 0\n        JobState.Running(pid):\n            return pid\n        JobState.Failed(message):\n            return len(message)\n\nfn main() -> int:\n    state: JobState = JobState.Running(42)\n    return score(state)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.typed_hir.enums[0].variants[1].name, "Running");
+        assert_eq!(compiled.typed_hir.enums[0].variants[1].fields.len(), 1);
+        assert!(compiled.ssa.functions[1].values.iter().any(|value| {
+            matches!(
+                &value.instruction,
+                SsaInstruction::ConstEnumVariant {
+                    enum_name,
+                    variant,
+                    args,
+                } if enum_name == "JobState" && variant == "Running" && args.len() == 1
+            )
+        }));
+        assert!(compiled.ssa.functions[0].values.iter().any(|value| {
+            matches!(
+                &value.instruction,
+                SsaInstruction::MatchArm {
+                    enum_name,
+                    variant,
+                    bindings,
+                } if enum_name == "JobState" && variant == "Running" && bindings == &vec!["pid".to_string()]
+            )
+        }));
+    }
+
+    #[test]
     fn pipeline_supports_receiver_methods() {
         let source = SourceFile::new(
             "methods.gof",
@@ -400,10 +543,112 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_string_helper_builtins() {
+        let source = SourceFile::new(
+            "text_helpers.gof",
+            "fn main() -> int:\n    line = trim(\"  gof,lang  \")\n    parts = split(line, \",\")\n    merged = join(parts, \"-\")\n    if starts_with(merged, \"gof\") and ends_with(merged, \"lang\"):\n        return len(merged) + len(parts)\n    return 0\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+            }
+            other => panic!("expected split bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "split"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "join"
+                ))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_conversion_builtins() {
+        let source = SourceFile::new(
+            "conversion_helpers.gof",
+            "fn main() -> int:\n    parsed = parse_int(trim(\" 41 \"))\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return parsed + len(rendered)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+            }
+            other => panic!("expected parse_int bind, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected to_string bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "parse_int"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "to_string"
+                ))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_range_builtin() {
+        let source = SourceFile::new(
+            "range_helpers.gof",
+            "fn main() -> int:\n    values = range(1, 7, 2)\n    mut total = 0\n    for value in values:\n        total = total + value\n    return total\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected range bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "range"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_select_and_channel_builtins() {
         let source = SourceFile::new(
             "select.gof",
-            "fn main() -> int:\n    ch: channel = channel()\n    send(ch, 7)\n    select:\n        value = recv(ch):\n            return value + 1\n",
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel()\n    send(ch, 7)?\n    select:\n        received = recv(ch):\n            match received:\n                Result.Ok(value):\n                    return Result.Ok(value + 1)\n                Result.Err(error):\n                    return Result.Err(error)\n",
         );
         let compiled =
             compile_source(&source, CompileMode::Executable).expect("compile should succeed");
@@ -450,6 +695,53 @@ mod tests {
                 .values
                 .iter()
                 .any(|value| matches!(value.instruction, SsaInstruction::EndFor))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_break_and_continue() {
+        let source = SourceFile::new(
+            "loop_control.gof",
+            "fn main() -> int:\n    mut total = 0\n    for value in [1, 2, 3, 4]:\n        if value == 2:\n            continue\n        total = total + value\n        if total > 3:\n            break\n    return total\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Break))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Continue))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_result_annotations_and_propagation() {
+        let source = SourceFile::new(
+            "result_flow.gof",
+            "enum MathError:\n    TooSmall\n    NotEven(value: int)\n\nfn halve(value: int) -> Result[int, MathError]:\n    if value < 2:\n        return Result.Err(MathError.TooSmall)\n    if value % 2 != 0:\n        return Result.Err(MathError.NotEven(value))\n    return Result.Ok(value / 2)\n\nfn compute() -> Result[int, MathError]:\n    half = halve(84)?\n    return Result.Ok(half)\n\nfn main() -> int:\n    outcome: Result[int, MathError] = compute()\n    match outcome:\n        Result.Ok(value):\n            return value\n        Result.Err(error):\n            match error:\n                MathError.TooSmall:\n                    return 0\n                MathError.NotEven(value):\n                    return value\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        let result_type = Type::Result(
+            Box::new(Type::Int),
+            Box::new(Type::Enum("MathError".to_string())),
+        );
+        assert_eq!(compiled.typed_hir.functions[0].return_type, result_type);
+        assert_eq!(compiled.typed_hir.functions[1].return_type, result_type);
+
+        assert!(
+            compiled.ssa.functions[1]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Propagate { .. }))
         );
     }
 }

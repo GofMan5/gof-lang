@@ -1,6 +1,6 @@
 # Базовая стандартная библиотека
 
-Текущий stdlib surface намеренно маленький.
+Текущий stdlib surface намеренно небольшой.
 
 Это не потому, что язык хочет остаться игрушечным. Это потому, что проект не
 хочет учить нестабильной семантике как будто она уже устоялась.
@@ -14,7 +14,8 @@ assert(true, "must stay true")
 
 `print(...)` — текущий явный output primitive.
 
-`assert(...)` важен на bootstrap-стадии, потому что дает in-language correctness tool для examples и tests, не притворяясь полноценным test framework.
+`assert(...)` важен на bootstrap-стадии, потому что дает in-language correctness tool
+для examples и tests, не притворяясь полноценным test framework.
 
 Текущие правила `assert`:
 
@@ -22,19 +23,27 @@ assert(true, "must stay true")
 - `assert(condition, "message")` добавляет сообщение
 - failed assertions превращаются в diagnostics в bootstrap runtime
 
-## File I/O
+## Process, filesystem и paths
 
 ```gof
-fn main() -> int:
-    path = "target/demo.txt"
-    write_file(path, "gof")
-    return len(read_file(path))
+fn main() -> Result[int, RuntimeError]:
+    root = cwd()?
+    path = path_join(root, "target/demo.txt")
+    write_file(path, "gof")?
+    return Result.Ok(len(read_file(path)?))
 ```
 
-Текущий file I/O intentionally direct:
+Текущий operational baseline намеренно явный:
 
-- `read_file(path)` возвращает строку
-- `write_file(path, contents)` записывает строку
+- `argv()` возвращает CLI arguments
+- `env(name)` читает одну переменную окружения
+- `cwd()` возвращает current working directory
+- `read_file(path)` и `write_file(path, contents)` используют `Result`
+- `exists(path)`, `read_dir(path)`, `mkdir(path)` и `remove_file(path)` остаются string-based
+- path helpers остаются явными через `path_join`, `path_dir`, `path_base` и `path_ext`
+
+Это не полноценная I/O-библиотека. Это минимальный baseline для реальных side effects
+в CLI tools и bot-style automation.
 
 ## Helpers для коллекций
 
@@ -49,9 +58,20 @@ has_three = contains(values, 3)
 Для dicts:
 
 ```gof
-mut store: dict = dict()
-store = insert(store, "name", 1)
-present = contains(store, "name")
+store: dict = {"critical": 5, "ok": 7}
+names = keys(store)
+counts = values(store)
+present = contains(store, "ok")
+```
+
+Для строк:
+
+```gof
+line = trim("  gof,lang  ")
+parts = split(line, ",")
+merged = join(parts, "-")
+has_prefix = starts_with(merged, "gof")
+has_suffix = ends_with(merged, "lang")
 ```
 
 Эти helpers учат важной привычке `gof`:
@@ -59,14 +79,82 @@ present = contains(store, "name")
 - helper calls должны быть явными
 - изменение формы данных должно быть видно
 - язык должен избегать скрытой неожиданной работы
+- dict views должны оставаться детерминированными и не скрывать аллокации
+- string helpers тоже не должны скрывать аллокации и странную магию
+
+Текущие правила string helpers:
+
+- `trim(text)` возвращает строку без внешних пробелов
+- `split(text, separator)` возвращает `list[string]`
+- `split` запрещает пустой разделитель в bootstrap-контракте
+- `join(parts, separator)` требует `list[string]`
+- `starts_with(text, prefix)` возвращает `bool`
+- `ends_with(text, suffix)` возвращает `bool`
+
+## JSON и HTTP
+
+```gof
+fn fetch(base: string) -> Result[string, RuntimeError]:
+    body = http_get(base + "/health")?
+    payload = json_parse(body)?
+    status = json_string(json_get(payload, "status")?)?
+    return Result.Ok(status)
+```
+
+Текущие правила JSON и HTTP:
+
+- `json_parse(text)` возвращает `Result[json, RuntimeError]`
+- `json_get(value, key)` и `json_index(value, index)` делают traversal явным
+- `json_len`, `json_string` и `json_int` делают явное typed extraction
+- `http_get(url)` — текущий bootstrap HTTP client
+- request failures и non-success HTTP statuses становятся значениями `RuntimeError`
+
+Этот слой намеренно узкий, но его уже хватает для baseline long-polling Telegram bot.
+
+## Conversion helpers
+
+```gof
+parsed = parse_int(trim(" 41 "))
+rendered = "gof-" + to_string(parsed + 1)
+```
+
+Текущие правила conversion helpers:
+
+- `parse_int(text)` требует строку и возвращает `int`
+- невалидный numeric text превращается в runtime diagnostic, а не в тихий fallback
+- `to_string(value)` требует одно printable value и возвращает `string`
+- преобразование остается явным; `gof` не учит скрытым coercions
+
+## Построение последовательностей
+
+```gof
+for value in range(5):
+    print(value)
+
+for value in range(2, 12, 4):
+    print(value)
+```
+
+Текущие правила `range`:
+
+- `range(stop)` стартует с `0` и идет с шагом `1`
+- `range(start, stop)` использует шаг `1`
+- `range(start, stop, step)` использует явный шаг
+- каждый аргумент `range` должен быть `int`
+- `range` запрещает нулевой шаг, а не угадывает, что ты имел в виду
+- `range` возвращает явный `list[int]`
 
 ## Почему stdlib пока узкая
 
-Стандартная библиотека должна расти только тогда, когда языковой контракт уже достаточно стабилен.
+Стандартная библиотека должна расти только тогда, когда языковой контракт уже
+достаточно стабилен.
 
 Это значит:
 
 - никакой декоративной surface area
-- никаких helper'ов, скрывающих surprising allocations
+- никаких helper-ов, скрывающих surprising allocations
 - никакого fake convenience, который потом мешает оптимизатору
 - никакого притворства, что экосистема больше, чем она есть
+
+Текущий stdlib уже маленький, но он учит правильному направлению: explicit helpers,
+explicit side effects и explicit data-shape operations.

@@ -1,0 +1,2 @@
+fn main() -> list:
+    return split(1, ",")

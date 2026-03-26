@@ -1,0 +1,2 @@
+fn main() -> list:
+    return keys(1)

@@ -1,0 +1,2 @@
+fn main() -> Result[json, RuntimeError]:
+    return json_get(1, "name")

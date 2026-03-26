@@ -173,6 +173,20 @@ fn lex_line(
                 ));
                 index += 1;
             }
+            '{' => {
+                tokens.push(Token::new(
+                    TokenKind::LBrace,
+                    Span::new(line_number, column, column + 1),
+                ));
+                index += 1;
+            }
+            '}' => {
+                tokens.push(Token::new(
+                    TokenKind::RBrace,
+                    Span::new(line_number, column, column + 1),
+                ));
+                index += 1;
+            }
             '.' => {
                 tokens.push(Token::new(
                     TokenKind::Dot,
@@ -259,6 +273,13 @@ fn lex_line(
                     index += 1;
                 }
             }
+            '?' => {
+                tokens.push(Token::new(
+                    TokenKind::Question,
+                    Span::new(line_number, column, column + 1),
+                ));
+                index += 1;
+            }
             '+' => {
                 tokens.push(Token::new(
                     TokenKind::Plus,
@@ -284,6 +305,20 @@ fn lex_line(
             '*' => {
                 tokens.push(Token::new(
                     TokenKind::Star,
+                    Span::new(line_number, column, column + 1),
+                ));
+                index += 1;
+            }
+            '/' => {
+                tokens.push(Token::new(
+                    TokenKind::Slash,
+                    Span::new(line_number, column, column + 1),
+                ));
+                index += 1;
+            }
+            '%' => {
+                tokens.push(Token::new(
+                    TokenKind::Percent,
                     Span::new(line_number, column, column + 1),
                 ));
                 index += 1;
@@ -325,6 +360,8 @@ fn lex_line(
                     "while" => TokenKind::While,
                     "for" => TokenKind::For,
                     "in" => TokenKind::In,
+                    "break" => TokenKind::Break,
+                    "continue" => TokenKind::Continue,
                     "go" => TokenKind::Go,
                     "return" => TokenKind::Return,
                     "struct" => TokenKind::Struct,
@@ -445,5 +482,43 @@ mod tests {
         let source = SourceFile::new("bad.gof", "fn main():\n   return 1\n");
         let diagnostics = lex(&source).expect_err("source should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF1001"]);
+    }
+
+    #[test]
+    fn lexes_numeric_surface_and_type_argument_tokens() {
+        let source = SourceFile::new(
+            "numeric.gof",
+            "fn main(values: list[int]) -> int:\n    return -6 / 3 % 2\n",
+        );
+        let tokens = lex(&source).expect("source should lex");
+
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Minus));
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Slash));
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Percent));
+        assert!(
+            tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::LBracket)
+                .count()
+                >= 1
+        );
+        assert!(
+            tokens
+                .iter()
+                .filter(|token| token.kind == TokenKind::RBracket)
+                .count()
+                >= 1
+        );
+    }
+
+    #[test]
+    fn lexes_result_propagation_tokens() {
+        let source = SourceFile::new(
+            "result.gof",
+            "fn main() -> Result[int, string]:\n    return parse()?\n",
+        );
+        let tokens = lex(&source).expect("source should lex");
+
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Question));
     }
 }

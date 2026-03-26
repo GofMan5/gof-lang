@@ -1,5 +1,7 @@
 use crate::ast::{BinaryOp, UnaryOp};
-use crate::typed_hir::{Type, TypedExpr, TypedExprKind, TypedFunction, TypedModule, TypedStmt};
+use crate::typed_hir::{
+    Type, TypedExpr, TypedExprKind, TypedFunction, TypedMatchPattern, TypedModule, TypedStmt,
+};
 use serde::Serialize;
 
 #[derive(Debug, Clone, Serialize)]
@@ -33,10 +35,15 @@ pub enum MirInstruction {
         dest: usize,
         enum_name: String,
         variant: String,
+        args: Vec<usize>,
     },
     BuildList {
         dest: usize,
         items: Vec<usize>,
+    },
+    BuildDict {
+        dest: usize,
+        entries: Vec<(usize, usize)>,
     },
     BuildStruct {
         dest: usize,
@@ -58,6 +65,8 @@ pub enum MirInstruction {
         mutable: bool,
         declare: bool,
     },
+    Break,
+    Continue,
     Call {
         dest: usize,
         callee: String,
@@ -76,6 +85,10 @@ pub enum MirInstruction {
     Await {
         dest: usize,
         task: usize,
+    },
+    Propagate {
+        dest: usize,
+        value: usize,
     },
     Unary {
         dest: usize,
@@ -106,7 +119,9 @@ pub enum MirInstruction {
         value: usize,
     },
     MatchArm {
-        pattern: usize,
+        enum_name: String,
+        variant: String,
+        bindings: Vec<String>,
     },
     EndMatch,
     BeginSelect,
@@ -186,6 +201,12 @@ impl MirBuilder {
                     declare: false,
                 });
             }
+            TypedStmt::Break => {
+                self.instructions.push(MirInstruction::Break);
+            }
+            TypedStmt::Continue => {
+                self.instructions.push(MirInstruction::Continue);
+            }
             TypedStmt::If {
                 condition,
                 then_body,
@@ -225,8 +246,8 @@ impl MirBuilder {
                 let value = self.lower_expr(value);
                 self.instructions.push(MirInstruction::BeginMatch { value });
                 for arm in arms {
-                    let pattern = self.lower_expr(&arm.pattern);
-                    self.instructions.push(MirInstruction::MatchArm { pattern });
+                    let pattern = self.lower_match_pattern(&arm.pattern);
+                    self.instructions.push(pattern);
                     self.lower_block(&arm.body);
                 }
                 self.instructions.push(MirInstruction::EndMatch);
@@ -284,12 +305,21 @@ impl MirBuilder {
                 });
                 dest
             }
-            TypedExprKind::EnumVariant { enum_name, variant } => {
+            TypedExprKind::EnumVariant {
+                enum_name,
+                variant,
+                args,
+            } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.lower_expr(arg))
+                    .collect::<Vec<_>>();
                 let dest = self.alloc();
                 self.instructions.push(MirInstruction::ConstEnumVariant {
                     dest,
                     enum_name: enum_name.clone(),
                     variant: variant.clone(),
+                    args,
                 });
                 dest
             }
@@ -301,6 +331,16 @@ impl MirBuilder {
                 let dest = self.alloc();
                 self.instructions
                     .push(MirInstruction::BuildList { dest, items });
+                dest
+            }
+            TypedExprKind::Dict { entries } => {
+                let entries = entries
+                    .iter()
+                    .map(|entry| (self.lower_expr(&entry.key), self.lower_expr(&entry.value)))
+                    .collect::<Vec<_>>();
+                let dest = self.alloc();
+                self.instructions
+                    .push(MirInstruction::BuildDict { dest, entries });
                 dest
             }
             TypedExprKind::StructInit { name, args } => {
@@ -393,6 +433,13 @@ impl MirBuilder {
                 self.instructions.push(MirInstruction::Await { dest, task });
                 dest
             }
+            TypedExprKind::Propagate { value } => {
+                let value = self.lower_expr(value);
+                let dest = self.alloc();
+                self.instructions
+                    .push(MirInstruction::Propagate { dest, value });
+                dest
+            }
             TypedExprKind::Unary { op, value } => {
                 let value = self.lower_expr(value);
                 let dest = self.alloc();
@@ -422,5 +469,23 @@ impl MirBuilder {
         let current = self.next_temp;
         self.next_temp += 1;
         current
+    }
+
+    fn lower_match_pattern(&mut self, pattern: &TypedMatchPattern) -> MirInstruction {
+        match pattern {
+            TypedMatchPattern::EnumVariant {
+                enum_name,
+                variant,
+                bindings,
+                ..
+            } => MirInstruction::MatchArm {
+                enum_name: enum_name.clone(),
+                variant: variant.clone(),
+                bindings: bindings
+                    .iter()
+                    .map(|binding| binding.name.clone())
+                    .collect(),
+            },
+        }
     }
 }

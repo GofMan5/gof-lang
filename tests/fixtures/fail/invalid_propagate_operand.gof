@@ -1,0 +1,3 @@
+fn main() -> Result[int, string]:
+    value = 1?
+    return Result.Ok(value)

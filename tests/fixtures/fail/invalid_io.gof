@@ -1,2 +1,2 @@
-fn main() -> string:
+fn main() -> Result[string, RuntimeError]:
     return read_file(1)

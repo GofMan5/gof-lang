@@ -62,8 +62,38 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3041`: invalid operand for builtin `assert`
 - `GOF3042`: assertion failed at runtime
 - `GOF3043`: invalid operand for bootstrap file I/O builtins
-- `GOF3044`: bootstrap file I/O operation failed
 - `GOF3045`: invalid operand for bootstrap dict insert
 - `GOF3046`: invalid channel operation
 - `GOF3047`: invalid `select` contract or arm
 - `GOF3048`: invalid iterable operand for `for`
+- `GOF3049`: invalid dict literal key type
+- `GOF3050`: incompatible dict literal value types
+- `GOF3051`: invalid operand for builtin `keys`
+- `GOF3052`: invalid operand for builtin `values`
+- `GOF3053`: invalid `break` outside a loop
+- `GOF3054`: invalid `continue` outside a loop
+- `GOF3055`: invalid operand or contract for builtin `split`
+- `GOF3056`: invalid operand for builtin `join`
+- `GOF3057`: invalid operand for builtin `trim`
+- `GOF3058`: invalid operand for builtin `starts_with`
+- `GOF3059`: invalid operand for builtin `ends_with`
+- `GOF3060`: invalid operand for builtin `parse_int`
+- `GOF3061`: `parse_int` runtime conversion failed
+- `GOF3062`: invalid operand for builtin `to_string`
+- `GOF3063`: invalid operand for builtin `range`
+- `GOF3064`: invalid zero-step contract for builtin `range`
+- `GOF3065`: invalid operand for unary `-`
+- `GOF3066`: invalid operands for integer arithmetic
+- `GOF3067`: invalid type annotation arity for builtin parameterized types
+- `GOF3068`: division or modulo by zero at runtime
+- `GOF3069`: invalid payload arity for an enum variant constructor
+- `GOF3071`: invalid payload binding arity in a `match` arm
+- `GOF3072`: invalid builtin `Result` variant reference
+- `GOF3073`: invalid payload arity for a builtin `Result` variant constructor
+- `GOF3074`: invalid operand for postfix `?`
+- `GOF3075`: postfix `?` used outside a compatible `Result` return contract
+- `GOF3076`: invalid string contract for process, path, JSON, or HTTP helpers
+- `GOF3081`: invalid operand for builtin `close`
+- `GOF3082`: invalid operand for cancellation-token-aware builtins
+- `GOF3083`: invalid operand for JSON helpers
+- `GOF3084`: invalid JSON index type

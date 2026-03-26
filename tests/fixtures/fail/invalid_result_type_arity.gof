@@ -1,0 +1,3 @@
+fn main() -> int:
+    value: Result[int] = Result.Ok(1)
+    return 0

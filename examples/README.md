@@ -12,11 +12,22 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `calculator.gof`: typed functions, mutable bindings, arithmetic
 - `factorial.gof`: `while`, `if`, typed locals, control-flow return contract
 - `for_report.gof`: `for ... in ...` over lists, strings, and dict keys
+- `break_continue.gof`: loop control through `break` and `continue`
 - `hello_print.gof`: builtin `print(...)` plus normal return value rendering
-- `io_roundtrip.gof`: bootstrap file I/O plus `assert(...)`
+- `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
-- `channel_select.gof`: channels, `send`, `recv`, and `select`
-- `dict_report.gof`: `dict`, `insert`, dict indexing, and key membership
+- `channel_select.gof`: channels, `Result`-based `send`/`recv`, and `select`
+- `channel_lifecycle.gof`: `close(channel)`, `recv(...)`, and `RuntimeError.ChannelClosed`
+- `dict_report.gof`: dict literals, dict indexing, and key membership
+- `dict_views.gof`: `keys(dict)`, `values(dict)`, deterministic dict views, and list iteration
+- `text_helpers.gof`: `trim`, `split`, `join`, `starts_with`, and `ends_with`
+- `conversion_helpers.gof`: `parse_int`, `to_string`, and string assembly
+- `range_helpers.gof`: `range(stop)`, `range(start, stop)`, and `range(start, stop, step)`
+- `numeric_surface.gof`: unary minus, division, modulo, and parameterized builtin types
+- `payload_match.gof`: enum payload variants plus exhaustive destructuring `match`
+- `result_flow.gof`: `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, and exhaustive result handling
+- `runtime_ops.gof`: `argv`, `env`, `cwd`, `exists`, `read_dir`, and path helpers on top of `Result`
+- `telegram_long_polling.gof`: bootstrap Telegram bot path with `env`, `http_get`, `json_*`, and `Result`
 - `geometry.gof`: `struct`, typed fields, constructor calls, field access
 - `geometry_methods.gof`: receiver methods on structs and method calls
 - `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow
@@ -35,11 +46,22 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `calculator.gof` -> `107`
 - `factorial.gof` -> `120`
 - `for_report.gof` -> `19`
+- `break_continue.gof` -> `4`
 - `hello_print.gof` -> prints `gof ready`, `42`, then `7`
-- `io_roundtrip.gof` -> `6`
+- `io_roundtrip.gof` -> `Result.Ok(value: 6)`
 - `concurrent_squares.gof` -> `225`
-- `channel_select.gof` -> `9`
+- `channel_select.gof` -> `Result.Ok(value: 9)`
+- `channel_lifecycle.gof` -> `7`
 - `dict_report.gof` -> `11`
+- `dict_views.gof` -> `28`
+- `text_helpers.gof` -> `10`
+- `conversion_helpers.gof` -> `47`
+- `range_helpers.gof` -> `40`
+- `numeric_surface.gof` -> `Result.Ok(value: 2)`
+- `payload_match.gof` -> `42`
+- `result_flow.gof` -> `42`
+- `runtime_ops.gof` -> `Result.Ok(value: 6)` with `GOF_RUNTIME_DIR`, `GOF_RUNTIME_MODE`, and two CLI args
+- `telegram_long_polling.gof` -> returns the first `update_id` when the API payload contains updates
 - `geometry.gof` -> `42`
 - `geometry_methods.gof` -> `10`
 - `health_gate.gof` -> `1`

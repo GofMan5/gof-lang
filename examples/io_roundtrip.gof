@@ -1,6 +1,6 @@
-fn main() -> int:
+fn main() -> Result[int, RuntimeError]:
     path = "target/io_roundtrip.txt"
-    write_file(path, "gof-io")
-    text = read_file(path)
+    write_file(path, "gof-io")?
+    text = read_file(path)?
     assert(contains(text, "io"), "missing io")
-    return len(text)
+    return Result.Ok(len(text))

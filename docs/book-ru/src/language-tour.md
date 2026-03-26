@@ -1,24 +1,26 @@
 # Обзор языка
 
-Эта глава дает короткую, но честную картину текущего surface языка.
+Эта глава дает короткую, но честную картину текущего surface `gof`.
 
-Она не пытается покрыть все edge cases. Ее задача — сначала собрать правильную
-модель языка в голове, а уже потом вести тебя глубже.
+Она не пытается описать все edge cases. Ее задача — быстро собрать правильную
+ментальную модель языка перед более детальным чтением.
 
-## Главная идея
+## Базовая идея
 
 Код на `gof` должен читаться просто, но вести себя явно.
 
-Из этого следует, что язык сейчас строится вокруг:
+Сейчас язык строится вокруг:
 
 - top-level функций
-- явных типовых контрактов
-- immutable by default биндингов
-- видимой мутабельности через `mut`
+- явных type contracts
+- immutable bindings по умолчанию
+- видимой мутации через `mut`
 - явного моделирования данных через `struct` и `enum`
-- явной concurrency-модели через tasks, channels и `select`
+- явного управления циклом через `break` и `continue`
+- явной recoverable error model через `Result`
+- явной concurrency через tasks, channels и `select`
 
-## Функции — основная единица исполнения
+## Функции — основной unit выполнения
 
 ```gof
 fn add(a: int, b: int) -> int:
@@ -28,62 +30,104 @@ fn add(a: int, b: int) -> int:
 Текущие правила:
 
 - функции живут на top level
-- параметры могут быть типизированы
-- return type можно объявлять явно
-- все return paths должны быть совместимы по типу
+- параметры могут иметь type annotations
+- return type можно задать явно
+- все return paths должны быть типово совместимы
 
-## Биндинги immutable по умолчанию
+На текущей bootstrap-стадии обычные вызовы пока адресуют top-level named functions.
+
+## Bindings immutable, пока ты явно не выбрал другое
 
 ```gof
 total = 10
 ```
 
-Так создается immutable binding.
+Это создает immutable binding.
 
-Если переопределение действительно часть логики, это надо сказать явно:
+Если логике нужна reassignment, это нужно сказать явно:
 
 ```gof
 mut total: int = 10
 total = total + 1
 ```
 
-Это один из главных правил `gof`: мутация разрешена, но она не должна быть тихой по умолчанию.
+Mutation в `gof` разрешена, но она не является silent default.
 
 ## С какими значениями уже можно работать
 
-В текущем bootstrap-subset уже есть:
+Текущий bootstrap subset уже поддерживает:
 
 - `int`
 - `string`
 - `bool`
-- lists
-- dicts
+- `json`
+- списки
+- словари
 - пользовательские `struct`
 - пользовательские `enum`
+- `Result[T, E]`
 - task values
 - channel values
+- cancellation-token values
 - `unit`
 
-## Builtin helpers
+Этого уже хватает для нетривиальных примеров, но еще недостаточно, чтобы
+притворяться полной production-экосистемой.
 
-Сейчас есть:
+## Встроенные helper-ы пока нарочно компактные
+
+Сейчас surface языка включает:
 
 - `len(...)`
 - `print(...)`
 - `assert(...)`
 - `append(...)`
 - `contains(...)`
+- `trim(...)`
+- `split(...)`
+- `join(...)`
+- `starts_with(...)`
+- `ends_with(...)`
+- `parse_int(...)`
+- `to_string(...)`
+- `range(...)`
+- `argv()`
+- `env(...)`
+- `cwd()`
 - `read_file(...)`
 - `write_file(...)`
+- `exists(...)`
+- `read_dir(...)`
+- `mkdir(...)`
+- `remove_file(...)`
+- `path_join(...)`
+- `path_dir(...)`
+- `path_base(...)`
+- `path_ext(...)`
 - `dict()`
 - `insert(...)`
+- `keys(...)`
+- `values(...)`
 - `channel()`
+- `close(...)`
 - `send(...)`
 - `recv(...)`
+- `cancel_token()`
+- `cancel(...)`
+- `is_cancelled(...)`
+- `json_parse(...)`
+- `json_stringify(...)`
+- `json_get(...)`
+- `json_index(...)`
+- `json_len(...)`
+- `json_string(...)`
+- `json_int(...)`
+- `http_get(...)`
 
-Стандартная библиотека пока маленькая намеренно.
+Небольшой размер stdlib — осознанный выбор.
 
-> `gof` лучше иметь маленький, но честный stdlib surface, чем большой набор helper'ов, которые потом будут мешать нормальной архитектуре языка.
+> `gof` лучше иметь маленький, но честный набор helper-ов, чем большой surface,
+> который учит неправильной семантике.
 
 ## Маленькая программа, которая уже ощущается как `gof`
 
@@ -100,10 +144,17 @@ fn main() -> int:
     return point.total(5)
 ```
 
-В этом одном примере уже видно текущую форму языка:
+Один этот пример уже показывает текущую форму языка:
 
 - typed functions
 - structs
 - methods
-- explicit receiver contract
-- explicit return value
+- явный receiver contract
+- явный return value
+
+И тот же стиль уже распространяется на operational code:
+
+- side effects остаются явными helper-вызовами
+- recoverable failures идут через `Result`
+- concurrency остается message-passing-first
+- бот-ориентированные программы уже можно выражать без притворства, что у языка есть полноценный web framework

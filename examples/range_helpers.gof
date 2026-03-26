@@ -1,0 +1,13 @@
+fn main() -> int:
+    mut total = 0
+
+    for value in range(1, 8, 3):
+        total = total + value
+
+    for value in range(4):
+        total = total + value
+
+    for value in range(2, 12, 4):
+        total = total + value
+
+    return total + len(range(4))

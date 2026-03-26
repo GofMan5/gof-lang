@@ -1,5 +1,8 @@
+enum Status:
+    Ready
+
 fn main() -> int:
     value = 1
     match value:
-        value:
+        Status.Ready:
             return 1

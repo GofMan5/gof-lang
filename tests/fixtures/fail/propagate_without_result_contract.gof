@@ -1,0 +1,6 @@
+fn parse_port() -> Result[int, string]:
+    return Result.Ok(41)
+
+fn main() -> int:
+    port = parse_port()?
+    return port

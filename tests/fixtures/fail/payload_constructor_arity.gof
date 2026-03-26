@@ -1,0 +1,5 @@
+enum JobState:
+    Running(pid: int)
+
+fn main() -> JobState:
+    return JobState.Running()

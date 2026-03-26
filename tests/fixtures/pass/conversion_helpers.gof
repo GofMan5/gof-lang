@@ -1,0 +1,5 @@
+fn main() -> int:
+    parsed = parse_int(trim(" 41 "))
+    rendered = "gof-" + to_string(parsed + 1)
+    assert(rendered == "gof-42", "expected converted text")
+    return parsed + len(rendered)

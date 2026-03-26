@@ -1,0 +1,2 @@
+fn main() -> Result[int, string]:
+    return Result.Ok()

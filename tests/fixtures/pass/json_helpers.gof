@@ -1,0 +1,6 @@
+fn main() -> Result[int, RuntimeError]:
+    payload = json_parse("{\"result\": [{\"count\": 7, \"label\": \"ok\"}]}")?
+    items = json_get(payload, "result")?
+    first = json_index(items, 0)?
+    assert(json_string(json_get(first, "label")?)? == "ok", "bad label")
+    return Result.Ok(json_int(json_get(first, "count")?)?)

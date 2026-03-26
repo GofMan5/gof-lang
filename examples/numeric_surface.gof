@@ -1,0 +1,11 @@
+fn half_negative(values: list[int]) -> int:
+    return -(values[0] + values[1]) / 2
+
+fn main() -> Result[int, RuntimeError]:
+    ch: channel[int] = channel()
+    send(ch, half_negative([3, 5]))?
+
+    raw = recv(ch)?
+    normalized = (0 - raw) % 3
+    report: dict[int] = {"score": normalized}
+    return Result.Ok(report["score"] + len(report))

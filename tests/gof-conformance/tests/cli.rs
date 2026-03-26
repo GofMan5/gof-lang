@@ -1,8 +1,12 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 use std::process::Command as ProcessCommand;
+use std::sync::{Arc, Mutex};
+use std::thread;
 use tempfile::tempdir;
 
 fn gof_command() -> Command {
@@ -77,6 +81,20 @@ fn gof_run_executes_for_report_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("19"));
+}
+
+#[test]
+fn gof_run_executes_break_continue_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("break_continue.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("4"));
 }
 
 #[test]
@@ -180,6 +198,104 @@ fn gof_run_executes_dict_report_example() {
 }
 
 #[test]
+fn gof_run_executes_dict_views_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("dict_views.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("28"));
+}
+
+#[test]
+fn gof_run_executes_text_helpers_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("text_helpers.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("10"));
+}
+
+#[test]
+fn gof_run_executes_conversion_helpers_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("conversion_helpers.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("47"));
+}
+
+#[test]
+fn gof_run_executes_range_helpers_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("range_helpers.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("40"));
+}
+
+#[test]
+fn gof_run_executes_numeric_surface_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("numeric_surface.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("2"));
+}
+
+#[test]
+fn gof_run_executes_payload_match_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("payload_match.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("42"));
+}
+
+#[test]
+fn gof_run_executes_result_flow_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("result_flow.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("42"));
+}
+
+#[test]
 fn gof_run_executes_channel_select_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")
@@ -205,6 +321,118 @@ fn gof_run_executes_io_roundtrip_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("6"));
+}
+
+#[test]
+fn gof_run_executes_runtime_ops_example_with_args_env_and_fs_helpers() {
+    let temp = tempdir().expect("tempdir should exist");
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("runtime_ops.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .arg("--")
+        .args(["alpha", "beta"])
+        .env("GOF_RUNTIME_DIR", temp.path())
+        .env("GOF_RUNTIME_MODE", "bot")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 6)"));
+
+    assert!(temp.path().join("sample.txt").exists());
+}
+
+#[test]
+fn gof_run_executes_channel_lifecycle_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("channel_lifecycle.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("7"));
+}
+
+#[test]
+fn gof_run_executes_telegram_long_polling_example_against_fake_api() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("telegram_long_polling.gof");
+    let observed_paths = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener addr should exist");
+    let observed_paths_thread = observed_paths.clone();
+
+    let server = thread::spawn(move || {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().expect("request should arrive");
+            let mut buffer = [0_u8; 4096];
+            let size = stream
+                .read(&mut buffer)
+                .expect("request should be readable");
+            let request = String::from_utf8_lossy(&buffer[..size]).to_string();
+            let request_line = request.lines().next().unwrap_or_default().to_string();
+            let path = request_line
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/")
+                .to_string();
+            observed_paths_thread
+                .lock()
+                .expect("paths mutex should not be poisoned")
+                .push(path.clone());
+
+            let body = if path.contains("/getUpdates") {
+                "{\"ok\":true,\"result\":[{\"update_id\":123,\"message\":{\"chat\":{\"id\":777},\"text\":\"/ping\"}}]}".to_string()
+            } else if path.contains("/sendMessage") {
+                "{\"ok\":true,\"result\":{\"message_id\":1}}".to_string()
+            } else {
+                "{\"ok\":false,\"result\":[]}".to_string()
+            };
+
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should be written");
+        }
+    });
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .env("TELEGRAM_BOT_TOKEN", "test-token")
+        .env("GOF_TELEGRAM_API_BASE", format!("http://{address}"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 123)"));
+
+    server.join().expect("server thread should exit");
+
+    let paths = observed_paths
+        .lock()
+        .expect("paths mutex should not be poisoned")
+        .clone();
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.contains("/bottest-token/getUpdates")),
+        "expected getUpdates request, got {paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .any(|path| path.contains("/bottest-token/sendMessage?chat_id=777&text=pong")),
+        "expected sendMessage request, got {paths:?}"
+    );
 }
 
 #[test]

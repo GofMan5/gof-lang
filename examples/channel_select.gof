@@ -1,9 +1,9 @@
-fn main() -> int:
+fn main() -> Result[int, RuntimeError]:
     left: channel = channel()
     right: channel = channel()
-    send(right, 8)
+    send(right, 8)?
     select:
         value = recv(left):
-            return 0
+            return Result.Ok(value? + 0)
         value = recv(right):
-            return value + 1
+            return Result.Ok(value? + 1)

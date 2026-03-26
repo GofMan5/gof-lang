@@ -1,0 +1,16 @@
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
+
+fn score(state: JobState) -> int:
+    match state:
+        JobState.Ready:
+            return 0
+        JobState.Running(pid):
+            return pid
+        JobState.Failed(message):
+            return len(message)
+
+fn main() -> int:
+    return score(JobState.Running(42))

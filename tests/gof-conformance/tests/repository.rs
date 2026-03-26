@@ -48,6 +48,7 @@ fn workspace_contains_governance_directories() {
         "stdlib",
         "tools",
         "tests",
+        "tests/fixtures/runtime-fail",
         "benchmarks",
     ] {
         assert!(Path::new(&root).join(path).exists(), "missing {path}");

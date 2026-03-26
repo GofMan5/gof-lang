@@ -3,16 +3,22 @@
 A programming language with Python-like readability, Go-like concurrency, and Rust-grade engineering discipline.
 
 ```gof
-struct Point:
-    x: int
-    y: int
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
 
-fn score(p: Point) -> int:
-    return p.x + p.y
+fn score(state: JobState) -> int:
+    match state:
+        JobState.Ready:
+            return 0
+        JobState.Running(pid):
+            return pid
+        JobState.Failed(message):
+            return len(message)
 
 fn main() -> int:
-    p: Point = Point(20, 22)
-    return score(p)
+    return score(JobState.Running(42))
 ```
 
 > **Bootstrap stage.** The compiler, evaluator, and toolchain are functional and actively developed.
@@ -47,14 +53,16 @@ gof test tests/fixtures                # run conformance suite
 
 | Area | Status |
 |------|--------|
-| Functions, typed params, return contracts | stable |
-| `struct`, `enum`, exhaustive `match` | stable |
+| Functions, typed params, parameterized type annotations, return contracts | stable |
+| `struct`, payload `enum`, exhaustive `match` with destructuring | stable |
+| `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, exhaustive `match` over `Result` | stable |
 | Methods, field access, constructors | stable |
-| `if`/`else`, `while`, `for`-iteration, logical ops | stable |
-| Lists, dicts, indexing | stable |
-| File I/O, `assert`, `print` | stable |
+| `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, unary `-`, `/`, `%` | stable |
+| Lists, dict literals, indexing, dict views | stable |
+| `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, conversion helpers, `range` | stable |
+| JSON helpers and bootstrap `http_get(...)` | bootstrap |
 | Same-directory imports | stable |
-| `go`, `await`, channels, `select` | bootstrap |
+| `go`, `await`, typed channels, `close`, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | Formatter, conformance tests | stable |
 
@@ -64,9 +72,10 @@ See the [language spec](spec/language-v1.md) for the full contract.
 
 | | |
 |---|---|
-| **[The gof Book](https://gofman5.github.io/gof-lang/)** | Learning path — start here |
-| **[Книга gof (RU)](https://gofman5.github.io/gof-lang/ru/)** | Русская версия |
+| **[The gof Book](https://gofman5.github.io/gof-lang/)** | Learning path - start here |
+| **[The gof Book (RU)](https://gofman5.github.io/gof-lang/ru/)** | Russian edition |
 | [Examples](examples/) | Runnable programs |
+| [Telegram bot example](examples/telegram_long_polling.gof) | Long-polling baseline |
 | [Language spec](spec/language-v1.md) | Formal contract |
 | [Diagnostics spec](spec/diagnostics.md) | Error behavior |
 | [Roadmap](roadmap.md) | Milestones and current focus |
@@ -78,19 +87,20 @@ See the [language spec](spec/language-v1.md) for the full contract.
 Requires Rust toolchain (see [rust-toolchain.toml](rust-toolchain.toml)).
 
 ```bash
-cargo test --workspace            # run all tests
-cargo run -p gof-cli -- run app.gof   # run via cargo
+cargo test --workspace                 # run all tests
+cargo run -p gof-cli -- run app.gof    # run via cargo
 ```
 
-Preview the book locally:
+Preview the books locally:
 
 ```bash
-mdbook build docs/book && mdbook build docs/book-ru
+mdbook build docs/book
+mdbook build docs/book-ru
 ```
 
 ## Project structure
 
-```
+```text
 compiler/    compiler frontend, typing, IR, evaluator
 runtime/     runtime contracts
 stdlib/      standard library (in progress)

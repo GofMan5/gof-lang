@@ -1,0 +1,9 @@
+fn main() -> int:
+    mut total = 0
+    for value in [1, 2, 3, 4]:
+        if value == 2:
+            continue
+        total = total + value
+        if total > 3:
+            break
+    return total
