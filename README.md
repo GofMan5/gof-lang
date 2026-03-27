@@ -74,6 +74,10 @@ Manifest-backed packages now require a committed, fresh `gof.lock` for `gof run`
 `gof build`, and package-aware `gof test`. Refresh it explicitly with
 `gof mod resolve --dir <package-root>`.
 
+`select` now rotates its polling start arm in a deterministic round-robin
+baseline when multiple receive arms are already ready, but scheduler-level
+fairness is still a roadmap item rather than a finished guarantee.
+
 ## Documentation
 
 | | |

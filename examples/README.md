@@ -25,6 +25,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
 - `channel_select.gof`: channels, `Result`-based `send`/`recv`, and `select`
+- `select_round_robin.gof`: deterministic round-robin `select` arm rotation when multiple receives are ready
 - `channel_lifecycle.gof`: `close(channel)`, `recv(...)`, and `RuntimeError.ChannelClosed`
 - `dict_report.gof`: dict literals, dict indexing, and key membership
 - `dict_views.gof`: `keys(dict)`, `values(dict)`, deterministic dict views, and list iteration
@@ -63,6 +64,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `concurrent_squares.gof` -> `225`
 - `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``
 - `channel_select.gof` -> `Result.Ok(value: 9)`
+- `select_round_robin.gof` -> `Result.Ok(value: 16)`
 - `channel_lifecycle.gof` -> `7`
 - `dict_report.gof` -> `11`
 - `dict_views.gof` -> `28`

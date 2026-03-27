@@ -73,6 +73,7 @@ fn main() -> Result[int, RuntimeError]:
 - поддерживаются только receive arms
 - arm должен быть `recv(channel):`, `value = recv(channel):`, `recv(channel, token):` или `value = recv(channel, token):`
 - bootstrap runtime опрашивает arms, пока один receive не вернет `Result.Ok(...)` или `Result.Err(...)`
+- если несколько receive arms уже готовы, bootstrap runtime вращает стартовый arm по детерминированному round-robin baseline, чтобы первый arm в исходнике не выигрывал всегда
 
 Этого уже хватает для честного message-passing выбора без красивого синтаксиса,
 за которым ничего нет.
@@ -99,7 +100,7 @@ fn main() -> bool:
 
 Еще не хватает:
 
-- fairness guarantees
+- production-grade fairness гарантий сверх текущего round-robin polling baseline
 - жесткого story для plain `task[T]` joins при task panic и boundary failures
 - production scheduler hardening
 

@@ -1,0 +1,18 @@
+fn main() -> Result[int, RuntimeError]:
+    mut left_hits = 0
+    mut right_hits = 0
+    mut i = 0
+    while i < 16:
+        left: channel = channel()
+        right: channel = channel()
+        send(left, 1)?
+        send(right, 1)?
+        select:
+            received = recv(left):
+                left_hits = left_hits + received?
+            received = recv(right):
+                right_hits = right_hits + received?
+        i = i + 1
+    assert(left_hits == 8, "expected round-robin select polling to choose the left arm exactly eight times")
+    assert(right_hits == 8, "expected round-robin select polling to choose the right arm exactly eight times")
+    return Result.Ok(left_hits + right_hits)

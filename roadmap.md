@@ -309,7 +309,7 @@ Hard sequencing rule:
 
 - `[ ]` structured concurrency finalization
 - `[~]` task panic and error propagation across concurrency boundaries
-- `[ ]` stronger scheduling guarantees and fairness rules
+- `[~]` stronger scheduling guarantees and fairness rules
 - `[ ]` HTTP server baseline, request routing, and streaming I/O primitives
 - `[ ]` timeouts, deadlines, context propagation, and service shutdown contracts
 - `[ ]` logging, metrics, tracing, and pprof-class observability surface
@@ -409,7 +409,7 @@ Hard sequencing rule:
 - keep direct codegen milestones honest in docs and tooling
 
 4. `[~]` Deepen concurrency semantics:
-- select fairness and blocking semantics
+- deterministic round-robin select polling baseline, then stronger fairness and blocking semantics
 - finish task propagation over plain `task[T]`, `Result`, and panic boundaries
 - concurrency contract tests and benchmarks
 

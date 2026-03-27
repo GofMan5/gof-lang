@@ -249,7 +249,8 @@ The bootstrap compiler in this repository currently supports:
 - `select:` currently requires one or more receive arms
 - each `select` arm currently must be written as either `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
 - `select` currently polls its arms until one receive operation resolves to either `Result.Ok(...)` or `Result.Err(...)` and then executes only that arm body
-- channels currently have no explicit buffering syntax and no fairness contract beyond first completed receive
+- `select` currently rotates its polling start arm in a deterministic round-robin baseline when multiple receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
+- channels currently have no explicit buffering syntax
 - most operational bootstrap builtins now return `Result[..., RuntimeError]`; task joins with explicit `Result[..., RuntimeError]` contracts also preserve task-boundary failures as runtime errors, while runtime diagnostics remain for invariant failures, assertion failures, bad helper contracts, plain `task[T]` joins, and a small set of bootstrap evaluator gaps
 - control-flow conditions must evaluate to `bool`
 - `for binding in iterable:` currently supports lists, strings, and dicts

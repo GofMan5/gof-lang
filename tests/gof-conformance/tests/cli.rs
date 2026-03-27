@@ -455,6 +455,20 @@ fn gof_run_executes_channel_select_example() {
 }
 
 #[test]
+fn gof_run_executes_select_round_robin_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("select_round_robin.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 16)"));
+}
+
+#[test]
 fn gof_run_executes_io_roundtrip_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

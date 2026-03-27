@@ -10,7 +10,7 @@ use std::fmt::{Debug, Formatter};
 use std::fs;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -18,6 +18,8 @@ type FunctionTable = Arc<HashMap<String, Function>>;
 type MethodTable = Arc<HashMap<(String, String), Function>>;
 type StructTable = Arc<HashMap<String, StructDecl>>;
 type EnumTable = Arc<HashMap<String, EnumDecl>>;
+
+static NEXT_SELECT_ARM_START: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionResult {
@@ -1583,7 +1585,7 @@ fn eval_stmt(
 
             Ok(EvalOutcome::Next)
         }
-        Stmt::Select { arms, span } => loop {
+        Stmt::Select { arms, span } => {
             if arms.is_empty() {
                 return Err(Diagnostics(vec![
                     Diagnostic::error(
@@ -1598,46 +1600,52 @@ fn eval_stmt(
                 .into());
             }
 
-            for arm in arms {
-                if let Some(received) = try_eval_select_operation(
-                    &arm.operation,
-                    scopes,
-                    functions,
-                    methods,
-                    structs,
-                    enums,
-                    output,
-                    source_path,
-                )? {
-                    scopes.push();
-                    if let Some(binding) = &arm.binding {
-                        scopes.define_current(
-                            binding.clone(),
-                            Binding {
-                                mutable: false,
-                                value: received,
-                            },
-                        );
-                    }
-                    let result = eval_block(
-                        &arm.body,
+            let mut start_index =
+                NEXT_SELECT_ARM_START.fetch_add(1, Ordering::Relaxed) % arms.len();
+            loop {
+                for offset in 0..arms.len() {
+                    let arm = &arms[(start_index + offset) % arms.len()];
+                    if let Some(received) = try_eval_select_operation(
+                        &arm.operation,
                         scopes,
                         functions,
                         methods,
                         structs,
                         enums,
                         output,
-                        loop_depth,
-                        false,
                         source_path,
-                    )?;
-                    scopes.pop();
-                    return Ok(result);
+                    )? {
+                        scopes.push();
+                        if let Some(binding) = &arm.binding {
+                            scopes.define_current(
+                                binding.clone(),
+                                Binding {
+                                    mutable: false,
+                                    value: received,
+                                },
+                            );
+                        }
+                        let result = eval_block(
+                            &arm.body,
+                            scopes,
+                            functions,
+                            methods,
+                            structs,
+                            enums,
+                            output,
+                            loop_depth,
+                            false,
+                            source_path,
+                        )?;
+                        scopes.pop();
+                        return Ok(result);
+                    }
                 }
-            }
 
-            std::thread::yield_now();
-        },
+                start_index = (start_index + 1) % arms.len();
+                std::thread::yield_now();
+            }
+        }
         Stmt::Expr(expr, _) => {
             match eval_expr(
                 expr,
@@ -7154,6 +7162,15 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 9)"));
+    }
+
+    #[test]
+    fn rotates_select_arm_priority_when_multiple_receives_are_ready() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    mut left_hits = 0\n    mut right_hits = 0\n    mut i = 0\n    while i < 16:\n        left: channel = channel()\n        right: channel = channel()\n        send(left, 1)?\n        send(right, 1)?\n        select:\n            received = recv(left):\n                left_hits = left_hits + received?\n            received = recv(right):\n                right_hits = right_hits + received?\n        i = i + 1\n    assert(left_hits == 8, \"expected round-robin select polling to choose the left arm exactly eight times\")\n    assert(right_hits == 8, \"expected round-robin select polling to choose the right arm exactly eight times\")\n    return Result.Ok(left_hits + right_hits)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 16)"));
     }
 
     #[test]

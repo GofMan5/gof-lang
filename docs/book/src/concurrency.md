@@ -75,6 +75,7 @@ Current `select` contract:
 - only receive arms are supported
 - arms must be `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
 - the bootstrap runtime polls arms until one receive resolves to `Result.Ok(...)` or `Result.Err(...)`
+- when multiple receive arms are already ready, the bootstrap runtime rotates the polling start arm in a deterministic round-robin baseline so the first source arm does not always win
 
 That is enough to model simple message-passing choices, which is already more honest
 than adding pretty syntax with no execution model behind it.
@@ -101,7 +102,7 @@ This is a real concurrency baseline, but not the final story.
 
 Still missing:
 
-- fairness guarantees
+- production-grade fairness guarantees beyond the current round-robin polling baseline
 - task panic and `Result` propagation hardening for plain `task[T]` joins
 - production scheduler hardening
 
