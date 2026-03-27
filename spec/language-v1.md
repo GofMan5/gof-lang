@@ -102,7 +102,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `range(...)` for explicit integer sequence construction
 - builtin `sleep(...)` for explicit delay and retry/backoff control
 - builtin `channel()`, `close(...)`, `send(...)`, and `recv(...)` for bootstrap message passing
-- builtin `cancel_token()`, `cancel(...)`, and `is_cancelled(...)` for cooperative cancellation
+- builtin `cancel_token()`, `cancel(...)`, `is_cancelled(...)`, `timeout_token(...)`, and `cancel_after(...)` for cooperative cancellation and timeout-backed token baselines
 - builtin `json_parse(...)`, `json_stringify(...)`, `json_get(...)`, `json_index(...)`, `json_len(...)`, `json_string(...)`, and `json_int(...)` for explicit JSON handling
 - builtin `http_get(...)` and `http_post(...)` for bootstrap HTTP work
 
@@ -246,6 +246,8 @@ The bootstrap compiler in this repository currently supports:
 - `cancel_token()` currently creates a cooperative cancellation token
 - `cancel(token)` currently marks the token as cancelled
 - `is_cancelled(token)` currently reports whether the token was cancelled
+- `timeout_token(milliseconds)` currently creates a cancellation token that flips itself after a non-negative millisecond delay
+- `cancel_after(token, milliseconds)` currently schedules cancellation for an existing token after a non-negative millisecond delay
 - `select:` currently requires one or more receive arms
 - each `select` arm currently must be written as either `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
 - `select` currently polls its arms until one receive operation resolves to either `Result.Ok(...)` or `Result.Err(...)` and then executes only that arm body

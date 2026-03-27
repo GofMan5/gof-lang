@@ -469,6 +469,20 @@ fn gof_run_executes_select_round_robin_example() {
 }
 
 #[test]
+fn gof_run_executes_timeout_cancellation_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("timeout_cancellation.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("42"));
+}
+
+#[test]
 fn gof_run_executes_io_roundtrip_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

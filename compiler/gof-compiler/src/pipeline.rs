@@ -848,6 +848,37 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_timeout_token_and_cancel_after_builtins() {
+        let source = SourceFile::new(
+            "timeouts.gof",
+            "fn main() -> bool:\n    token = timeout_token(25)\n    cancel_after(token, 0)\n    return is_cancelled(token)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::CancelToken);
+                assert!(matches!(
+                    &value.kind,
+                    crate::typed_hir::TypedExprKind::Call { callee, .. } if callee == "timeout_token"
+                ));
+            }
+            other => panic!("expected timeout_token bind, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Expr(expr) => {
+                assert_eq!(expr.ty, Type::Unit);
+                assert!(matches!(
+                    &expr.kind,
+                    crate::typed_hir::TypedExprKind::Call { callee, .. } if callee == "cancel_after"
+                ));
+            }
+            other => panic!("expected cancel_after expression, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pipeline_supports_range_builtin() {
         let source = SourceFile::new(
             "range_helpers.gof",

@@ -1,0 +1,12 @@
+fn main() -> int:
+    expected: Result[int, RuntimeError] = Result.Err(RuntimeError.Cancelled)
+    ch: channel[int] = channel()
+    timed = recv(ch, timeout_token(0)) == expected
+
+    token: cancel_token = cancel_token()
+    cancel_after(token, 0)
+    scheduled = recv(ch, token) == expected
+
+    if timed and scheduled and is_cancelled(token):
+        return 42
+    return 0

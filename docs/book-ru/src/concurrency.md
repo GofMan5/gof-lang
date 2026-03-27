@@ -82,9 +82,10 @@ fn main() -> Result[int, RuntimeError]:
 
 ```gof
 fn main() -> bool:
-    token = cancel_token()
-    cancel(token)
-    return is_cancelled(token)
+    token = timeout_token(0)
+    manual = cancel_token()
+    cancel_after(manual, 0)
+    return is_cancelled(token) and is_cancelled(manual)
 ```
 
 Текущий baseline cancellation:
@@ -92,6 +93,8 @@ fn main() -> bool:
 - `cancel_token()` создает cooperative token
 - `cancel(token)` переводит token в cancelled state
 - `is_cancelled(token)` читает текущее состояние
+- `timeout_token(milliseconds)` создает token, который сам отменяется после неотрицательной задержки
+- `cancel_after(token, milliseconds)` планирует отмену уже существующего token через неотрицательную задержку
 - `send(..., token)` и `recv(..., token)` наблюдают token во время блокировки
 
 ## Чего еще не хватает
@@ -102,6 +105,7 @@ fn main() -> bool:
 
 - production-grade fairness гарантий сверх текущего round-robin polling baseline
 - жесткого story для plain `task[T]` joins при task panic и boundary failures
+- deadline/context propagation сверх timeout-backed token baseline
 - production scheduler hardening
 
 ## Как правильно читать текущую concurrency-модель

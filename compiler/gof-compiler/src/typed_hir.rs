@@ -536,6 +536,8 @@ enum CallKind {
     BuiltinCancelToken,
     BuiltinCancel,
     BuiltinIsCancelled,
+    BuiltinTimeoutToken,
+    BuiltinCancelAfter,
     BuiltinJsonParse,
     BuiltinJsonStringify,
     BuiltinJsonGet,
@@ -2174,6 +2176,8 @@ fn lower_expr(
                     | CallKind::BuiltinCancelToken
                     | CallKind::BuiltinCancel
                     | CallKind::BuiltinIsCancelled
+                    | CallKind::BuiltinTimeoutToken
+                    | CallKind::BuiltinCancelAfter
                     | CallKind::BuiltinJsonParse
                     | CallKind::BuiltinJsonStringify
                     | CallKind::BuiltinJsonGet
@@ -2872,6 +2876,12 @@ fn validate_call(
         CallKind::BuiltinIsCancelled => {
             validate_is_cancelled_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinTimeoutToken => {
+            validate_timeout_token_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinCancelAfter => {
+            validate_cancel_after_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinJsonParse => {
             validate_single_string_argument_call(
                 "json_parse",
@@ -3454,6 +3464,10 @@ fn resolve_call_kind(
         CallKind::BuiltinCancel
     } else if callee == "is_cancelled" {
         CallKind::BuiltinIsCancelled
+    } else if callee == "timeout_token" {
+        CallKind::BuiltinTimeoutToken
+    } else if callee == "cancel_after" {
+        CallKind::BuiltinCancelAfter
     } else if callee == "json_parse" {
         CallKind::BuiltinJsonParse
     } else if callee == "json_stringify" {
@@ -3547,6 +3561,8 @@ fn call_return_type(
         CallKind::BuiltinCancelToken => Type::CancelToken,
         CallKind::BuiltinCancel => Type::Unit,
         CallKind::BuiltinIsCancelled => Type::Bool,
+        CallKind::BuiltinTimeoutToken => Type::CancelToken,
+        CallKind::BuiltinCancelAfter => Type::Unit,
         CallKind::BuiltinJsonParse => {
             Type::result(Type::Json, Type::Enum("RuntimeError".to_string()))
         }
@@ -5600,6 +5616,53 @@ fn validate_sleep_call(
     source_path: &Path,
 ) {
     validate_single_int_argument_call("sleep", "GOF3085", args, span, diagnostics, source_path);
+
+    if args.len() == 1 {
+        validate_non_negative_duration_argument(
+            "sleep",
+            "GOF3086",
+            &args[0],
+            diagnostics,
+            source_path,
+        );
+    }
+}
+
+fn validate_non_negative_duration_argument(
+    builtin_name: &str,
+    diagnostic_code: &'static str,
+    arg: &TypedExpr,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    let value = match &arg.kind {
+        TypedExprKind::Int(value) => Some(*value),
+        TypedExprKind::Unary {
+            op: UnaryOp::Neg,
+            value,
+        } => match &value.kind {
+            TypedExprKind::Int(value) => Some(-*value),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let Some(value) = value else {
+        return;
+    };
+
+    if value < 0 {
+        diagnostics.push(
+            Diagnostic::error(
+                diagnostic_code,
+                format!("`{builtin_name}` requires a non-negative duration"),
+                format!("this duration resolves to `{value}`"),
+                arg.span,
+            )
+            .with_fix_it("pass `0` or another non-negative millisecond count")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
 }
 
 fn validate_close_call(
@@ -5702,6 +5765,88 @@ fn validate_is_cancelled_call(
             .with_source_path(source_path.to_path_buf()),
         );
     }
+}
+
+fn validate_timeout_token_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    validate_single_int_argument_call(
+        "timeout_token",
+        "GOF3093",
+        args,
+        span,
+        diagnostics,
+        source_path,
+    );
+
+    if args.len() == 1 {
+        validate_non_negative_duration_argument(
+            "timeout_token",
+            "GOF3094",
+            &args[0],
+            diagnostics,
+            source_path,
+        );
+    }
+}
+
+fn validate_cancel_after_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `cancel_after`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `cancel_after(token, milliseconds)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::CancelToken | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3082",
+                "`cancel_after` requires a cancellation token as its first argument",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a value created by `cancel_token()`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if !matches!(args[1].ty, Type::Int | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3093",
+                "`cancel_after` requires an integer duration",
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a non-negative millisecond count as the second argument")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_non_negative_duration_argument(
+        "cancel_after",
+        "GOF3094",
+        &args[1],
+        diagnostics,
+        source_path,
+    );
 }
 
 fn validate_json_stringify_call(
@@ -6873,6 +7018,34 @@ mod tests {
     }
 
     #[test]
+    fn supports_timeout_token_and_cancel_after_builtins() {
+        let module = lower_source(
+            "fn main() -> bool:\n    token = timeout_token(25)\n    cancel_after(token, 0)\n    return is_cancelled(token)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::CancelToken);
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "timeout_token")
+                );
+            }
+            other => panic!("expected timeout_token bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Expr(expr) => {
+                assert_eq!(expr.ty, Type::Unit);
+                assert!(
+                    matches!(&expr.kind, TypedExprKind::Call { callee, .. } if callee == "cancel_after")
+                );
+            }
+            other => panic!("expected cancel_after expression, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_parameterized_builtin_type_annotations() {
         let module = lower_source(
             "fn first(values: list[int]) -> int:\n    return values[0]\nfn main() -> Result[dict[int], RuntimeError]:\n    ch: channel[int] = channel()\n    send(ch, first([7, 9]))?\n    return Result.Ok({\"ok\": recv(ch)?})\n",
@@ -7197,6 +7370,24 @@ mod tests {
             .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3085"]);
+    }
+
+    #[test]
+    fn rejects_invalid_timeout_token_operands() {
+        let diagnostics =
+            lower_source("fn main() -> cancel_token:\n    return timeout_token(\"soon\")\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3093"]);
+    }
+
+    #[test]
+    fn rejects_negative_timeout_cancellation_durations() {
+        let diagnostics =
+            lower_source("fn main() -> unit:\n    cancel_after(cancel_token(), -1)\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3094"]);
     }
 
     #[test]

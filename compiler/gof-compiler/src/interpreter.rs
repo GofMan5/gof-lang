@@ -284,6 +284,25 @@ impl CancelTokenValue {
     fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
+
+    fn cancel_after(&self, millis: i64) {
+        if millis == 0 {
+            self.cancel();
+            return;
+        }
+
+        let token = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(millis as u64));
+            token.cancel();
+        });
+    }
+
+    fn timeout_after(millis: i64) -> Self {
+        let token = Self::new();
+        token.cancel_after(millis);
+        token
+    }
 }
 
 impl Debug for CancelTokenValue {
@@ -2313,6 +2332,34 @@ fn eval_expr(
 
             if callee == "is_cancelled" {
                 return eval_is_cancelled_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "timeout_token" {
+                return eval_timeout_token_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "cancel_after" {
+                return eval_cancel_after_builtin(
                     args,
                     scopes,
                     functions,
@@ -5252,6 +5299,48 @@ fn eval_int_argument(
     Ok(number)
 }
 
+fn eval_non_negative_duration_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    invalid_operand_code: &'static str,
+    negative_duration_code: &'static str,
+) -> EvalResult<i64> {
+    let millis = eval_int_argument(
+        builtin_name,
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        invalid_operand_code,
+    )?;
+
+    if millis < 0 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                negative_duration_code,
+                format!("`{builtin_name}` requires a non-negative duration"),
+                format!("this duration resolves to `{millis}`"),
+                expr.span(),
+            )
+            .with_fix_it("pass `0` or another non-negative millisecond count")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    Ok(millis)
+}
+
 fn eval_read_file_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -5988,6 +6077,98 @@ fn eval_is_cancelled_builtin(
     Ok(Value::Bool(token.is_cancelled()))
 }
 
+fn eval_timeout_token_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `timeout_token`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `timeout_token(milliseconds)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let millis = eval_non_negative_duration_argument(
+        "timeout_token",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3093",
+        "GOF3094",
+    )?;
+
+    Ok(Value::CancelToken(CancelTokenValue::timeout_after(millis)))
+}
+
+fn eval_cancel_after_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 2 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `cancel_after`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `cancel_after(token, milliseconds)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let token = eval_cancel_token_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let millis = eval_non_negative_duration_argument(
+        "cancel_after",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3093",
+        "GOF3094",
+    )?;
+    token.cancel_after(millis);
+    Ok(Value::Unit)
+}
+
 fn eval_cancel_token_argument(
     expr: &Expr,
     scopes: &ScopeStack,
@@ -6579,7 +6760,7 @@ fn eval_sleep_builtin(
         ]));
     }
 
-    let millis = eval_int_argument(
+    let millis = eval_non_negative_duration_argument(
         "sleep",
         &args[0],
         scopes,
@@ -6590,20 +6771,8 @@ fn eval_sleep_builtin(
         output,
         source_path,
         "GOF3085",
+        "GOF3086",
     )?;
-
-    if millis < 0 {
-        return eval_diagnostics(Diagnostics(vec![
-            Diagnostic::error(
-                "GOF3086",
-                "`sleep` requires a non-negative duration",
-                format!("this duration resolves to `{millis}`"),
-                args[0].span(),
-            )
-            .with_fix_it("pass `0` or another non-negative millisecond count")
-            .with_source_path(source_path.to_path_buf()),
-        ]));
-    }
 
     std::thread::sleep(Duration::from_millis(millis as u64));
     Ok(Value::Unit)
@@ -7027,6 +7196,15 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_timeout_token_and_cancel_after_builtins() {
+        let value = run_source(
+            "fn main() -> int:\n    expected: Result[int, RuntimeError] = Result.Err(RuntimeError.Cancelled)\n    ch: channel[int] = channel()\n    timed = recv(ch, timeout_token(0)) == expected\n    token: cancel_token = cancel_token()\n    cancel_after(token, 0)\n    scheduled = recv(ch, token) == expected\n    if timed and scheduled and is_cancelled(token):\n        return 42\n    return 0\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(42));
+    }
+
+    #[test]
     fn evaluates_http_post_builtin() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let address = listener.local_addr().expect("listener addr should exist");
@@ -7371,6 +7549,21 @@ mod tests {
         let diagnostics = run_source("fn main() -> unit:\n    sleep(\"soon\")\n")
             .expect_err("sleep operand should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3085"]);
+    }
+
+    #[test]
+    fn rejects_invalid_timeout_token_duration() {
+        let diagnostics =
+            run_source("fn main() -> cancel_token:\n    return timeout_token(\"soon\")\n")
+                .expect_err("timeout_token operand should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3093"]);
+    }
+
+    #[test]
+    fn rejects_negative_timeout_cancellation_durations() {
+        let diagnostics = run_source("fn main() -> unit:\n    cancel_after(cancel_token(), -1)\n")
+            .expect_err("negative cancel_after duration should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3094"]);
     }
 
     #[test]

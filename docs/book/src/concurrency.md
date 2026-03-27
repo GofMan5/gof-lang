@@ -84,9 +84,10 @@ than adding pretty syntax with no execution model behind it.
 
 ```gof
 fn main() -> bool:
-    token = cancel_token()
-    cancel(token)
-    return is_cancelled(token)
+    token = timeout_token(0)
+    manual = cancel_token()
+    cancel_after(manual, 0)
+    return is_cancelled(token) and is_cancelled(manual)
 ```
 
 Current cancellation baseline:
@@ -94,6 +95,8 @@ Current cancellation baseline:
 - `cancel_token()` creates a cooperative token
 - `cancel(token)` marks the token as cancelled
 - `is_cancelled(token)` reports the current state
+- `timeout_token(milliseconds)` creates a token that cancels itself after a non-negative delay
+- `cancel_after(token, milliseconds)` schedules cancellation for an existing token after a non-negative delay
 - `send(..., token)` and `recv(..., token)` observe that token while blocking
 
 ## What is still missing
@@ -104,6 +107,7 @@ Still missing:
 
 - production-grade fairness guarantees beyond the current round-robin polling baseline
 - task panic and `Result` propagation hardening for plain `task[T]` joins
+- deadline/context propagation beyond timeout-backed token baselines
 - production scheduler hardening
 
 ## The right way to read current concurrency docs
