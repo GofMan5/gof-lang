@@ -58,9 +58,9 @@ gof test tests/fixtures                # run conformance suite
 | `struct`, payload `enum`, exhaustive `match` with destructuring | stable |
 | `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, exhaustive `match` over `Result` | stable |
 | Methods, field access, constructors | stable |
-| `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, unary `-`, `/`, `%` | stable |
+| `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
-| `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, conversion helpers, `range`, `sleep(...)` | stable |
+| `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
 | JSON helpers and bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports | stable |
 | `go`, `await`, typed channels, `close`, cancellation tokens, `select` | bootstrap |

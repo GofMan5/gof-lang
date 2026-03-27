@@ -1,0 +1,2 @@
+fn main() -> list[bool]:
+    return sort([true, false])

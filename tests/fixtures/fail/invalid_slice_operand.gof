@@ -1,0 +1,2 @@
+fn main() -> Result[list[int], RuntimeError]:
+    return slice([1, 2, 3], "start", 2)

@@ -28,7 +28,9 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `dict_report.gof`: dict literals, dict indexing, and key membership
 - `dict_views.gof`: `keys(dict)`, `values(dict)`, deterministic dict views, and list iteration
 - `text_helpers.gof`: `trim`, `split`, `join`, `starts_with`, and `ends_with`
-- `conversion_helpers.gof`: `parse_int`, `to_string`, and string assembly
+- `conversion_helpers.gof`: `Result`-based `parse_int`, `to_string`, and string assembly
+- `sequence_helpers.gof`: `first`, `last`, `slice`, `reverse`, deterministic `sort`, and explicit `min`/`max` over lists
+- `comparison_surface.gof`: explicit equality domains, lexicographic string ordering, and structural comparisons
 - `range_helpers.gof`: `range(stop)`, `range(start, stop)`, and `range(start, stop, step)`
 - `numeric_surface.gof`: unary minus, division, modulo, and parameterized builtin types
 - `payload_match.gof`: enum payload variants plus exhaustive destructuring `match`
@@ -62,7 +64,9 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `dict_report.gof` -> `11`
 - `dict_views.gof` -> `28`
 - `text_helpers.gof` -> `10`
-- `conversion_helpers.gof` -> `47`
+- `conversion_helpers.gof` -> `Result.Ok(value: 47)`
+- `sequence_helpers.gof` -> `Result.Ok(value: 15)`
+- `comparison_surface.gof` -> `Result.Ok(value: 42)`
 - `range_helpers.gof` -> `40`
 - `numeric_surface.gof` -> `Result.Ok(value: 2)`
 - `payload_match.gof` -> `42`

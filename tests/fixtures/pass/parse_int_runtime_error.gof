@@ -1,0 +1,10 @@
+fn main() -> int:
+    outcome = parse_int("oops")
+    match outcome:
+        Result.Ok(value):
+            return value
+        Result.Err(error):
+            if contains(to_string(error), "RuntimeError.ParseInt"):
+                return 1
+            else:
+                return 0

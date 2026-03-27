@@ -1,2 +1,2 @@
 fn main() -> Result[int, RuntimeError]:
-    return parse_int(1)
+    return first(1)

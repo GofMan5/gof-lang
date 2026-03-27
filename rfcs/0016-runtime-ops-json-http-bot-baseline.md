@@ -52,12 +52,13 @@ Operational helpers return `Result[..., RuntimeError]`.
 - `Io(message: string)`
 - `ChannelClosed`
 - `Cancelled`
+- `ParseInt(message: string)`
 - `Json(message: string)`
 - `HttpRequest(message: string)`
 - `HttpStatus(code: int, body: string)`
 
-This keeps `?` usable across env, filesystem, channel, JSON, and HTTP flows
-without forcing ad hoc conversion rules in the bootstrap language.
+This keeps `?` usable across env, filesystem, channel, conversion, JSON, and
+HTTP flows without forcing ad hoc conversion rules in the bootstrap language.
 
 ## Concurrency contract
 

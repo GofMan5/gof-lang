@@ -78,7 +78,6 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3058`: invalid operand for builtin `starts_with`
 - `GOF3059`: invalid operand for builtin `ends_with`
 - `GOF3060`: invalid operand for builtin `parse_int`
-- `GOF3061`: `parse_int` runtime conversion failed
 - `GOF3062`: invalid operand for builtin `to_string`
 - `GOF3063`: invalid operand for builtin `range`
 - `GOF3064`: invalid zero-step contract for builtin `range`
@@ -99,3 +98,5 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3084`: invalid JSON index type
 - `GOF3085`: invalid operand for builtin `sleep`
 - `GOF3086`: invalid negative duration for builtin `sleep`
+- `GOF3087`: invalid operand for equality or ordering
+- `GOF3088`: invalid operand for sequence helpers

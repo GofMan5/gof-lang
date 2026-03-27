@@ -70,7 +70,7 @@ The bootstrap compiler in this repository currently supports:
 - identifiers
 - logical operators through `and`, `or`, and `not`
 - additive and multiplicative expressions plus integer division and modulo
-- comparison expressions
+- comparison expressions with explicit equality and ordering domains
 - named function calls
 - struct constructor calls through `TypeName(...)`
 - enum variant references through `EnumName.Variant`
@@ -94,6 +94,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `dict()` and `insert(...)` for bootstrap key/value data
 - builtin `keys(dict)` and `values(dict)` for deterministic dict views
 - builtin `append(list, value)` for pure list growth
+- builtin `first(list)`, `last(list)`, `slice(list, start, end)`, `reverse(list)`, `sort(list)`, `min(list)`, and `max(list)` for explicit sequence work
 - builtin `contains(haystack, needle)` for list membership and string substring checks
 - builtin `trim(...)`, `split(...)`, `join(...)`, `starts_with(...)`, and `ends_with(...)` for explicit string work
 - builtin `parse_int(...)` and `to_string(...)` for explicit numeric and text conversion
@@ -121,17 +122,21 @@ The bootstrap compiler in this repository currently supports:
 - duplicate struct names across the module graph are rejected
 - duplicate enum names across the module graph are rejected
 - struct, enum, and function names cannot conflict at top level because constructors, type references, and enum variant access must stay unambiguous
+- builtin helper names are not reserved; a top-level user function with the same name shadows the builtin call
 - plain function calls currently target only top-level named functions
 - struct constructors currently use positional field order from the declaration
 - enum variants may be unit variants or payload variants with named fields
-- enum equality currently works only between values of the same enum type
+- equality currently works for `int`, `string`, `bool`, `json`, `unit`, `list[T]`, `dict[T]`, same-type `struct`, same-type `enum`, and compatible `Result[T, E]` values when every nested member also has explicit equality semantics
+- ordering currently works for `int` and `string`
+- string ordering is currently lexicographic
+- channel, task, and cancellation-token values currently do not participate in equality or ordering, even when nested inside structs, enums, lists, dicts, or `Result` payloads
 - enum declarations currently require unique variant names
 - enum variant references currently require a known variant declared on the target enum
 - payload enum construction currently requires the exact number of payload values
 - payload enum construction currently requires payload values compatible with the declared payload field types
 - `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
 - `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
-- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `Json(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
+- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
 - `match value:` currently requires `value` to resolve to a known enum or `Result`
 - each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
 - `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
@@ -148,6 +153,8 @@ The bootstrap compiler in this repository currently supports:
 - unary `-` currently requires an `int` operand
 - `+`, `-`, `*`, `/`, and `%` currently operate on `int`
 - `+` also currently concatenates two `string` values
+- `==` and `!=` currently require operands with explicit equality semantics
+- `<`, `<=`, `>`, and `>=` currently require `int` or `string` operands
 - `/` and `%` currently report a runtime diagnostic when the right-hand operand resolves to zero
 - postfix `expr?` currently requires the operand to resolve to `Result[T, E]`
 - postfix `expr?` currently unwraps `Result.Ok(value)` to `value`
@@ -164,6 +171,7 @@ The bootstrap compiler in this repository currently supports:
 - dict literal keys currently must resolve to `string`
 - dict literal values currently must resolve to one compatible type when the bootstrap type layer can determine them
 - `append(list, value)` is currently a builtin recognized by the compiler and evaluator
+- `first`, `last`, `slice`, `reverse`, `sort`, `min`, and `max` are currently builtins recognized by the compiler and evaluator
 - `contains(haystack, needle)` is currently a builtin recognized by the compiler and evaluator
 - `channel()`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
 - `print` currently accepts exactly one printable value and returns `unit`
@@ -173,14 +181,24 @@ The bootstrap compiler in this repository currently supports:
 - `keys` currently accepts exactly one dict and returns `list[string]` in deterministic key order
 - `values` currently accepts exactly one dict and returns `list[value]` in the same deterministic key order as `keys(dict)`
 - `append` currently accepts exactly one list plus one compatible value and returns a new list
+- `first(list)` and `last(list)` currently require exactly one list and return `Result[element, RuntimeError]`
+- empty-list `first` and `last` currently return `RuntimeError.EmptySequence(message)`
+- `slice(list, start, end)` currently requires one list plus two `int` indices and returns `Result[list[element], RuntimeError]`
+- `slice` currently returns `RuntimeError.Slice(message)` when indices are negative, when `start > end`, or when `end` exceeds the list length
+- `reverse(list)` currently requires exactly one list and returns a new list in reverse order
+- `sort(list)` currently requires exactly one list and returns a new deterministically sorted list
+- `sort` currently supports only `list[int]` and `list[string]`
+- `min(list)` and `max(list)` currently require exactly one list and return `Result[element, RuntimeError]`
+- empty-list `min` and `max` currently return `RuntimeError.EmptySequence(message)`
+- `min` and `max` currently support only `list[int]` and `list[string]`
 - `contains` currently accepts `(list, value)`, `(string, string)`, or `(dict, string)` and returns `bool`
 - `trim` currently accepts exactly one string and returns a trimmed string
 - `split` currently accepts `(string, string)` and returns `list[string]`
 - `split` currently rejects an empty separator to keep bootstrap string semantics explicit
 - `join` currently accepts `(list[string], string)` and returns `string`
 - `starts_with` and `ends_with` currently accept `(string, string)` and return `bool`
-- `parse_int` currently accepts exactly one string and returns `int`
-- `parse_int` currently reports a runtime diagnostic when the text is not a valid base-10 integer
+- `parse_int` currently accepts exactly one string and returns `Result[int, RuntimeError]`
+- invalid `parse_int` text currently becomes `RuntimeError.ParseInt(message)` instead of a runtime diagnostic
 - `to_string` currently accepts exactly one printable value and returns `string`
 - `range` currently accepts `(stop)`, `(start, stop)`, or `(start, stop, step)` and returns `list[int]`
 - `range` currently requires every argument to resolve to `int`

@@ -53,6 +53,8 @@ For lists:
 values = [1, 2]
 values = append(values, 3)
 has_three = contains(values, 3)
+window = slice(values, 0, 2)
+ordered = sort(reverse(values))
 ```
 
 For dicts:
@@ -91,6 +93,35 @@ Current string-helper rules:
 - `starts_with(text, prefix)` returns `bool`
 - `ends_with(text, suffix)` returns `bool`
 
+## Sequence helpers
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    values = [7, 1, 5, 3]
+    head = first(values)?
+    tail = last(values)?
+    middle = slice(values, 1, 3)?
+    reversed = reverse(values)
+    ordered = sort(values)
+    smallest = min(values)?
+    loudest = max(["warn", "critical", "ok"])?
+    return Result.Ok(head + tail + len(middle) + len(reversed) + len(ordered) + smallest + len(loudest))
+```
+
+Current sequence-helper rules:
+
+- `first(list)` and `last(list)` return `Result[element, RuntimeError]`
+- empty-list `first` and `last` return `RuntimeError.EmptySequence(message)`
+- `slice(list, start, end)` returns `Result[list[element], RuntimeError]`
+- `slice` rejects negative indices, `start > end`, and `end > len(list)` with `RuntimeError.Slice(message)`
+- `reverse(list)` returns a new reversed list
+- `sort(list)` returns a new deterministically sorted list
+- `sort` currently supports only `list[int]` and `list[string]`
+- `min(list)` and `max(list)` return `Result[element, RuntimeError]`
+- empty-list `min` and `max` return `RuntimeError.EmptySequence(message)`
+- `min` and `max` currently support only `list[int]` and `list[string]`
+- sequence helpers are explicit allocation-visible transforms; they do not hide mutation
+
 ## JSON, HTTP, and explicit retry delays
 
 ```gof
@@ -118,14 +149,16 @@ Telegram bot baseline.
 ## Conversion helpers
 
 ```gof
-parsed = parse_int(trim(" 41 "))
-rendered = "gof-" + to_string(parsed + 1)
+fn main() -> Result[int, RuntimeError]:
+    parsed = parse_int(trim(" 41 "))?
+    rendered = "gof-" + to_string(parsed + 1)
+    return Result.Ok(parsed + len(rendered))
 ```
 
 Current conversion rules:
 
-- `parse_int(text)` requires a string and returns `int`
-- invalid numeric text becomes a runtime diagnostic instead of hidden fallback behavior
+- `parse_int(text)` requires a string and returns `Result[int, RuntimeError]`
+- invalid numeric text becomes `RuntimeError.ParseInt(message)` instead of hidden fallback behavior
 - `to_string(value)` requires one printable value and returns `string`
 - conversion stays explicit; `gof` is not trying to teach silent coercions
 

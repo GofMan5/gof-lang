@@ -41,10 +41,15 @@ Current list rules:
 - negative indexing is not supported
 - out-of-bounds access is rejected at runtime in the bootstrap evaluator
 - `append(list, value)` returns a new list
+- `first(list)` and `last(list)` return `Result[element, RuntimeError]`
+- `slice(list, start, end)` returns `Result[list[element], RuntimeError]`
+- `reverse(list)` returns a new reversed list
+- `sort(list)` returns a new deterministically sorted list for `list[int]` and `list[string]`
+- `min(list)` and `max(list)` return `Result[element, RuntimeError]` for `list[int]` and `list[string]`
 
 The important teaching point is this:
 
-> `append(...)` is explicit value construction, not invisible mutation.
+> List helpers are explicit value construction, not invisible mutation.
 
 ## Dicts
 
@@ -98,6 +103,20 @@ Current rules:
 - `/` and `%` are integer-only
 - division and modulo by zero are rejected at runtime
 
+## Comparisons
+
+Comparison is now split into two explicit contracts:
+
+- equality through `==` and `!=`
+- ordering through `<`, `<=`, `>`, and `>=`
+
+Current rules:
+
+- equality works for `int`, `string`, `bool`, `json`, `unit`, `list[T]`, `dict[T]`, same-type `struct`, same-type `enum`, and compatible `Result[T, E]` values when their nested members are also equality-comparable
+- ordering works only for `int` and `string`
+- string ordering is lexicographic
+- channels, tasks, and cancellation tokens are not comparable, even when nested inside larger values
+
 ## Structs
 
 Structs are the current user-defined aggregate type.
@@ -138,7 +157,7 @@ Current enum rules:
 - payload fields are named and typed in the declaration
 - unit variants are referenced as `EnumName.Variant`
 - payload variants are constructed as `EnumName.Variant(value, ...)`
-- enum equality currently works only within the same enum type
+- same-type enums participate in structural equality when their payload fields are comparable
 
 Use `enum` when the question is "which state am I in?" rather than "which fields do I have?"
 
@@ -159,12 +178,18 @@ Current rules:
 - `Result.Ok(value)` constructs a success payload
 - `Result.Err(error)` constructs an error payload
 - result values can be handled with exhaustive `match`
+- result values participate in equality when both payload sides are equality-comparable
 - postfix `expr?` unwraps `Ok(value)` and returns early on `Err(error)`
 - the enclosing function must return a compatible `Result[_, E]`
 
 Operational helpers now use the same contract:
 
 - `env("NAME")` returns `Result[string, RuntimeError]`
+- `parse_int(text)` returns `Result[int, RuntimeError]`
+- `first(values)` returns `Result[T, RuntimeError]`
+- `slice(values, start, end)` returns `Result[list[T], RuntimeError]`
+- `min(values)` returns `Result[T, RuntimeError]`
+- `max(values)` returns `Result[T, RuntimeError]`
 - `read_file(path)` returns `Result[string, RuntimeError]`
 - `recv(channel)` returns `Result[T, RuntimeError]`
 - JSON and HTTP helpers also return `Result`
@@ -182,6 +207,9 @@ It currently includes:
 - `Io(message: string)`
 - `ChannelClosed`
 - `Cancelled`
+- `ParseInt(message: string)`
+- `EmptySequence(message: string)`
+- `Slice(message: string)`
 - `Json(message: string)`
 - `HttpRequest(message: string)`
 - `HttpStatus(code: int, body: string)`

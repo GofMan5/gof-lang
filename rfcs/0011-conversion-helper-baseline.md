@@ -15,15 +15,14 @@ still need awkward workarounds whenever numeric data crosses a string boundary.
 
 ## Design
 
-- `parse_int(text)` accepts one string and returns `int`
-- invalid numeric text becomes a runtime diagnostic instead of a silent fallback
+- `parse_int(text)` accepts one string and returns `Result[int, RuntimeError]`
+- invalid numeric text becomes `Result.Err(RuntimeError.ParseInt(message))`
 - `to_string(value)` accepts one printable value and returns `string`
 - conversion is explicit; the language still avoids implicit coercion rules
 
 ## Diagnostics
 
 - `GOF3060`: invalid operand for `parse_int`
-- `GOF3061`: runtime parse failure in `parse_int`
 - `GOF3062`: invalid operand for `to_string`
 
 ## Non-goals

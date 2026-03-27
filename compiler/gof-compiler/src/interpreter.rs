@@ -358,6 +358,45 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                     span: Span::new(0, 0, 0),
                 },
                 EnumVariant {
+                    name: "ParseInt".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "EmptySequence".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "Slice".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
                     name: "Json".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
@@ -692,6 +731,30 @@ fn runtime_channel_closed_error() -> Value {
 
 fn runtime_cancelled_error() -> Value {
     enum_value("RuntimeError", "Cancelled", Vec::new())
+}
+
+fn runtime_parse_int_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "ParseInt",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_empty_sequence_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "EmptySequence",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_slice_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Slice",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
 }
 
 fn runtime_json_error(message: impl Into<String>) -> Value {
@@ -1547,6 +1610,18 @@ fn eval_expr(
                 ])
             })?),
         Expr::Call { callee, args, span } => {
+            if let Some(function) = functions.get(callee).cloned() {
+                let values = args
+                    .iter()
+                    .map(|arg| {
+                        eval_expr(arg, scopes, functions, methods, structs, enums, output, source_path)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok(eval_function(
+                    &function, &values, functions, methods, structs, enums, output,
+                )?);
+            }
+
             if callee == "len" {
                 return eval_len_builtin(
                     args,
@@ -1591,6 +1666,104 @@ fn eval_expr(
 
             if callee == "contains" {
                 return eval_contains_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "first" {
+                return eval_first_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "last" {
+                return eval_last_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "slice" {
+                return eval_slice_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "reverse" {
+                return eval_reverse_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "sort" {
+                return eval_sort_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "min" {
+                return eval_min_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "max" {
+                return eval_max_builtin(
                     args,
                     scopes,
                     functions,
@@ -2179,25 +2352,17 @@ fn eval_expr(
                 .into());
             }
 
-            let function = functions.get(callee).cloned().ok_or_else(|| {
-                Diagnostics(vec![
-                    Diagnostic::error(
-                        "GOF3004",
-                        format!("unknown function `{callee}`"),
-                        "only top-level named functions can be called in the bootstrap evaluator",
-                        *span,
-                    )
-                    .with_fix_it("define the function before calling it")
-                    .with_source_path(source_path.to_path_buf()),
-                ])
-            })?;
-            let values = args
-                .iter()
-                .map(|arg| {
-                    eval_expr(arg, scopes, functions, methods, structs, enums, output, source_path)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(eval_function(&function, &values, functions, methods, structs, enums, output)?)
+            Err(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3004",
+                    format!("unknown function `{callee}`"),
+                    "only top-level named functions can be called in the bootstrap evaluator",
+                    *span,
+                )
+                .with_fix_it("define the function before calling it")
+                .with_source_path(source_path.to_path_buf()),
+            ])
+            .into())
         }
         Expr::Field {
             target,
@@ -2951,8 +3116,14 @@ fn eval_binary(
         (Value::Int(lhs), BinaryOp::Ge, Value::Int(rhs)) => Ok(Value::Bool(lhs >= rhs)),
         (Value::String(lhs), BinaryOp::Eq, Value::String(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::String(lhs), BinaryOp::Ne, Value::String(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::String(lhs), BinaryOp::Lt, Value::String(rhs)) => Ok(Value::Bool(lhs < rhs)),
+        (Value::String(lhs), BinaryOp::Le, Value::String(rhs)) => Ok(Value::Bool(lhs <= rhs)),
+        (Value::String(lhs), BinaryOp::Gt, Value::String(rhs)) => Ok(Value::Bool(lhs > rhs)),
+        (Value::String(lhs), BinaryOp::Ge, Value::String(rhs)) => Ok(Value::Bool(lhs >= rhs)),
         (Value::Bool(lhs), BinaryOp::Eq, Value::Bool(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Bool(lhs), BinaryOp::Ne, Value::Bool(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::Json(lhs), BinaryOp::Eq, Value::Json(rhs)) => Ok(Value::Bool(lhs == rhs)),
+        (Value::Json(lhs), BinaryOp::Ne, Value::Json(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Struct(lhs), BinaryOp::Eq, Value::Struct(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Struct(lhs), BinaryOp::Ne, Value::Struct(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Enum(lhs), BinaryOp::Eq, Value::Enum(rhs)) => Ok(Value::Bool(lhs == rhs)),
@@ -2961,10 +3132,12 @@ fn eval_binary(
         (Value::List(lhs), BinaryOp::Ne, Value::List(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Dict(lhs), BinaryOp::Eq, Value::Dict(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Dict(lhs), BinaryOp::Ne, Value::Dict(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::Unit, BinaryOp::Eq, Value::Unit) => Ok(Value::Bool(true)),
+        (Value::Unit, BinaryOp::Ne, Value::Unit) => Ok(Value::Bool(false)),
         _ => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
             "GOF3001",
             "unsupported expression in bootstrap evaluator",
-            "the current evaluator supports int arithmetic, comparisons, and equality for strings, bools, lists, dicts, structs, and enums",
+            "the current evaluator supports int arithmetic, lexicographic string ordering, and equality for bool, json, unit, and structural string/list/dict/struct/enum/result values",
             span,
         )
         .with_source_path(source_path.to_path_buf())])),
@@ -3239,6 +3412,517 @@ fn eval_contains_builtin(
             .with_source_path(source_path.to_path_buf()),
         ])),
     }
+}
+
+fn eval_first_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `first`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `first(list_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let list_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::List(values) = list_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3088",
+                "`first` requires a list value",
+                format!("this argument resolves to `{}`", value_name(&list_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a list value to `first`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    Ok(match values.first() {
+        Some(value) => result_ok(value.clone()),
+        None => result_err(runtime_empty_sequence_error(
+            "`first` requires a non-empty list",
+        )),
+    })
+}
+
+fn eval_last_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `last`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `last(list_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let list_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::List(values) = list_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3088",
+                "`last` requires a list value",
+                format!("this argument resolves to `{}`", value_name(&list_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a list value to `last`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    Ok(match values.last() {
+        Some(value) => result_ok(value.clone()),
+        None => result_err(runtime_empty_sequence_error(
+            "`last` requires a non-empty list",
+        )),
+    })
+}
+
+fn eval_slice_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 3 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `slice`",
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `slice(list_value, start, end)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let list_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let start = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let end = eval_expr(
+        &args[2],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::List(values) = list_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3088",
+                "`slice` requires a list as its first argument",
+                format!("this argument resolves to `{}`", value_name(&list_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a list value as the first argument to `slice`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    let Value::Int(start) = start else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3088",
+                "`slice` argument 2 must resolve to `int`",
+                format!("this argument resolves to `{}`", value_name(&start)),
+                args[1].span(),
+            )
+            .with_fix_it("pass integer start and end indexes to `slice`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    let Value::Int(end) = end else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3088",
+                "`slice` argument 3 must resolve to `int`",
+                format!("this argument resolves to `{}`", value_name(&end)),
+                args[2].span(),
+            )
+            .with_fix_it("pass integer start and end indexes to `slice`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    if start < 0 || end < 0 {
+        return Ok(result_err(runtime_slice_error(
+            "`slice` indexes must be non-negative",
+        )));
+    }
+    if start > end {
+        return Ok(result_err(runtime_slice_error(
+            "`slice` start index cannot exceed end index",
+        )));
+    }
+
+    let len = values.len() as i64;
+    if end > len {
+        return Ok(result_err(runtime_slice_error(format!(
+            "`slice` end index {end} exceeds list length {len}"
+        ))));
+    }
+
+    Ok(result_ok(Value::List(
+        values[start as usize..end as usize].to_vec(),
+    )))
+}
+
+fn eval_reverse_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `reverse`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `reverse(list_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let list_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::List(mut values) = list_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3088",
+                "`reverse` requires a list value",
+                format!("this argument resolves to `{}`", value_name(&list_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a list value to `reverse`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    values.reverse();
+    Ok(Value::List(values))
+}
+
+fn eval_sort_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    let mut values = eval_orderable_list_builtin(
+        "sort",
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        span,
+    )?;
+
+    if values.iter().all(|value| matches!(value, Value::Int(_))) {
+        values.sort_by(|lhs, rhs| match (lhs, rhs) {
+            (Value::Int(lhs), Value::Int(rhs)) => lhs.cmp(rhs),
+            _ => unreachable!("all values should be ints after validation"),
+        });
+        return Ok(Value::List(values));
+    }
+
+    if values.iter().all(|value| matches!(value, Value::String(_))) {
+        values.sort_by(|lhs, rhs| match (lhs, rhs) {
+            (Value::String(lhs), Value::String(rhs)) => lhs.cmp(rhs),
+            _ => unreachable!("all values should be strings after validation"),
+        });
+        return Ok(Value::List(values));
+    }
+
+    if values.is_empty() {
+        return Ok(Value::List(values));
+    }
+
+    eval_diagnostics(Diagnostics(vec![
+        Diagnostic::error(
+            "GOF3088",
+            "`sort` currently requires `list[int]` or `list[string]`",
+            "the runtime sort baseline supports only homogeneous int or string lists",
+            args[0].span(),
+        )
+        .with_fix_it("sort a list of ints or strings")
+        .with_source_path(source_path.to_path_buf()),
+    ]))
+}
+
+fn eval_min_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    let values = eval_orderable_list_builtin(
+        "min",
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        span,
+    )?;
+
+    if values.is_empty() {
+        return Ok(result_err(runtime_empty_sequence_error(
+            "`min` requires a non-empty list",
+        )));
+    }
+
+    if values.iter().all(|value| matches!(value, Value::Int(_))) {
+        let min_value = values
+            .iter()
+            .min_by(|lhs, rhs| match (lhs, rhs) {
+                (Value::Int(lhs), Value::Int(rhs)) => lhs.cmp(rhs),
+                _ => unreachable!("all values should be ints after validation"),
+            })
+            .expect("non-empty int list should have a minimum")
+            .clone();
+        return Ok(result_ok(min_value));
+    }
+
+    let min_value = values
+        .iter()
+        .min_by(|lhs, rhs| match (lhs, rhs) {
+            (Value::String(lhs), Value::String(rhs)) => lhs.cmp(rhs),
+            _ => unreachable!("all values should be strings after validation"),
+        })
+        .expect("non-empty string list should have a minimum")
+        .clone();
+    Ok(result_ok(min_value))
+}
+
+fn eval_max_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    let values = eval_orderable_list_builtin(
+        "max",
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        span,
+    )?;
+
+    if values.is_empty() {
+        return Ok(result_err(runtime_empty_sequence_error(
+            "`max` requires a non-empty list",
+        )));
+    }
+
+    if values.iter().all(|value| matches!(value, Value::Int(_))) {
+        let max_value = values
+            .iter()
+            .max_by(|lhs, rhs| match (lhs, rhs) {
+                (Value::Int(lhs), Value::Int(rhs)) => lhs.cmp(rhs),
+                _ => unreachable!("all values should be ints after validation"),
+            })
+            .expect("non-empty int list should have a maximum")
+            .clone();
+        return Ok(result_ok(max_value));
+    }
+
+    let max_value = values
+        .iter()
+        .max_by(|lhs, rhs| match (lhs, rhs) {
+            (Value::String(lhs), Value::String(rhs)) => lhs.cmp(rhs),
+            _ => unreachable!("all values should be strings after validation"),
+        })
+        .expect("non-empty string list should have a maximum")
+        .clone();
+    Ok(result_ok(max_value))
+}
+
+fn eval_orderable_list_builtin(
+    callee: &'static str,
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Vec<Value>> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{callee}`"),
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{callee}(list_value)`"))
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let list_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::List(values) = list_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3088",
+                format!("`{callee}` requires a list value"),
+                format!("this argument resolves to `{}`", value_name(&list_value)),
+                args[0].span(),
+            )
+            .with_fix_it(format!("pass a list value to `{callee}`"))
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    if values.is_empty()
+        || values.iter().all(|value| matches!(value, Value::Int(_)))
+        || values.iter().all(|value| matches!(value, Value::String(_)))
+    {
+        return Ok(values);
+    }
+
+    eval_diagnostics(Diagnostics(vec![
+        Diagnostic::error(
+            "GOF3088",
+            format!("`{callee}` currently requires `list[int]` or `list[string]`"),
+            format!(
+                "the runtime `{callee}` baseline supports only homogeneous int or string lists"
+            ),
+            args[0].span(),
+        )
+        .with_fix_it(format!("call `{callee}` on a list of ints or strings"))
+        .with_source_path(source_path.to_path_buf()),
+    ]))
 }
 
 fn eval_trim_builtin(
@@ -3575,18 +4259,12 @@ fn eval_parse_int_builtin(
         ]));
     };
 
-    Ok(value_text.parse::<i64>().map(Value::Int).map_err(|error| {
-        Diagnostics(vec![
-            Diagnostic::error(
-                "GOF3061",
-                format!("failed to parse int from `{value_text}`"),
-                error.to_string(),
-                args[0].span(),
-            )
-            .with_fix_it("pass a base-10 integer string such as `\"42\"` or `\"-7\"`")
-            .with_source_path(source_path.to_path_buf()),
-        ])
-    })?)
+    Ok(match value_text.parse::<i64>() {
+        Ok(value) => result_ok(Value::Int(value)),
+        Err(error) => result_err(runtime_parse_int_error(format!(
+            "failed to parse int from `{value_text}`: {error}"
+        ))),
+    })
 }
 
 fn eval_to_string_builtin(
@@ -6050,10 +6728,98 @@ mod tests {
     #[test]
     fn evaluates_conversion_builtins() {
         let value = run_source(
-            "fn main() -> int:\n    parsed = parse_int(trim(\" 41 \"))\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return parsed + len(rendered)\n",
+            "fn main() -> Result[int, RuntimeError]:\n    parsed = parse_int(trim(\" 41 \"))?\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return Result.Ok(parsed + len(rendered))\n",
         )
         .expect("program should run");
-        assert_eq!(value, Value::Int(47));
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 47)"));
+    }
+
+    #[test]
+    fn evaluates_sequence_helper_builtins() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    values = [7, 1, 5, 3]\n    head = first(values)?\n    tail = last(values)?\n    middle = slice(values, 1, 3)?\n    reversed = reverse(values)\n    ordered = sort(values)\n    names = sort([\"warn\", \"critical\", \"ok\"])\n    smallest = min(values)?\n    loudest = max(names)?\n    assert(middle == [1, 5], \"expected middle slice\")\n    assert(reverse(middle) == [5, 1], \"expected reversed slice\")\n    assert(reversed == [3, 5, 1, 7], \"expected full reverse\")\n    assert(ordered == [1, 3, 5, 7], \"expected sorted ints\")\n    assert(names[0] == \"critical\", \"expected lexical string sort\")\n    assert(smallest == 1, \"expected min value\")\n    assert(loudest == \"warn\", \"expected max name\")\n    return Result.Ok(head + tail + len(middle) + len(names))\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 15)"));
+    }
+
+    #[test]
+    fn prefers_user_functions_over_builtin_name_collisions() {
+        let value = run_source(
+            "fn first(values: list[int]) -> int:\n    return values[0] + 10\nfn main() -> int:\n    return first([7, 9])\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(17));
+    }
+
+    #[test]
+    fn returns_empty_sequence_errors_as_runtime_values() {
+        let value = run_source(
+            "fn main() -> string:\n    outcome = first([])\n    match outcome:\n        Result.Ok(value):\n            return to_string(value)\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("program should run");
+        assert_eq!(
+            value,
+            Value::String(
+                "RuntimeError.EmptySequence(message: `first` requires a non-empty list)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn returns_extrema_errors_as_runtime_values() {
+        let min_value = run_source(
+            "fn main() -> string:\n    outcome = min([])\n    match outcome:\n        Result.Ok(value):\n            return to_string(value)\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("program should run");
+        let max_value = run_source(
+            "fn main() -> string:\n    outcome = max([])\n    match outcome:\n        Result.Ok(value):\n            return to_string(value)\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(
+            min_value,
+            Value::String(
+                "RuntimeError.EmptySequence(message: `min` requires a non-empty list)".to_string()
+            )
+        );
+        assert_eq!(
+            max_value,
+            Value::String(
+                "RuntimeError.EmptySequence(message: `max` requires a non-empty list)".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn returns_slice_errors_as_runtime_values() {
+        let value = run_source(
+            "fn main() -> string:\n    outcome = slice([1, 2, 3], 2, 1)\n    match outcome:\n        Result.Ok(value):\n            return to_string(len(value))\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("program should run");
+        assert_eq!(
+            value,
+            Value::String(
+                "RuntimeError.Slice(message: `slice` start index cannot exceed end index)"
+                    .to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn returns_parse_int_failures_as_runtime_errors() {
+        let value = run_source(
+            "fn main() -> string:\n    outcome = parse_int(\"oops\")\n    match outcome:\n        Result.Ok(value):\n            return to_string(value)\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("program should run");
+        assert_eq!(
+            value,
+            Value::String(
+                "RuntimeError.ParseInt(message: failed to parse int from `oops`: invalid digit found in string)"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
@@ -6234,6 +7000,15 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_explicit_comparison_semantics() {
+        let value = run_source(
+            "struct Snapshot:\n    count: int\n    label: string\n\nenum Stage:\n    Draft\n    Published(version: int)\n\nfn main() -> Result[int, RuntimeError]:\n    left = json_parse(\"{\\\"count\\\": 2, \\\"label\\\": \\\"beta\\\"}\")?\n    right = json_parse(\"{\\\"count\\\": 2, \\\"label\\\": \\\"beta\\\"}\")?\n    snapshot_a: Snapshot = Snapshot(2, \"beta\")\n    snapshot_b: Snapshot = Snapshot(2, \"beta\")\n    stage_a: Stage = Stage.Published(3)\n    stage_b: Stage = Stage.Published(3)\n    ok_a: Result[int, RuntimeError] = Result.Ok(7)\n    ok_b: Result[int, RuntimeError] = Result.Ok(7)\n    assert(\"alpha\" < \"beta\", \"expected lexicographic string ordering\")\n    assert(left == right, \"expected structural json equality\")\n    assert(snapshot_a == snapshot_b, \"expected structural struct equality\")\n    assert(stage_a == stage_b, \"expected payload enum equality\")\n    assert(ok_a == ok_b, \"expected result equality\")\n    assert(sleep(0) == sleep(0), \"expected unit equality\")\n    assert([1, 2] == [1, 2], \"expected list equality\")\n    assert({\"ok\": 2} == {\"ok\": 2}, \"expected dict equality\")\n    return Result.Ok(42)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 42)"));
+    }
+
+    #[test]
     fn evaluates_match_over_enum_variants() {
         let value = run_source(
             "enum Status:\n    Ready\n    Busy\n\nfn score(status: Status) -> int:\n    match status:\n        Status.Ready:\n            return 1\n        Status.Busy:\n            return 2\n\nfn main() -> int:\n    return score(Status.Busy)\n",
@@ -6379,8 +7154,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_parse_int_operand() {
-        let diagnostics = run_source("fn main() -> int:\n    return parse_int(1)\n")
-            .expect_err("parse_int operand should fail");
+        let diagnostics =
+            run_source("fn main() -> Result[int, RuntimeError]:\n    return parse_int(1)\n")
+                .expect_err("parse_int operand should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3060"]);
     }
 
@@ -6389,13 +7165,6 @@ mod tests {
         let diagnostics = run_source("fn main() -> unit:\n    sleep(\"soon\")\n")
             .expect_err("sleep operand should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3085"]);
-    }
-
-    #[test]
-    fn rejects_invalid_parse_int_text() {
-        let diagnostics = run_source("fn main() -> int:\n    return parse_int(\"oops\")\n")
-            .expect_err("parse_int text should fail");
-        assert_eq!(diagnostics.codes(), vec!["GOF3061"]);
     }
 
     #[test]
@@ -6410,6 +7179,37 @@ mod tests {
         let diagnostics = run_source("fn main() -> list:\n    return range(\"bad\")\n")
             .expect_err("range operand should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3063"]);
+    }
+
+    #[test]
+    fn rejects_invalid_first_operand() {
+        let diagnostics =
+            run_source("fn main() -> Result[int, RuntimeError]:\n    return first(1)\n")
+                .expect_err("first operand should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
+    }
+
+    #[test]
+    fn rejects_invalid_sort_operand() {
+        let diagnostics = run_source("fn main() -> list[bool]:\n    return sort([true, false])\n")
+            .expect_err("sort operand should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
+    }
+
+    #[test]
+    fn rejects_invalid_min_operand() {
+        let diagnostics =
+            run_source("fn main() -> Result[int, RuntimeError]:\n    return min([true, false])\n")
+                .expect_err("min operand should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
+    }
+
+    #[test]
+    fn rejects_invalid_max_operand() {
+        let diagnostics =
+            run_source("fn main() -> Result[int, RuntimeError]:\n    return max(1)\n")
+                .expect_err("max operand should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
     }
 
     #[test]

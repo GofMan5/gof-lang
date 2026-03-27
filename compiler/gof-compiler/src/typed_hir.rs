@@ -355,6 +355,27 @@ fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
                     fields: Vec::new(),
                 },
                 EnumVariantSignature {
+                    name: "ParseInt".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "EmptySequence".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "Slice".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
                     name: "Json".to_string(),
                     fields: vec![EnumVariantFieldSignature {
                         name: "message".to_string(),
@@ -460,6 +481,13 @@ enum CallKind {
     BuiltinPrint,
     BuiltinAppend,
     BuiltinContains,
+    BuiltinFirst,
+    BuiltinLast,
+    BuiltinSlice,
+    BuiltinReverse,
+    BuiltinSort,
+    BuiltinMin,
+    BuiltinMax,
     BuiltinTrim,
     BuiltinSplit,
     BuiltinJoin,
@@ -2091,6 +2119,13 @@ fn lower_expr(
                     | CallKind::BuiltinPrint
                     | CallKind::BuiltinAppend
                     | CallKind::BuiltinContains
+                    | CallKind::BuiltinFirst
+                    | CallKind::BuiltinLast
+                    | CallKind::BuiltinSlice
+                    | CallKind::BuiltinReverse
+                    | CallKind::BuiltinSort
+                    | CallKind::BuiltinMin
+                    | CallKind::BuiltinMax
                     | CallKind::BuiltinTrim
                     | CallKind::BuiltinSplit
                     | CallKind::BuiltinJoin
@@ -2642,8 +2677,16 @@ fn lower_expr(
                 function_return_type,
                 source_path,
             );
-            validate_binary_expr(*op, &lhs, &rhs, diagnostics, source_path);
-            let ty = infer_binary_type(&lhs.ty, *op, &rhs.ty);
+            validate_binary_expr(
+                *op,
+                &lhs,
+                &rhs,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                source_path,
+            );
+            let ty = infer_binary_type(&lhs.ty, *op, &rhs.ty, struct_signatures, enum_signatures);
             TypedExpr {
                 kind: TypedExprKind::Binary {
                     lhs: Box::new(lhs),
@@ -2679,6 +2722,27 @@ fn validate_call(
         }
         CallKind::BuiltinContains => {
             validate_contains_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinFirst => {
+            validate_first_or_last_call("first", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinLast => {
+            validate_first_or_last_call("last", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinSlice => {
+            validate_slice_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinReverse => {
+            validate_reverse_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinSort => {
+            validate_sort_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinMin => {
+            validate_min_or_max_call("min", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinMax => {
+            validate_min_or_max_call("max", args, span, diagnostics, source_path);
         }
         CallKind::BuiltinTrim => {
             validate_trim_call(args, span, diagnostics, source_path);
@@ -3284,7 +3348,9 @@ fn resolve_call_kind(
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
 ) -> CallKind {
-    if callee == "len" {
+    if signatures.contains_key(callee) {
+        CallKind::Function
+    } else if callee == "len" {
         CallKind::BuiltinLen
     } else if callee == "print" {
         CallKind::BuiltinPrint
@@ -3292,6 +3358,20 @@ fn resolve_call_kind(
         CallKind::BuiltinAppend
     } else if callee == "contains" {
         CallKind::BuiltinContains
+    } else if callee == "first" {
+        CallKind::BuiltinFirst
+    } else if callee == "last" {
+        CallKind::BuiltinLast
+    } else if callee == "slice" {
+        CallKind::BuiltinSlice
+    } else if callee == "reverse" {
+        CallKind::BuiltinReverse
+    } else if callee == "sort" {
+        CallKind::BuiltinSort
+    } else if callee == "min" {
+        CallKind::BuiltinMin
+    } else if callee == "max" {
+        CallKind::BuiltinMax
     } else if callee == "trim" {
         CallKind::BuiltinTrim
     } else if callee == "split" {
@@ -3378,8 +3458,6 @@ fn resolve_call_kind(
         CallKind::BuiltinHttpGet
     } else if callee == "http_post" {
         CallKind::BuiltinHttpPost
-    } else if signatures.contains_key(callee) {
-        CallKind::Function
     } else if struct_signatures.contains_key(callee) {
         CallKind::Struct
     } else if enum_signatures.contains_key(callee) {
@@ -3401,12 +3479,21 @@ fn call_return_type(
         CallKind::BuiltinPrint => Type::Unit,
         CallKind::BuiltinAppend => infer_append_return_type(args),
         CallKind::BuiltinContains => Type::Bool,
+        CallKind::BuiltinFirst => infer_first_or_last_return_type(args),
+        CallKind::BuiltinLast => infer_first_or_last_return_type(args),
+        CallKind::BuiltinSlice => infer_slice_return_type(args),
+        CallKind::BuiltinReverse => infer_reverse_return_type(args),
+        CallKind::BuiltinSort => infer_sort_return_type(args),
+        CallKind::BuiltinMin => infer_min_or_max_return_type(args),
+        CallKind::BuiltinMax => infer_min_or_max_return_type(args),
         CallKind::BuiltinTrim => Type::String,
         CallKind::BuiltinSplit => infer_split_return_type(args),
         CallKind::BuiltinJoin => Type::String,
         CallKind::BuiltinStartsWith => Type::Bool,
         CallKind::BuiltinEndsWith => Type::Bool,
-        CallKind::BuiltinParseInt => Type::Int,
+        CallKind::BuiltinParseInt => {
+            Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+        }
         CallKind::BuiltinToString => Type::String,
         CallKind::BuiltinRange => Type::list(Type::Int),
         CallKind::BuiltinSleep => Type::Unit,
@@ -3526,6 +3613,8 @@ fn validate_binary_expr(
     op: BinaryOp,
     lhs: &TypedExpr,
     rhs: &TypedExpr,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
@@ -3582,45 +3671,223 @@ fn validate_binary_expr(
                 .with_source_path(source_path.to_path_buf()),
             );
         }
+        return;
+    }
+
+    if is_equality_op(op)
+        && !supports_equality(&lhs.ty, &rhs.ty, struct_signatures, enum_signatures)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3087",
+                format!(
+                    "`{}` requires operands with explicit equality semantics",
+                    binary_op_name(op)
+                ),
+                format!(
+                    "the operands resolve to `{}` and `{}`",
+                    lhs.ty.display_name(),
+                    rhs.ty.display_name()
+                ),
+                lhs.span,
+            )
+            .with_fix_it(
+                "compare matching int, string, bool, json, unit, or structural values built from comparable members",
+            )
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if is_ordering_op(op) && !supports_ordering(&lhs.ty, &rhs.ty) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3087",
+                format!("`{}` requires ordered operands", binary_op_name(op)),
+                format!(
+                    "the operands resolve to `{}` and `{}`",
+                    lhs.ty.display_name(),
+                    rhs.ty.display_name()
+                ),
+                lhs.span,
+            )
+            .with_fix_it("order only `int` or `string` values")
+            .with_source_path(source_path.to_path_buf()),
+        );
     }
 }
 
-fn infer_binary_type(lhs: &Type, op: BinaryOp, rhs: &Type) -> Type {
-    match (lhs, op, rhs) {
-        (
-            Type::Int,
-            BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod,
-            Type::Int,
-        ) => Type::Int,
-        (Type::String, BinaryOp::Add, Type::String) => Type::String,
-        (Type::Bool, BinaryOp::And | BinaryOp::Or, Type::Bool) => Type::Bool,
-        (
-            Type::Int,
-            BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge,
-            Type::Int,
-        ) => Type::Bool,
-        (Type::String, BinaryOp::Eq | BinaryOp::Ne, Type::String) => Type::Bool,
-        (Type::Bool, BinaryOp::Eq | BinaryOp::Ne, Type::Bool) => Type::Bool,
-        (Type::List(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::List(rhs))
-            if types_compatible(lhs, rhs) =>
-        {
-            Type::Bool
+fn infer_binary_type(
+    lhs: &Type,
+    op: BinaryOp,
+    rhs: &Type,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+) -> Type {
+    match op {
+        BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod => {
+            match (lhs, op, rhs) {
+                (
+                    Type::Int,
+                    BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Mod,
+                    Type::Int,
+                ) => Type::Int,
+                (Type::String, BinaryOp::Add, Type::String) => Type::String,
+                _ => Type::Unknown,
+            }
         }
-        (Type::Dict(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Dict(rhs))
-            if types_compatible(lhs, rhs) =>
-        {
-            Type::Bool
+        BinaryOp::And | BinaryOp::Or => match (lhs, rhs) {
+            (Type::Bool, Type::Bool) => Type::Bool,
+            _ => Type::Unknown,
+        },
+        BinaryOp::Eq | BinaryOp::Ne => {
+            if supports_equality(lhs, rhs, struct_signatures, enum_signatures) {
+                Type::Bool
+            } else {
+                Type::Unknown
+            }
         }
-        (Type::Struct(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Struct(rhs)) if lhs == rhs => {
-            Type::Bool
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
+            if supports_ordering(lhs, rhs) {
+                Type::Bool
+            } else {
+                Type::Unknown
+            }
         }
-        (Type::Enum(lhs), BinaryOp::Eq | BinaryOp::Ne, Type::Enum(rhs)) if lhs == rhs => Type::Bool,
-        (
-            Type::Result(lhs_ok, lhs_err),
-            BinaryOp::Eq | BinaryOp::Ne,
-            Type::Result(rhs_ok, rhs_err),
-        ) if types_compatible(lhs_ok, rhs_ok) && types_compatible(lhs_err, rhs_err) => Type::Bool,
-        _ => Type::Unknown,
+    }
+}
+
+fn is_equality_op(op: BinaryOp) -> bool {
+    matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+}
+
+fn is_ordering_op(op: BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge
+    )
+}
+
+fn supports_ordering(lhs: &Type, rhs: &Type) -> bool {
+    matches!(
+        (lhs, rhs),
+        (Type::Unknown, _)
+            | (_, Type::Unknown)
+            | (Type::Int, Type::Int)
+            | (Type::String, Type::String)
+    )
+}
+
+fn supports_equality(
+    lhs: &Type,
+    rhs: &Type,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+) -> bool {
+    if matches!(lhs, Type::Unknown) || matches!(rhs, Type::Unknown) {
+        return true;
+    }
+
+    if !types_compatible(lhs, rhs) {
+        return false;
+    }
+
+    type_supports_self_equality(lhs, struct_signatures, enum_signatures)
+        && type_supports_self_equality(rhs, struct_signatures, enum_signatures)
+}
+
+fn type_supports_self_equality(
+    ty: &Type,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+) -> bool {
+    let mut active_structs = HashSet::new();
+    let mut active_enums = HashSet::new();
+    type_supports_self_equality_inner(
+        ty,
+        struct_signatures,
+        enum_signatures,
+        &mut active_structs,
+        &mut active_enums,
+    )
+}
+
+fn type_supports_self_equality_inner(
+    ty: &Type,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    active_structs: &mut HashSet<String>,
+    active_enums: &mut HashSet<String>,
+) -> bool {
+    match ty {
+        Type::Unknown | Type::Int | Type::String | Type::Bool | Type::Json | Type::Unit => true,
+        Type::List(inner) | Type::Dict(inner) | Type::Channel(inner) | Type::Task(inner) => {
+            match ty {
+                Type::List(_) | Type::Dict(_) => type_supports_self_equality_inner(
+                    inner,
+                    struct_signatures,
+                    enum_signatures,
+                    active_structs,
+                    active_enums,
+                ),
+                Type::Channel(_) | Type::Task(_) => false,
+                _ => unreachable!("non-list/dict/channel/task branch should be unreachable"),
+            }
+        }
+        Type::CancelToken => false,
+        Type::Struct(name) => {
+            if !active_structs.insert(name.clone()) {
+                return true;
+            }
+            let result = struct_signatures.get(name).is_some_and(|signature| {
+                signature.fields.iter().all(|field| {
+                    type_supports_self_equality_inner(
+                        &field.ty,
+                        struct_signatures,
+                        enum_signatures,
+                        active_structs,
+                        active_enums,
+                    )
+                })
+            });
+            active_structs.remove(name);
+            result
+        }
+        Type::Enum(name) => {
+            if !active_enums.insert(name.clone()) {
+                return true;
+            }
+            let result = enum_signatures.get(name).is_some_and(|signature| {
+                signature.variants.iter().all(|variant| {
+                    variant.fields.iter().all(|field| {
+                        type_supports_self_equality_inner(
+                            &field.ty,
+                            struct_signatures,
+                            enum_signatures,
+                            active_structs,
+                            active_enums,
+                        )
+                    })
+                })
+            });
+            active_enums.remove(name);
+            result
+        }
+        Type::Result(ok, err) => {
+            type_supports_self_equality_inner(
+                ok,
+                struct_signatures,
+                enum_signatures,
+                active_structs,
+                active_enums,
+            ) && type_supports_self_equality_inner(
+                err,
+                struct_signatures,
+                enum_signatures,
+                active_structs,
+                active_enums,
+            )
+        }
     }
 }
 
@@ -4566,6 +4833,191 @@ fn validate_contains_call(
                 haystack.span,
             )
             .with_fix_it("call `contains` with a string, list, or dict as the first argument")
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+}
+
+fn validate_first_or_last_call(
+    callee: &'static str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{callee}`"),
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{callee}(list_value)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::List(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3088",
+                format!("`{callee}` requires a list value"),
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it(format!("pass a list value to `{callee}`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_slice_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 3 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `slice`",
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `slice(list_value, start, end)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::List(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3088",
+                "`slice` requires a list as its first argument",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a list value as the first argument to `slice`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    for (index, arg) in args[1..].iter().enumerate() {
+        if !matches!(arg.ty, Type::Int | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3088",
+                    format!("`slice` argument {} must resolve to `int`", index + 2),
+                    format!("this argument resolves to `{}`", arg.ty.display_name()),
+                    arg.span,
+                )
+                .with_fix_it("pass integer start and end indexes to `slice`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+}
+
+fn validate_reverse_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `reverse`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `reverse(list_value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::List(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3088",
+                "`reverse` requires a list value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a list value to `reverse`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_sort_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    validate_orderable_list_call("sort", args, span, diagnostics, source_path);
+}
+
+fn validate_min_or_max_call(
+    callee: &'static str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    validate_orderable_list_call(callee, args, span, diagnostics, source_path);
+}
+
+fn validate_orderable_list_call(
+    callee: &'static str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{callee}`"),
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{callee}(list_value)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) if matches!(inner.as_ref(), Type::Int | Type::String | Type::Unknown) => {
+        }
+        Type::List(inner) => diagnostics.push(
+            Diagnostic::error(
+                "GOF3088",
+                format!("`{callee}` currently requires `list[int]` or `list[string]`"),
+                format!("this list stores `{}`", inner.display_name()),
+                args[0].span,
+            )
+            .with_fix_it(format!("call `{callee}` on a list of ints or strings"))
+            .with_source_path(source_path.to_path_buf()),
+        ),
+        Type::Unknown => {}
+        other => diagnostics.push(
+            Diagnostic::error(
+                "GOF3088",
+                format!("`{callee}` requires a list value"),
+                format!("this argument resolves to `{}`", other.display_name()),
+                args[0].span,
+            )
+            .with_fix_it(format!("pass a list value to `{callee}`"))
             .with_source_path(source_path.to_path_buf()),
         ),
     }
@@ -5866,6 +6318,82 @@ fn infer_append_return_type(args: &[TypedExpr]) -> Type {
     }
 }
 
+fn infer_first_or_last_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) => Type::result(
+            inner.as_ref().clone(),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        Type::Unknown => Type::result(Type::Unknown, Type::Enum("RuntimeError".to_string())),
+        _ => Type::Unknown,
+    }
+}
+
+fn infer_slice_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 3 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) => Type::result(
+            Type::list(inner.as_ref().clone()),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        Type::Unknown => Type::result(
+            Type::list(Type::Unknown),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        _ => Type::Unknown,
+    }
+}
+
+fn infer_reverse_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) => Type::list(inner.as_ref().clone()),
+        Type::Unknown => Type::list(Type::Unknown),
+        _ => Type::Unknown,
+    }
+}
+
+fn infer_sort_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) if matches!(inner.as_ref(), Type::Int | Type::String | Type::Unknown) => {
+            Type::list(inner.as_ref().clone())
+        }
+        Type::Unknown => Type::list(Type::Unknown),
+        _ => Type::Unknown,
+    }
+}
+
+fn infer_min_or_max_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::List(inner) if matches!(inner.as_ref(), Type::Int | Type::String | Type::Unknown) => {
+            Type::result(
+                inner.as_ref().clone(),
+                Type::Enum("RuntimeError".to_string()),
+            )
+        }
+        Type::Unknown => Type::result(Type::Unknown, Type::Enum("RuntimeError".to_string())),
+        _ => Type::Unknown,
+    }
+}
+
 fn infer_split_return_type(args: &[TypedExpr]) -> Type {
     if args.len() != 2 {
         return Type::Unknown;
@@ -6214,13 +6742,16 @@ mod tests {
     #[test]
     fn supports_conversion_builtins() {
         let module = lower_source(
-            "fn main() -> int:\n    parsed = parse_int(trim(\" 41 \"))\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return parsed + len(rendered)\n",
+            "fn main() -> Result[int, RuntimeError]:\n    raw = parse_int(trim(\" 41 \"))\n    parsed = raw?\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return Result.Ok(parsed + len(rendered))\n",
         )
         .expect("typing should succeed");
 
         match &module.functions[0].body[0] {
             TypedStmt::Bind { value, .. } => {
-                assert_eq!(value.ty, Type::Int);
+                assert_eq!(
+                    value.ty,
+                    Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+                );
                 assert!(
                     matches!(&value.kind, TypedExprKind::Call { callee, .. } if callee == "parse_int")
                 );
@@ -6230,9 +6761,56 @@ mod tests {
 
         match &module.functions[0].body[1] {
             TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+                assert!(matches!(&value.kind, TypedExprKind::Propagate { .. }));
+            }
+            other => panic!("expected propagated parse_int bind, got {other:?}"),
+        }
+
+        match &module.functions[0].body[2] {
+            TypedStmt::Bind { value, .. } => {
                 assert_eq!(value.ty, Type::String);
             }
             other => panic!("expected rendered bind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_sequence_helper_builtins() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    values = [7, 1, 5, 3]\n    head = first(values)?\n    tail = last(values)?\n    middle = slice(values, 1, 3)?\n    reversed = reverse(values)\n    ordered = sort(values)\n    smallest = min(values)?\n    loudest = max([\"warn\", \"critical\", \"ok\"])?\n    return Result.Ok(head + tail + len(middle) + len(reversed) + len(ordered) + smallest + len(loudest))\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::Int),
+            other => panic!("expected propagated first bind, got {other:?}"),
+        }
+        match &module.functions[0].body[3] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected propagated slice bind, got {other:?}"),
+        }
+        match &module.functions[0].body[4] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected reverse bind, got {other:?}"),
+        }
+        match &module.functions[0].body[5] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected sort bind, got {other:?}"),
+        }
+        match &module.functions[0].body[6] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::Int),
+            other => panic!("expected propagated min bind, got {other:?}"),
+        }
+        match &module.functions[0].body[7] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::String),
+            other => panic!("expected propagated max bind, got {other:?}"),
         }
     }
 
@@ -6579,8 +7157,9 @@ mod tests {
 
     #[test]
     fn rejects_invalid_parse_int_operands() {
-        let diagnostics = lower_source("fn main() -> int:\n    return parse_int(1)\n")
-            .expect_err("typing should fail");
+        let diagnostics =
+            lower_source("fn main() -> Result[int, RuntimeError]:\n    return parse_int(1)\n")
+                .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3060"]);
     }
@@ -6607,6 +7186,53 @@ mod tests {
             .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3063"]);
+    }
+
+    #[test]
+    fn rejects_invalid_first_operands() {
+        let diagnostics =
+            lower_source("fn main() -> Result[int, RuntimeError]:\n    return first(1)\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
+    }
+
+    #[test]
+    fn rejects_invalid_slice_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[list[int], RuntimeError]:\n    return slice([1, 2, 3], \"start\", 2)\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
+    }
+
+    #[test]
+    fn rejects_invalid_sort_operands() {
+        let diagnostics =
+            lower_source("fn main() -> list[bool]:\n    return sort([true, false])\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
+    }
+
+    #[test]
+    fn rejects_invalid_min_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    return min([true, false])\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
+    }
+
+    #[test]
+    fn rejects_invalid_max_operands() {
+        let diagnostics =
+            lower_source("fn main() -> Result[int, RuntimeError]:\n    return max(1)\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3088"]);
     }
 
     #[test]
@@ -6716,6 +7342,30 @@ mod tests {
     }
 
     #[test]
+    fn supports_explicit_comparison_semantics() {
+        let module = lower_source(
+            "struct Snapshot:\n    count: int\n    label: string\n\nenum Stage:\n    Draft\n    Published(version: int)\n\nfn main() -> Result[bool, RuntimeError]:\n    left = json_parse(\"{\\\"count\\\": 2, \\\"label\\\": \\\"beta\\\"}\")?\n    right = json_parse(\"{\\\"count\\\": 2, \\\"label\\\": \\\"beta\\\"}\")?\n    snapshot_a: Snapshot = Snapshot(2, \"beta\")\n    snapshot_b: Snapshot = Snapshot(2, \"beta\")\n    stage_a: Stage = Stage.Published(3)\n    stage_b: Stage = Stage.Published(3)\n    ok_a: Result[int, RuntimeError] = Result.Ok(7)\n    ok_b: Result[int, RuntimeError] = Result.Ok(7)\n    return Result.Ok(\"alpha\" < \"beta\" and left == right and snapshot_a == snapshot_b and stage_a == stage_b and ok_a == ok_b and sleep(0) == sleep(0) and [1, 2] == [1, 2] and {\"ok\": 2} == {\"ok\": 2})\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(module.structs[0].name, "Snapshot");
+        assert_eq!(module.enums[0].name, "Stage");
+        assert_eq!(
+            module.functions[0].return_type,
+            Type::result(Type::Bool, Type::Enum("RuntimeError".to_string()))
+        );
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::Json),
+            other => panic!("expected propagated json bind, got {other:?}"),
+        }
+        match &module.functions[0].body[8] {
+            TypedStmt::Return(expr) => assert!(matches!(expr.ty, Type::Result(_, _))),
+            other => panic!("expected result-returning comparison expression, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn rejects_unknown_struct_field_access() {
         let diagnostics = lower_source(
             "struct Point:\n    x: int\n\nfn main() -> int:\n    point = Point(3)\n    return point.y\n",
@@ -6761,6 +7411,42 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3028"]);
+    }
+
+    #[test]
+    fn rejects_incompatible_equality_operands() {
+        let diagnostics = lower_source("fn main() -> bool:\n    return 1 == \"1\"\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3087"]);
+    }
+
+    #[test]
+    fn rejects_non_orderable_values() {
+        let diagnostics = lower_source("fn main() -> bool:\n    return [1, 2] < [1, 2]\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3087"]);
+    }
+
+    #[test]
+    fn rejects_struct_equality_when_fields_are_not_comparable() {
+        let diagnostics = lower_source(
+            "struct Worker:\n    inbox: channel[int]\n\nfn main() -> bool:\n    left: Worker = Worker(channel())\n    right: Worker = Worker(channel())\n    return left == right\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3087"]);
+    }
+
+    #[test]
+    fn rejects_result_equality_when_payload_is_not_comparable() {
+        let diagnostics = lower_source(
+            "fn main() -> bool:\n    left: Result[channel[int], RuntimeError] = Result.Ok(channel())\n    right: Result[channel[int], RuntimeError] = Result.Ok(channel())\n    return left == right\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3087"]);
     }
 
     #[test]

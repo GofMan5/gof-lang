@@ -1,0 +1,20 @@
+fn main() -> Result[int, RuntimeError]:
+    values = [7, 1, 5, 3]
+    head = first(values)?
+    tail = last(values)?
+    middle = slice(values, 1, 3)?
+    reversed = reverse(values)
+    ordered = sort(values)
+    names = sort(["warn", "critical", "ok"])
+    smallest = min(values)?
+    loudest = max(names)?
+
+    assert(middle == [1, 5], "expected middle slice")
+    assert(reverse(middle) == [5, 1], "expected reversed slice")
+    assert(reversed == [3, 5, 1, 7], "expected full reverse")
+    assert(ordered == [1, 3, 5, 7], "expected sorted ints")
+    assert(names[0] == "critical", "expected lexical string sort")
+    assert(smallest == 1, "expected min value")
+    assert(loudest == "warn", "expected max name")
+
+    return Result.Ok(head + tail + len(middle) + len(names))

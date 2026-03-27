@@ -461,6 +461,54 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_explicit_comparison_semantics() {
+        let source = SourceFile::new(
+            "comparison_surface.gof",
+            "struct Snapshot:\n    count: int\n    label: string\n\nenum Stage:\n    Draft\n    Published(version: int)\n\nfn main() -> Result[int, RuntimeError]:\n    left = json_parse(\"{\\\"count\\\": 2, \\\"label\\\": \\\"beta\\\"}\")?\n    right = json_parse(\"{\\\"count\\\": 2, \\\"label\\\": \\\"beta\\\"}\")?\n    snapshot_a: Snapshot = Snapshot(2, \"beta\")\n    snapshot_b: Snapshot = Snapshot(2, \"beta\")\n    stage_a: Stage = Stage.Published(3)\n    stage_b: Stage = Stage.Published(3)\n    ok_a: Result[int, RuntimeError] = Result.Ok(7)\n    ok_b: Result[int, RuntimeError] = Result.Ok(7)\n    assert(\"alpha\" < \"beta\", \"expected lexicographic string ordering\")\n    assert(left == right, \"expected structural json equality\")\n    assert(snapshot_a == snapshot_b, \"expected structural struct equality\")\n    assert(stage_a == stage_b, \"expected payload enum equality\")\n    assert(ok_a == ok_b, \"expected result equality\")\n    assert(sleep(0) == sleep(0), \"expected unit equality\")\n    assert([1, 2] == [1, 2], \"expected list equality\")\n    assert({\"ok\": 2} == {\"ok\": 2}, \"expected dict equality\")\n    return Result.Ok(42)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(
+            compiled.typed_hir.functions[0].return_type,
+            Type::Result(
+                Box::new(Type::Int),
+                Box::new(Type::Enum("RuntimeError".to_string()))
+            )
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    value.instruction,
+                    SsaInstruction::Binary {
+                        op: crate::ast::BinaryOp::Lt,
+                        ..
+                    }
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    value.instruction,
+                    SsaInstruction::Binary {
+                        op: crate::ast::BinaryOp::Eq,
+                        ..
+                    }
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Propagate { .. }))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_receiver_methods() {
         let source = SourceFile::new(
             "methods.gof",
@@ -581,18 +629,30 @@ mod tests {
     fn pipeline_supports_conversion_builtins() {
         let source = SourceFile::new(
             "conversion_helpers.gof",
-            "fn main() -> int:\n    parsed = parse_int(trim(\" 41 \"))\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return parsed + len(rendered)\n",
+            "fn main() -> Result[int, RuntimeError]:\n    raw = parse_int(trim(\" 41 \"))\n    parsed = raw?\n    rendered = \"gof-\" + to_string(parsed + 1)\n    assert(rendered == \"gof-42\", \"expected converted text\")\n    return Result.Ok(parsed + len(rendered))\n",
         );
         let compiled =
             compile_source(&source, CompileMode::Executable).expect("compile should succeed");
 
         match &compiled.typed_hir.functions[0].body[0] {
             crate::typed_hir::TypedStmt::Bind { value, .. } => {
-                assert_eq!(value.ty, Type::Int);
+                assert_eq!(
+                    value.ty,
+                    Type::Result(
+                        Box::new(Type::Int),
+                        Box::new(Type::Enum("RuntimeError".to_string()))
+                    )
+                );
             }
             other => panic!("expected parse_int bind, got {other:?}"),
         }
         match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+            }
+            other => panic!("expected propagated parse_int bind, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[2] {
             crate::typed_hir::TypedStmt::Bind { value, .. } => {
                 assert_eq!(value.ty, Type::String);
             }
@@ -611,10 +671,84 @@ mod tests {
             compiled.ssa.functions[0]
                 .values
                 .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Propagate { .. }))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                        &value.instruction,
+                        SsaInstruction::Call { callee, .. } if callee == "to_string"
+                ))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_sequence_helper_builtins() {
+        let source = SourceFile::new(
+            "sequence_helpers.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    values = [7, 1, 5, 3]\n    head = first(values)?\n    tail = last(values)?\n    middle = slice(values, 1, 3)?\n    reversed = reverse(values)\n    ordered = sort(values)\n    smallest = min(values)?\n    loudest = max([\"warn\", \"critical\", \"ok\"])?\n    return Result.Ok(head + tail + len(middle) + len(reversed) + len(ordered) + smallest + len(loudest))\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[3] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::Int)));
+            }
+            other => panic!("expected slice bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
                 .any(|value| matches!(
                     &value.instruction,
-                    SsaInstruction::Call { callee, .. } if callee == "to_string"
+                    SsaInstruction::Call { callee, .. } if callee == "first"
                 ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "slice"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "sort"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "min"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "max"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::Propagate { .. }))
         );
     }
 

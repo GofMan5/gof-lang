@@ -41,10 +41,15 @@ return values[0] + len(values)
 - negative indexing пока не поддерживается
 - выход за границы ловится в bootstrap evaluator
 - `append(list, value)` возвращает новый список
+- `first(list)` и `last(list)` возвращают `Result[element, RuntimeError]`
+- `slice(list, start, end)` возвращает `Result[list[element], RuntimeError]`
+- `reverse(list)` возвращает новый список в обратном порядке
+- `sort(list)` возвращает новый детерминированно отсортированный список для `list[int]` и `list[string]`
+- `min(list)` и `max(list)` возвращают `Result[element, RuntimeError]` для `list[int]` и `list[string]`
 
 Главная идея здесь такая:
 
-> `append(...)` — это явное построение нового значения, а не скрытая магическая мутация.
+> List helpers в `gof` — это явное построение нового значения, а не скрытая магическая мутация.
 
 ## Словари
 
@@ -96,6 +101,20 @@ rest = value % 2
 - `/` и `%` пока работают только на `int`
 - деление и modulo на ноль дают runtime diagnostic
 
+## Сравнения
+
+Сравнения теперь разделены на два явных контракта:
+
+- equality через `==` и `!=`
+- ordering через `<`, `<=`, `>`, `>=`
+
+Текущие правила:
+
+- equality работает для `int`, `string`, `bool`, `json`, `unit`, `list[T]`, `dict[T]`, однотипных `struct`, однотипных `enum` и совместимых `Result[T, E]`, если все вложенные значения тоже допускают equality
+- ordering работает только для `int` и `string`
+- строки сравниваются лексикографически
+- `channel`, `task` и `cancel_token` не участвуют в сравнениях даже внутри более крупных значений
+
 ## Struct
 
 `struct` — текущий пользовательский aggregate type.
@@ -134,7 +153,7 @@ enum JobState:
 - payload-поля объявляются прямо в варианте и имеют явные типы
 - unit-вариант используется как `EnumName.Variant`
 - payload-вариант создается как `EnumName.Variant(value, ...)`
-- equality работает только внутри одного enum type
+- однотипные enum участвуют в structural equality, если их payload-поля допускают equality
 
 ## Result
 
@@ -153,12 +172,18 @@ fn halve(value: int) -> Result[int, string]:
 - `Result.Ok(value)` создает success payload
 - `Result.Err(error)` создает error payload
 - result-значения обрабатываются через исчерпывающий `match`
+- result-значения участвуют в equality, если обе payload-стороны допускают equality
 - postfix `expr?` распаковывает `Ok(value)` и делает ранний `return` на `Err(error)`
 - внешняя функция должна возвращать совместимый `Result[_, E]`
 
 Operational helpers уже используют тот же контракт:
 
 - `env("NAME")` возвращает `Result[string, RuntimeError]`
+- `parse_int(text)` возвращает `Result[int, RuntimeError]`
+- `first(values)` возвращает `Result[T, RuntimeError]`
+- `slice(values, start, end)` возвращает `Result[list[T], RuntimeError]`
+- `min(values)` возвращает `Result[T, RuntimeError]`
+- `max(values)` возвращает `Result[T, RuntimeError]`
 - `read_file(path)` возвращает `Result[string, RuntimeError]`
 - `recv(channel)` возвращает `Result[T, RuntimeError]`
 - JSON и HTTP helpers тоже возвращают `Result`
@@ -176,6 +201,9 @@ concurrency и бот-ориентированного network code.
 - `Io(message: string)`
 - `ChannelClosed`
 - `Cancelled`
+- `ParseInt(message: string)`
+- `EmptySequence(message: string)`
+- `Slice(message: string)`
 - `Json(message: string)`
 - `HttpRequest(message: string)`
 - `HttpStatus(code: int, body: string)`

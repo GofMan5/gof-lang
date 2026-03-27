@@ -1,0 +1,28 @@
+struct Snapshot:
+    count: int
+    label: string
+
+enum Stage:
+    Draft
+    Published(version: int)
+
+fn main() -> Result[int, RuntimeError]:
+    left = json_parse("{\"count\": 2, \"label\": \"beta\"}")?
+    right = json_parse("{\"count\": 2, \"label\": \"beta\"}")?
+    snapshot_a: Snapshot = Snapshot(2, "beta")
+    snapshot_b: Snapshot = Snapshot(2, "beta")
+    stage_a: Stage = Stage.Published(3)
+    stage_b: Stage = Stage.Published(3)
+    ok_a: Result[int, RuntimeError] = Result.Ok(7)
+    ok_b: Result[int, RuntimeError] = Result.Ok(7)
+
+    assert("alpha" < "beta", "expected lexicographic string ordering")
+    assert(left == right, "expected structural json equality")
+    assert(snapshot_a == snapshot_b, "expected structural struct equality")
+    assert(stage_a == stage_b, "expected payload enum equality")
+    assert(ok_a == ok_b, "expected result equality")
+    assert(sleep(0) == sleep(0), "expected unit equality")
+    assert([1, 2] == [1, 2], "expected list equality")
+    assert({"ok": 2} == {"ok": 2}, "expected dict equality")
+
+    return Result.Ok(42)

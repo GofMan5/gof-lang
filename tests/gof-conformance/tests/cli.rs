@@ -253,7 +253,35 @@ fn gof_run_executes_conversion_helpers_example() {
         .arg(example)
         .assert()
         .success()
-        .stdout(predicate::str::contains("47"));
+        .stdout(predicate::str::contains("Result.Ok(value: 47)"));
+}
+
+#[test]
+fn gof_run_executes_sequence_helpers_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("sequence_helpers.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 15)"));
+}
+
+#[test]
+fn gof_run_executes_comparison_surface_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("comparison_surface.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 42)"));
 }
 
 #[test]

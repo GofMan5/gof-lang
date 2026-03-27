@@ -53,6 +53,8 @@ fn main() -> Result[int, RuntimeError]:
 values = [1, 2]
 values = append(values, 3)
 has_three = contains(values, 3)
+window = slice(values, 0, 2)
+ordered = sort(reverse(values))
 ```
 
 Для dicts:
@@ -91,6 +93,35 @@ has_suffix = ends_with(merged, "lang")
 - `starts_with(text, prefix)` возвращает `bool`
 - `ends_with(text, suffix)` возвращает `bool`
 
+## Sequence helpers
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    values = [7, 1, 5, 3]
+    head = first(values)?
+    tail = last(values)?
+    middle = slice(values, 1, 3)?
+    reversed = reverse(values)
+    ordered = sort(values)
+    smallest = min(values)?
+    loudest = max(["warn", "critical", "ok"])?
+    return Result.Ok(head + tail + len(middle) + len(reversed) + len(ordered) + smallest + len(loudest))
+```
+
+Текущие правила sequence helpers:
+
+- `first(list)` и `last(list)` возвращают `Result[element, RuntimeError]`
+- для пустого списка `first` и `last` возвращают `RuntimeError.EmptySequence(message)`
+- `slice(list, start, end)` возвращает `Result[list[element], RuntimeError]`
+- `slice` запрещает отрицательные индексы, `start > end` и `end > len(list)` через `RuntimeError.Slice(message)`
+- `reverse(list)` возвращает новый список в обратном порядке
+- `sort(list)` возвращает новый детерминированно отсортированный список
+- `sort` пока поддерживает только `list[int]` и `list[string]`
+- `min(list)` и `max(list)` возвращают `Result[element, RuntimeError]`
+- для пустого списка `min` и `max` возвращают `RuntimeError.EmptySequence(message)`
+- `min` и `max` пока поддерживают только `list[int]` и `list[string]`
+- sequence helpers остаются явными allocation-visible преобразованиями и не прячут мутацию
+
 ## JSON, HTTP и явные retry delays
 
 ```gof
@@ -117,14 +148,16 @@ fn notify(base: string) -> Result[string, RuntimeError]:
 ## Conversion helpers
 
 ```gof
-parsed = parse_int(trim(" 41 "))
-rendered = "gof-" + to_string(parsed + 1)
+fn main() -> Result[int, RuntimeError]:
+    parsed = parse_int(trim(" 41 "))?
+    rendered = "gof-" + to_string(parsed + 1)
+    return Result.Ok(parsed + len(rendered))
 ```
 
 Текущие правила conversion helpers:
 
-- `parse_int(text)` требует строку и возвращает `int`
-- невалидный numeric text превращается в runtime diagnostic, а не в тихий fallback
+- `parse_int(text)` требует строку и возвращает `Result[int, RuntimeError]`
+- невалидный numeric text становится `RuntimeError.ParseInt(message)`, а не runtime diagnostic
 - `to_string(value)` требует одно printable value и возвращает `string`
 - преобразование остается явным; `gof` не учит скрытым coercions
 

@@ -12,6 +12,12 @@ fn main() -> int:
                     return 7
                 RuntimeError.Cancelled:
                     return 0
+                RuntimeError.ParseInt(message):
+                    return len(message) - len(message)
+                RuntimeError.EmptySequence(message):
+                    return len(message) - len(message)
+                RuntimeError.Slice(message):
+                    return len(message) - len(message)
                 RuntimeError.EnvMissing(name):
                     return len(name) - len(name)
                 RuntimeError.Io(message):
