@@ -72,9 +72,10 @@ fn main() -> Result[int, RuntimeError]:
 
 Current `select` contract:
 
-- only receive arms are supported
-- arms must be `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
-- the bootstrap runtime polls arms until one receive resolves to `Result.Ok(...)` or `Result.Err(...)`
+- receive arms and a single `default` arm are supported
+- receive arms must be `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
+- `default:` executes immediately when no receive arm is ready during the current polling pass
+- the bootstrap runtime polls receive arms until one receive resolves to `Result.Ok(...)` or `Result.Err(...)`
 - when multiple receive arms are already ready, the bootstrap runtime rotates the polling start arm in a deterministic round-robin baseline so the first source arm does not always win
 
 That is enough to model simple message-passing choices, which is already more honest

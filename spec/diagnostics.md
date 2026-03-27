@@ -106,3 +106,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3092`: conflicting package identity or metadata in the local dependency graph
 - `GOF3093`: invalid operand for timeout-backed cancellation helpers
 - `GOF3094`: invalid negative duration for timeout-backed cancellation helpers
+- `GOF3095`: duplicate `default` arm in `select`

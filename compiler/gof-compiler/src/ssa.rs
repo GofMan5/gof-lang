@@ -103,8 +103,9 @@ pub enum SsaInstruction {
     EndMatch,
     BeginSelect,
     SelectArm {
-        operation: String,
+        operation: Option<String>,
         binding: Option<String>,
+        is_default: bool,
     },
     EndSelect,
     Eval(String),
@@ -331,11 +332,19 @@ fn lower_instruction(instruction: &MirInstruction) -> SsaValue {
             name: "%select".to_string(),
             instruction: SsaInstruction::BeginSelect,
         },
-        MirInstruction::SelectArm { operation, binding } => SsaValue {
-            name: format!("%select_arm_{operation}"),
+        MirInstruction::SelectArm {
+            operation,
+            binding,
+            is_default,
+        } => SsaValue {
+            name: match operation {
+                Some(operation) => format!("%select_arm_{operation}"),
+                None => "%select_default".to_string(),
+            },
             instruction: SsaInstruction::SelectArm {
-                operation: format!("%{operation}"),
+                operation: operation.as_ref().map(|operation| format!("%{operation}")),
                 binding: binding.clone(),
+                is_default: *is_default,
             },
         },
         MirInstruction::EndSelect => SsaValue {

@@ -1,6 +1,6 @@
 use crate::ast::{
     BinaryOp, EnumDecl, EnumVariant, EnumVariantField, Expr, MatchPattern, Module, Param,
-    SelectArm, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
+    SelectArm, SelectArmKind, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -139,9 +139,15 @@ pub enum HirMatchPattern {
 #[derive(Debug, Clone, Serialize)]
 pub struct HirSelectArm {
     pub binding: Option<String>,
-    pub operation: HirExpr,
+    pub kind: HirSelectArmKind,
     pub body: Vec<HirStmt>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum HirSelectArmKind {
+    Recv { operation: HirExpr },
+    Default,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -385,7 +391,12 @@ fn lower_match_pattern(pattern: &MatchPattern) -> HirMatchPattern {
 fn lower_select_arm(arm: &SelectArm) -> HirSelectArm {
     HirSelectArm {
         binding: arm.binding.clone(),
-        operation: lower_expr(&arm.operation),
+        kind: match &arm.kind {
+            SelectArmKind::Recv { operation } => HirSelectArmKind::Recv {
+                operation: lower_expr(operation),
+            },
+            SelectArmKind::Default => HirSelectArmKind::Default,
+        },
         body: arm.body.iter().map(lower_stmt).collect(),
         span: arm.span,
     }

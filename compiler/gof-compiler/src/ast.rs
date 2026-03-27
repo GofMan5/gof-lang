@@ -147,9 +147,15 @@ pub enum MatchPattern {
 #[derive(Debug, Clone, Serialize)]
 pub struct SelectArm {
     pub binding: Option<String>,
-    pub operation: Expr,
+    pub kind: SelectArmKind,
     pub body: Vec<Stmt>,
     pub span: Span,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum SelectArmKind {
+    Recv { operation: Expr },
+    Default,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -744,6 +750,21 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_select_arm(&mut self) -> SelectArm {
+        if self.matches(TokenDiscriminant::Default) {
+            let span = self.previous().span;
+            self.expect(
+                TokenDiscriminant::Colon,
+                "expected `:` after `default` select arm",
+            );
+            let body = self.parse_block("expected an indented block after a select arm");
+            return SelectArm {
+                binding: None,
+                kind: SelectArmKind::Default,
+                body,
+                span,
+            };
+        }
+
         let binding = if self.check_select_binding() {
             let name = self.expect_ident("expected a binding name at the start of a select arm");
             self.expect(
@@ -764,7 +785,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block("expected an indented block after a select arm");
         SelectArm {
             binding,
-            operation,
+            kind: SelectArmKind::Recv { operation },
             body,
             span,
         }
@@ -1303,6 +1324,7 @@ enum TokenDiscriminant {
     Continue,
     Match,
     Select,
+    Default,
     Go,
     Await,
     And,
@@ -1355,6 +1377,7 @@ impl TokenDiscriminant {
                 | (Self::Continue, TokenKind::Continue)
                 | (Self::Match, TokenKind::Match)
                 | (Self::Select, TokenKind::Select)
+                | (Self::Default, TokenKind::Default)
                 | (Self::Go, TokenKind::Go)
                 | (Self::Await, TokenKind::Await)
                 | (Self::And, TokenKind::And)
@@ -1406,6 +1429,7 @@ impl TokenDiscriminant {
             Self::Continue => "`continue`",
             Self::Match => "`match`",
             Self::Select => "`select`",
+            Self::Default => "`default`",
             Self::Go => "`go`",
             Self::Await => "`await`",
             Self::And => "`and`",
@@ -1456,7 +1480,7 @@ fn token_debug_name(kind: &TokenKind) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryOp, Expr, MatchPattern, Stmt, UnaryOp, parse};
+    use super::{BinaryOp, Expr, MatchPattern, SelectArmKind, Stmt, UnaryOp, parse};
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
@@ -1823,6 +1847,27 @@ mod tests {
         assert!(matches!(
             &module.functions[1].body[2],
             Stmt::Select { arms, .. } if arms.len() == 2 && arms[0].binding.as_deref() == Some("value") && arms[1].binding.is_none()
+        ));
+        if let Stmt::Select { arms, .. } = &module.functions[1].body[2] {
+            assert!(matches!(arms[0].kind, SelectArmKind::Recv { .. }));
+            assert!(matches!(arms[1].kind, SelectArmKind::Recv { .. }));
+        }
+    }
+
+    #[test]
+    fn parses_select_default_arm() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> int:\n    select:\n        default:\n            return 1\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[0],
+            Stmt::Select { arms, .. }
+                if arms.len() == 1
+                    && arms[0].binding.is_none()
+                    && matches!(arms[0].kind, SelectArmKind::Default)
         ));
     }
 

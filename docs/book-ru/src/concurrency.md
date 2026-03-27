@@ -70,9 +70,10 @@ fn main() -> Result[int, RuntimeError]:
 
 Текущий контракт `select`:
 
-- поддерживаются только receive arms
-- arm должен быть `recv(channel):`, `value = recv(channel):`, `recv(channel, token):` или `value = recv(channel, token):`
-- bootstrap runtime опрашивает arms, пока один receive не вернет `Result.Ok(...)` или `Result.Err(...)`
+- поддерживаются receive arms и один `default` arm
+- receive arm должен быть `recv(channel):`, `value = recv(channel):`, `recv(channel, token):` или `value = recv(channel, token):`
+- `default:` выполняется сразу, если в текущем проходе опроса ни один receive arm не готов
+- bootstrap runtime опрашивает receive arms, пока один receive не вернет `Result.Ok(...)` или `Result.Err(...)`
 - если несколько receive arms уже готовы, bootstrap runtime вращает стартовый arm по детерминированному round-robin baseline, чтобы первый arm в исходнике не выигрывал всегда
 
 Этого уже хватает для честного message-passing выбора без красивого синтаксиса,

@@ -1,0 +1,7 @@
+fn main() -> Result[int, RuntimeError]:
+    ch: channel[int] = channel()
+    select:
+        received = recv(ch):
+            return received
+        default:
+            return Result.Ok(7)

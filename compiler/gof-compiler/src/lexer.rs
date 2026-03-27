@@ -371,6 +371,7 @@ fn lex_line(
                     "async" => TokenKind::Async,
                     "await" => TokenKind::Await,
                     "select" => TokenKind::Select,
+                    "default" => TokenKind::Default,
                     "defer" => TokenKind::Defer,
                     "unsafe" => TokenKind::Unsafe,
                     "mut" => TokenKind::Mut,

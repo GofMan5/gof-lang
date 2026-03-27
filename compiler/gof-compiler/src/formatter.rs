@@ -1,6 +1,6 @@
 use crate::ast::{
     BinaryOp, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function, Import,
-    MatchPattern, Module, Param, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
+    MatchPattern, Module, Param, SelectArmKind, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -218,11 +218,12 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             let arms = arms
                 .iter()
                 .map(|arm| {
-                    let header = match &arm.binding {
-                        Some(binding) => {
-                            format!("{binding} = {}", format_expr(&arm.operation))
+                    let header = match (&arm.binding, &arm.kind) {
+                        (_, SelectArmKind::Default) => "default".to_string(),
+                        (Some(binding), SelectArmKind::Recv { operation }) => {
+                            format!("{binding} = {}", format_expr(operation))
                         }
-                        None => format_expr(&arm.operation),
+                        (None, SelectArmKind::Recv { operation }) => format_expr(operation),
                     };
                     format!(
                         "{}{}:\n{}",
@@ -503,6 +504,19 @@ mod tests {
         assert_eq!(
             formatted,
             "fn main() -> int:\n    left: channel = channel()\n    right: channel = channel()\n    select:\n        value = recv(left):\n            return value\n        recv(right):\n            return 2\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_select_default_arm() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn main()->int:\n    select:\n        default:\n            return 1\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn main() -> int:\n    select:\n        default:\n            return 1\n"
         );
     }
 

@@ -1,6 +1,7 @@
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::typed_hir::{
-    Type, TypedExpr, TypedExprKind, TypedFunction, TypedMatchPattern, TypedModule, TypedStmt,
+    Type, TypedExpr, TypedExprKind, TypedFunction, TypedMatchPattern, TypedModule,
+    TypedSelectArmKind, TypedStmt,
 };
 use serde::Serialize;
 
@@ -126,8 +127,9 @@ pub enum MirInstruction {
     EndMatch,
     BeginSelect,
     SelectArm {
-        operation: usize,
+        operation: Option<usize>,
         binding: Option<String>,
+        is_default: bool,
     },
     EndSelect,
     Eval {
@@ -255,18 +257,30 @@ impl MirBuilder {
             TypedStmt::Select { arms } => {
                 self.instructions.push(MirInstruction::BeginSelect);
                 for arm in arms {
-                    let operation = self.lower_expr(&arm.operation);
-                    self.instructions.push(MirInstruction::SelectArm {
-                        operation,
-                        binding: arm.binding.clone(),
-                    });
-                    if let Some(binding) = &arm.binding {
-                        self.instructions.push(MirInstruction::StoreLocal {
-                            name: binding.clone(),
-                            src: operation,
-                            mutable: false,
-                            declare: true,
-                        });
+                    match &arm.kind {
+                        TypedSelectArmKind::Recv { operation } => {
+                            let operation = self.lower_expr(operation);
+                            self.instructions.push(MirInstruction::SelectArm {
+                                operation: Some(operation),
+                                binding: arm.binding.clone(),
+                                is_default: false,
+                            });
+                            if let Some(binding) = &arm.binding {
+                                self.instructions.push(MirInstruction::StoreLocal {
+                                    name: binding.clone(),
+                                    src: operation,
+                                    mutable: false,
+                                    declare: true,
+                                });
+                            }
+                        }
+                        TypedSelectArmKind::Default => {
+                            self.instructions.push(MirInstruction::SelectArm {
+                                operation: None,
+                                binding: None,
+                                is_default: true,
+                            });
+                        }
                     }
                     self.lower_block(&arm.body);
                 }

@@ -932,6 +932,39 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_select_default_arm() {
+        let source = SourceFile::new(
+            "select_default.gof",
+            "fn main() -> int:\n    select:\n        default:\n            return 1\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Select { arms } => {
+                assert_eq!(arms.len(), 1);
+                assert!(matches!(
+                    arms[0].kind,
+                    crate::typed_hir::TypedSelectArmKind::Default
+                ));
+            }
+            other => panic!("expected select statement, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    value.instruction,
+                    SsaInstruction::SelectArm {
+                        is_default: true,
+                        ..
+                    }
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_for_in_loops() {
         let source = SourceFile::new(
             "for.gof",

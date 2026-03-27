@@ -1,8 +1,8 @@
 use crate::ast::{BinaryOp, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{
-    HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule, HirSelectArm, HirStmt,
-    HirStruct, HirTypeRef,
+    HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule, HirSelectArm,
+    HirSelectArmKind, HirStmt, HirStruct, HirTypeRef,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -191,8 +191,14 @@ pub struct TypedMatchBinding {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedSelectArm {
     pub binding: Option<String>,
-    pub operation: TypedExpr,
+    pub kind: TypedSelectArmKind,
     pub body: Vec<TypedStmt>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub enum TypedSelectArmKind {
+    Recv { operation: TypedExpr },
+    Default,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1580,57 +1586,22 @@ fn lower_select_arms(
             Diagnostic::error(
                 "GOF3047",
                 "`select` requires at least one arm",
-                "the bootstrap select model needs one or more `recv(channel)` arms",
+                "the bootstrap select model needs one or more `recv(channel)` or `default` arms",
                 span,
             )
-            .with_fix_it("add at least one select arm like `value = recv(ch):`")
+            .with_fix_it("add a select arm like `value = recv(ch):` or `default:`")
             .with_source_path(source_path.to_path_buf()),
         );
     }
 
-    arms.iter()
-        .map(|arm| {
-            let operation = lower_expr(
-                &arm.operation,
-                scopes,
-                signatures,
-                method_signatures,
-                known_structs,
-                known_enums,
-                struct_signatures,
-                enum_signatures,
-                diagnostics,
-                function_return_type,
-                source_path,
-            );
-            validate_select_operation(&operation, diagnostics, source_path);
+    let mut typed_arms = Vec::with_capacity(arms.len());
+    let mut saw_default = false;
 
-            let body = {
-                scopes.push();
-                if let Some(binding) = &arm.binding {
-                    if scopes.contains_in_current(binding) {
-                        diagnostics.push(
-                            Diagnostic::error(
-                                "GOF3006",
-                                format!("duplicate binding `{binding}`"),
-                                "gof currently does not allow duplicate bindings in the same block scope",
-                                arm.span,
-                            )
-                            .with_fix_it("rename the select arm binding")
-                            .with_source_path(source_path.to_path_buf()),
-                        );
-                    } else {
-                        scopes.define_current(
-                            binding.clone(),
-                            LocalBinding {
-                                mutable: false,
-                                ty: operation.ty.clone(),
-                            },
-                        );
-                    }
-                }
-                let body = lower_block(
-                    &arm.body,
+    for arm in arms {
+        let (kind, binding_ty) = match &arm.kind {
+            HirSelectArmKind::Recv { operation } => {
+                let operation = lower_expr(
+                    operation,
                     scopes,
                     signatures,
                     method_signatures,
@@ -1639,22 +1610,82 @@ fn lower_select_arms(
                     struct_signatures,
                     enum_signatures,
                     diagnostics,
-                    loop_depth,
-                    false,
                     function_return_type,
                     source_path,
                 );
-                scopes.pop();
-                body
-            };
-
-            TypedSelectArm {
-                binding: arm.binding.clone(),
-                operation,
-                body,
+                validate_select_operation(&operation, diagnostics, source_path);
+                let ty = operation.ty.clone();
+                (TypedSelectArmKind::Recv { operation }, Some(ty))
             }
-        })
-        .collect()
+            HirSelectArmKind::Default => {
+                if saw_default {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3095",
+                            "`select` allows only one `default` arm",
+                            "multiple `default` arms would make the immediate fallback path ambiguous",
+                            arm.span,
+                        )
+                        .with_fix_it("remove the duplicate `default` arm or merge its body into the first one")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
+                saw_default = true;
+                (TypedSelectArmKind::Default, None)
+            }
+        };
+
+        let body = {
+            scopes.push();
+            if let (Some(binding), Some(binding_ty)) = (&arm.binding, &binding_ty) {
+                if scopes.contains_in_current(binding) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3006",
+                            format!("duplicate binding `{binding}`"),
+                            "gof currently does not allow duplicate bindings in the same block scope",
+                            arm.span,
+                        )
+                        .with_fix_it("rename the select arm binding")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                } else {
+                    scopes.define_current(
+                        binding.clone(),
+                        LocalBinding {
+                            mutable: false,
+                            ty: binding_ty.clone(),
+                        },
+                    );
+                }
+            }
+            let body = lower_block(
+                &arm.body,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                loop_depth,
+                false,
+                function_return_type,
+                source_path,
+            );
+            scopes.pop();
+            body
+        };
+
+        typed_arms.push(TypedSelectArm {
+            binding: arm.binding.clone(),
+            kind,
+            body,
+        });
+    }
+
+    typed_arms
 }
 
 fn resolve_for_binding_type(
@@ -6622,7 +6653,7 @@ fn validate_select_operation(
         TypedExprKind::Call { callee, .. } => diagnostics.push(
             Diagnostic::error(
                 "GOF3047",
-                "`select` arms currently require `recv(channel)` operations",
+                "`select` arms currently require `recv(channel)` operations or `default`",
                 format!("this arm uses `{callee}(...)` instead"),
                 operation.span,
             )
@@ -6632,11 +6663,11 @@ fn validate_select_operation(
         _ => diagnostics.push(
             Diagnostic::error(
                 "GOF3047",
-                "`select` arms currently require `recv(channel)` operations",
-                "select arms must be written as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, or `value = recv(channel, token):`",
+                "`select` arms currently require `recv(channel)` operations or `default`",
+                "select arms must be written as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, `value = recv(channel, token):`, or `default:`",
                 operation.span,
             )
-            .with_fix_it("replace this arm with a `recv(channel)` or `recv(channel, token)` operation")
+            .with_fix_it("replace this arm with `recv(channel)`, `recv(channel, token)`, or `default`")
             .with_source_path(source_path.to_path_buf()),
         ),
     }
@@ -6662,7 +6693,7 @@ fn is_printable_type(ty: &Type) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{Type, TypedExprKind, TypedMatchPattern, TypedStmt, lower};
+    use super::{Type, TypedExprKind, TypedMatchPattern, TypedSelectArmKind, TypedStmt, lower};
     use crate::ast::BinaryOp;
     use crate::ast::parse;
     use crate::cst::CstModule;
@@ -7267,6 +7298,24 @@ mod tests {
             TypedStmt::Select { arms } => {
                 assert_eq!(arms.len(), 1);
                 assert_eq!(arms[0].binding.as_deref(), Some("received"));
+                assert!(matches!(arms[0].kind, TypedSelectArmKind::Recv { .. }));
+            }
+            other => panic!("expected select statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_select_default_arm() {
+        let module = lower_source(
+            "fn main() -> int:\n    select:\n        default:\n            return 1\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Select { arms } => {
+                assert_eq!(arms.len(), 1);
+                assert!(arms[0].binding.is_none());
+                assert!(matches!(arms[0].kind, TypedSelectArmKind::Default));
             }
             other => panic!("expected select statement, got {other:?}"),
         }
@@ -7493,6 +7542,16 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3047"]);
+    }
+
+    #[test]
+    fn rejects_duplicate_select_default_arms() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    select:\n        default:\n            return 1\n        default:\n            return 2\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3095"]);
     }
 
     #[test]

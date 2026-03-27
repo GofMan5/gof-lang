@@ -243,6 +243,7 @@ Hard sequencing rule:
 - Checkpoints:
 - `[x]` CP-M5-1: channels with explicit semantics
 - `[x]` CP-M5-2: `select` semantics and diagnostics
+- `[x]` CP-M5-2a: single-`default` fallback baseline for non-blocking `select`
 - `[~]` CP-M5-3: cancellation and propagation rules
 - `[x]` CP-M5-3a: `close(channel)` plus `Result`-returning `send` and `recv`
 - `[x]` CP-M5-3b: token-based cooperative cancellation baseline for channel waits

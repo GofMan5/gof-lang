@@ -22,6 +22,7 @@ pub enum TokenKind {
     Async,
     Await,
     Select,
+    Default,
     Defer,
     Unsafe,
     Mut,

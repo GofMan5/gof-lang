@@ -26,6 +26,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
 - `channel_select.gof`: channels, `Result`-based `send`/`recv`, and `select`
 - `select_round_robin.gof`: deterministic round-robin `select` arm rotation when multiple receives are ready
+- `select_default.gof`: immediate `default` fallback when no `recv(...)` arm is ready
 - `timeout_cancellation.gof`: timeout-backed cancellation tokens for blocked channel operations
 - `channel_lifecycle.gof`: `close(channel)`, `recv(...)`, and `RuntimeError.ChannelClosed`
 - `dict_report.gof`: dict literals, dict indexing, and key membership
@@ -66,6 +67,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``
 - `channel_select.gof` -> `Result.Ok(value: 9)`
 - `select_round_robin.gof` -> `Result.Ok(value: 16)`
+- `select_default.gof` -> `Result.Ok(value: 7)`
 - `timeout_cancellation.gof` -> `42`
 - `channel_lifecycle.gof` -> `7`
 - `dict_report.gof` -> `11`

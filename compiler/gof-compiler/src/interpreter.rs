@@ -1,6 +1,6 @@
 use crate::ast::{
-    BinaryOp, EnumDecl, EnumVariant, Expr, Function, MatchPattern, Module, Param, Stmt, StructDecl,
-    UnaryOp,
+    BinaryOp, EnumDecl, EnumVariant, Expr, Function, MatchPattern, Module, Param, SelectArm,
+    SelectArmKind, Stmt, StructDecl, UnaryOp,
 };
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
@@ -1610,22 +1610,66 @@ fn eval_stmt(
                     Diagnostic::error(
                         "GOF3047",
                         "`select` requires at least one arm",
-                        "the bootstrap select model needs one or more `recv(channel)` arms",
+                        "the bootstrap select model needs one or more `recv(channel)` or `default` arms",
                         *span,
                     )
-                    .with_fix_it("add at least one select arm like `value = recv(ch):`")
+                    .with_fix_it("add a select arm like `value = recv(ch):` or `default:`")
                     .with_source_path(source_path.to_path_buf()),
                 ])
                 .into());
             }
 
+            let mut recv_arms = Vec::new();
+            let mut default_arm: Option<&SelectArm> = None;
+            for arm in arms {
+                match arm.kind {
+                    SelectArmKind::Recv { .. } => recv_arms.push(arm),
+                    SelectArmKind::Default => {
+                        if default_arm.is_some() {
+                            return Err(Diagnostics(vec![
+                                Diagnostic::error(
+                                    "GOF3095",
+                                    "`select` allows only one `default` arm",
+                                    "multiple `default` arms would make the immediate fallback path ambiguous",
+                                    arm.span,
+                                )
+                                .with_fix_it("remove the duplicate `default` arm or merge its body into the first one")
+                                .with_source_path(source_path.to_path_buf()),
+                            ])
+                            .into());
+                        }
+                        default_arm = Some(arm);
+                    }
+                }
+            }
+
+            if recv_arms.is_empty() {
+                if let Some(arm) = default_arm {
+                    return eval_select_arm_body(
+                        arm,
+                        None,
+                        scopes,
+                        functions,
+                        methods,
+                        structs,
+                        enums,
+                        output,
+                        loop_depth,
+                        source_path,
+                    );
+                }
+            }
+
             let mut start_index =
-                NEXT_SELECT_ARM_START.fetch_add(1, Ordering::Relaxed) % arms.len();
+                NEXT_SELECT_ARM_START.fetch_add(1, Ordering::Relaxed) % recv_arms.len();
             loop {
-                for offset in 0..arms.len() {
-                    let arm = &arms[(start_index + offset) % arms.len()];
+                for offset in 0..recv_arms.len() {
+                    let arm = recv_arms[(start_index + offset) % recv_arms.len()];
+                    let SelectArmKind::Recv { operation } = &arm.kind else {
+                        continue;
+                    };
                     if let Some(received) = try_eval_select_operation(
-                        &arm.operation,
+                        operation,
                         scopes,
                         functions,
                         methods,
@@ -1634,18 +1678,9 @@ fn eval_stmt(
                         output,
                         source_path,
                     )? {
-                        scopes.push();
-                        if let Some(binding) = &arm.binding {
-                            scopes.define_current(
-                                binding.clone(),
-                                Binding {
-                                    mutable: false,
-                                    value: received,
-                                },
-                            );
-                        }
-                        let result = eval_block(
-                            &arm.body,
+                        return eval_select_arm_body(
+                            arm,
+                            Some(received),
                             scopes,
                             functions,
                             methods,
@@ -1653,15 +1688,27 @@ fn eval_stmt(
                             enums,
                             output,
                             loop_depth,
-                            false,
                             source_path,
-                        )?;
-                        scopes.pop();
-                        return Ok(result);
+                        );
                     }
                 }
 
-                start_index = (start_index + 1) % arms.len();
+                if let Some(arm) = default_arm {
+                    return eval_select_arm_body(
+                        arm,
+                        None,
+                        scopes,
+                        functions,
+                        methods,
+                        structs,
+                        enums,
+                        output,
+                        loop_depth,
+                        source_path,
+                    );
+                }
+
+                start_index = (start_index + 1) % recv_arms.len();
                 std::thread::yield_now();
             }
         }
@@ -5901,14 +5948,14 @@ fn try_eval_select_operation(
 ) -> EvalResult<Option<Value>> {
     match operation {
         Expr::Call { callee, args, span } if callee == "recv" => {
-            if !(1..=2).contains(&args.len()) {
-                return eval_diagnostics(Diagnostics(vec![
-                    Diagnostic::error(
-                        "GOF3047",
-                        "`select` arms currently require `recv(channel)` operations",
-                        "each select arm must call `recv` with one channel argument and an optional cancellation token",
-                        *span,
-                    )
+                if !(1..=2).contains(&args.len()) {
+                    return eval_diagnostics(Diagnostics(vec![
+                        Diagnostic::error(
+                            "GOF3047",
+                            "`select` arms currently require `recv(channel)` operations or `default`",
+                            "each select arm must call `recv` with one channel argument and an optional cancellation token",
+                            *span,
+                        )
                     .with_fix_it("rewrite the arm as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, or `value = recv(channel, token):`")
                     .with_source_path(source_path.to_path_buf()),
                 ]));
@@ -5965,7 +6012,7 @@ fn try_eval_select_operation(
         Expr::Call { callee, .. } => eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3047",
-                "`select` arms currently require `recv(channel)` operations",
+                "`select` arms currently require `recv(channel)` operations or `default`",
                 format!("this arm uses `{callee}(...)` instead"),
                 operation.span(),
             )
@@ -5975,14 +6022,52 @@ fn try_eval_select_operation(
         _ => eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3047",
-                "`select` arms currently require `recv(channel)` operations",
-                "select arms must be written as `recv(channel):` or `value = recv(channel):`",
+                "`select` arms currently require `recv(channel)` operations or `default`",
+                "select arms must be written as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, `value = recv(channel, token):`, or `default:`",
                 operation.span(),
             )
-            .with_fix_it("replace this arm with a `recv(channel)` operation")
+            .with_fix_it("replace this arm with a `recv(channel)`, `recv(channel, token)`, or `default` arm")
             .with_source_path(source_path.to_path_buf()),
         ])),
     }
+}
+
+fn eval_select_arm_body(
+    arm: &SelectArm,
+    binding_value: Option<Value>,
+    scopes: &mut ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    loop_depth: usize,
+    source_path: &Path,
+) -> EvalResult<EvalOutcome> {
+    scopes.push();
+    if let (Some(binding), Some(value)) = (&arm.binding, binding_value) {
+        scopes.define_current(
+            binding.clone(),
+            Binding {
+                mutable: false,
+                value,
+            },
+        );
+    }
+    let result = eval_block(
+        &arm.body,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        loop_depth,
+        false,
+        source_path,
+    )?;
+    scopes.pop();
+    Ok(result)
 }
 
 fn eval_cancel_token_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult<Value> {
@@ -7343,12 +7428,39 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_select_default_arm_when_no_receive_is_ready() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel()\n    select:\n        received = recv(ch):\n            return received\n        default:\n            return Result.Ok(7)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 7)"));
+    }
+
+    #[test]
+    fn prefers_ready_receive_over_select_default_arm() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel()\n    send(ch, 9)?\n    select:\n        received = recv(ch):\n            return Result.Ok(received? + 1)\n        default:\n            return Result.Ok(0)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 10)"));
+    }
+
+    #[test]
     fn rotates_select_arm_priority_when_multiple_receives_are_ready() {
         let value = run_source(
             "fn main() -> Result[int, RuntimeError]:\n    mut left_hits = 0\n    mut right_hits = 0\n    mut i = 0\n    while i < 16:\n        left: channel = channel()\n        right: channel = channel()\n        send(left, 1)?\n        send(right, 1)?\n        select:\n            received = recv(left):\n                left_hits = left_hits + received?\n            received = recv(right):\n                right_hits = right_hits + received?\n        i = i + 1\n    assert(left_hits == 8, \"expected round-robin select polling to choose the left arm exactly eight times\")\n    assert(right_hits == 8, \"expected round-robin select polling to choose the right arm exactly eight times\")\n    return Result.Ok(left_hits + right_hits)\n",
         )
         .expect("program should run");
         assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 16)"));
+    }
+
+    #[test]
+    fn rejects_duplicate_select_default_arms() {
+        let diagnostics = run_source(
+            "fn main() -> int:\n    select:\n        default:\n            return 1\n        default:\n            return 2\n",
+        )
+        .expect_err("duplicate default arms should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3095"]);
     }
 
     #[test]

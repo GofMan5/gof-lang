@@ -78,6 +78,9 @@ Manifest-backed packages now require a committed, fresh `gof.lock` for `gof run`
 baseline when multiple receive arms are already ready, but scheduler-level
 fairness is still a roadmap item rather than a finished guarantee.
 
+`select` also has a bootstrap `default:` arm baseline now, so non-blocking
+fallback loops do not need to fake readiness through helper channels.
+
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while
 full deadline/context propagation remains future work.
