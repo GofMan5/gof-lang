@@ -207,6 +207,8 @@ It currently includes:
 - `Io(message: string)`
 - `ChannelClosed`
 - `Cancelled`
+- `TaskFailed(message: string)`
+- `TaskPanicked(task: string)`
 - `ParseInt(message: string)`
 - `EmptySequence(message: string)`
 - `Slice(message: string)`

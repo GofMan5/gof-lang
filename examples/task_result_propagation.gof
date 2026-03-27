@@ -1,0 +1,11 @@
+fn broken() -> Result[int, RuntimeError]:
+    return Result.Ok(1 / 0)
+
+fn main() -> string:
+    job: task[Result[int, RuntimeError]] = go broken()
+    outcome = await job
+    match outcome:
+        Result.Ok(value):
+            return to_string(value)
+        Result.Err(error):
+            return to_string(error)

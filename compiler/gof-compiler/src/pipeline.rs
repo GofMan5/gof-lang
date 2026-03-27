@@ -326,6 +326,52 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_resolves_local_package_dependencies() {
+        let temp = tempfile::tempdir().expect("tempdir should exist");
+        let math_root = temp.path().join("package_math");
+        let math_source_root = math_root.join("src");
+        let app_root = temp.path().join("package_app");
+        let app_source_root = app_root.join("src");
+        let main_path = app_source_root.join("main.gof");
+
+        std::fs::create_dir_all(&math_source_root).expect("math source root should exist");
+        std::fs::create_dir_all(&app_source_root).expect("app source root should exist");
+        std::fs::write(
+            math_root.join("gof.mod"),
+            "module = \"example/package_math\"\nedition = \"2026\"\n\n[dependencies]\n",
+        )
+        .expect("math manifest should be written");
+        std::fs::write(
+            math_source_root.join("lib.gof"),
+            "import ops\n\nfn square(value: int) -> int:\n    return multiply(value, value)\n",
+        )
+        .expect("math lib should be written");
+        std::fs::write(
+            math_source_root.join("ops.gof"),
+            "fn multiply(lhs: int, rhs: int) -> int:\n    return lhs * rhs\n",
+        )
+        .expect("math ops should be written");
+        std::fs::write(
+            app_root.join("gof.mod"),
+            "module = \"example/package_app\"\nedition = \"2026\"\n\n[dependencies]\npackage_math = { path = \"../package_math\" }\n",
+        )
+        .expect("app manifest should be written");
+        std::fs::write(
+            &main_path,
+            "import package_math\n\nfn main() -> int:\n    return square(9) + square(3)\n",
+        )
+        .expect("app main should be written");
+
+        let source = SourceFile::from_path(&main_path).expect("source should load");
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(compiled.ast.functions.len(), 3);
+        assert_eq!(compiled.typed_hir.functions.len(), 3);
+        assert_eq!(compiled.typed_hir.functions[2].name, "main");
+    }
+
+    #[test]
     fn pipeline_supports_structs_and_fields() {
         let source = SourceFile::new(
             "structs.gof",

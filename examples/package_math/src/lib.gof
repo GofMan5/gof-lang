@@ -1,0 +1,4 @@
+import ops
+
+fn square(value: int) -> int:
+    return multiply(value, value)

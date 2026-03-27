@@ -21,6 +21,10 @@ fn main() -> int:
 - `go` спавнит top-level named function call
 - результат — task value
 - `await` ждет этот task value
+- если spawned-функция явно объявлена как `-> Result[..., RuntimeError]`,
+  task-boundary evaluator failures теперь возвращаются как
+  `Result.Err(RuntimeError.TaskFailed(...))` или
+  `Result.Err(RuntimeError.TaskPanicked(...))`, а не ломают caller сразу
 
 Ментальная модель такая:
 
@@ -96,7 +100,7 @@ fn main() -> bool:
 Еще не хватает:
 
 - fairness guarantees
-- жесткого story для task panic и `Result` propagation
+- жесткого story для plain `task[T]` joins при task panic и boundary failures
 - production scheduler hardening
 
 ## Как правильно читать текущую concurrency-модель

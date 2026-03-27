@@ -100,7 +100,7 @@ that clearly.
 Today the repository already has:
 
 - functions and typed return contracts
-- same-directory imports
+- same-directory imports plus manifest-resolved local path packages with deterministic lockfiles
 - `struct`
 - `enum`
 - exhaustive `match`
@@ -116,7 +116,7 @@ But some pieces are still bootstrap-grade:
 
 - the native build path currently packages the bootstrap evaluator
 - the standard library is intentionally small
-- package management is not finished
+- package management is still local-package-only with no registry or solver
 - concurrency semantics still need production hardening
 
 ## What you should not assume

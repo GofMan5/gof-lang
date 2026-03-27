@@ -238,7 +238,7 @@ Hard sequencing rule:
 - `[x]` `select`
 - `[~]` cancellation contract
 - `[x]` channel lifecycle with explicit close semantics
-- `[ ]` panic and error propagation across tasks
+- `[~]` panic and error propagation across tasks
 - `[ ]` scheduler stress and concurrency benchmarks
 - Checkpoints:
 - `[x]` CP-M5-1: channels with explicit semantics
@@ -246,20 +246,21 @@ Hard sequencing rule:
 - `[~]` CP-M5-3: cancellation and propagation rules
 - `[x]` CP-M5-3a: `close(channel)` plus `Result`-returning `send` and `recv`
 - `[x]` CP-M5-3b: token-based cooperative cancellation baseline for channel waits
+- `[x]` CP-M5-3c: `await` preserves task-boundary failures inside `Result[..., RuntimeError]`
 - Exit criteria:
 - concurrency is useful, typed, testable, and benchmarked
 - no hidden global lock or accidental shared mutable-state semantics
 
 ### M6. Packages and Modular Growth
 
-- `[ ]` stronger import rules and namespacing
-- `[ ]` manifest-resolved package model
-- `[ ]` lockfile and deterministic resolution
+- `[x]` stronger import rules and namespacing
+- `[x]` manifest-resolved package model
+- `[x]` lockfile and deterministic resolution
 - `[ ]` registry design without arbitrary code execution
 - Checkpoints:
-- `[ ]` CP-M6-1: package identity and resolver spec
-- `[ ]` CP-M6-2: deterministic dependency graph resolution
-- `[ ]` CP-M6-3: local package workflow
+- `[x]` CP-M6-1: package identity and resolver spec
+- `[x]` CP-M6-2: deterministic dependency graph resolution
+- `[x]` CP-M6-3: local package workflow
 - Exit criteria:
 - users can grow multi-package programs without ambiguity or hidden scripts
 
@@ -307,7 +308,7 @@ Hard sequencing rule:
 ### M10. Go-Class Service and Operational Coverage
 
 - `[ ]` structured concurrency finalization
-- `[ ]` task panic and error propagation across concurrency boundaries
+- `[~]` task panic and error propagation across concurrency boundaries
 - `[ ]` stronger scheduling guarantees and fairness rules
 - `[ ]` HTTP server baseline, request routing, and streaming I/O primitives
 - `[ ]` timeouts, deadlines, context propagation, and service shutdown contracts
@@ -407,9 +408,9 @@ Hard sequencing rule:
 - stabilize artifact naming and smoke coverage for `gof build --native`
 - keep direct codegen milestones honest in docs and tooling
 
-4. `[ ]` Deepen concurrency semantics:
+4. `[~]` Deepen concurrency semantics:
 - select fairness and blocking semantics
-- task propagation over `Result` and panic boundaries
+- finish task propagation over plain `task[T]`, `Result`, and panic boundaries
 - concurrency contract tests and benchmarks
 
 5. `[ ]` Start the competitive coverage closure path:
@@ -419,7 +420,7 @@ Hard sequencing rule:
 - script-runner and automation stdlib milestones strong enough for Python/Node-class workflows
 
 6. `[~]` Execute Phase 1 before widening the front:
-- finish package identity and deterministic local package workflow
+- `[x]` finish package identity and deterministic local package workflow
 - build script-first UX and richer automation/data stdlib
 - ship reference apps that make the Python/Node replacement story concrete
 

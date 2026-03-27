@@ -42,6 +42,34 @@ fn expected_http_request_len(bytes: &[u8]) -> Option<usize> {
     Some(header_end + content_length)
 }
 
+fn write_local_package_pair(root: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let app_root = root.join("package_app");
+    let math_root = root.join("package_math");
+    fs::create_dir_all(app_root.join("src")).expect("app source root should exist");
+    fs::create_dir_all(math_root.join("src")).expect("math source root should exist");
+    fs::write(
+        app_root.join("gof.mod"),
+        "module = \"example/package_app\"\nedition = \"2026\"\n\n[dependencies]\npackage_math = { path = \"../package_math\" }\n",
+    )
+    .expect("app manifest should exist");
+    fs::write(
+        app_root.join("src").join("main.gof"),
+        "import package_math\n\nfn main() -> int:\n    return square(9) + square(3)\n",
+    )
+    .expect("app source should exist");
+    fs::write(
+        math_root.join("gof.mod"),
+        "module = \"example/package_math\"\nedition = \"2026\"\n\n[dependencies]\n",
+    )
+    .expect("math manifest should exist");
+    fs::write(
+        math_root.join("src").join("lib.gof"),
+        "fn square(value: int) -> int:\n    return value * value\n",
+    )
+    .expect("math library should exist");
+    (app_root, math_root)
+}
+
 #[test]
 fn gof_run_executes_bootstrap_main() {
     let fixture = gof_conformance::workspace_root()
@@ -285,6 +313,78 @@ fn gof_run_executes_comparison_surface_example() {
 }
 
 #[test]
+fn gof_run_executes_local_package_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("package_app");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("90"));
+}
+
+#[test]
+fn gof_mod_resolve_writes_lockfile_for_local_packages() {
+    let temp = tempdir().expect("tempdir should exist");
+    let (app_root, _) = write_local_package_pair(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gof.lock"));
+
+    let lockfile = fs::read_to_string(app_root.join("gof.lock")).expect("lockfile should exist");
+    assert!(lockfile.contains("module = \"example/package_app\""));
+    assert!(lockfile.contains("module = \"example/package_math\""));
+    assert!(lockfile.contains("path = \"../package_math\""));
+}
+
+#[test]
+fn gof_run_requires_lockfile_for_manifest_backed_packages() {
+    let temp = tempdir().expect("tempdir should exist");
+    let (app_root, _) = write_local_package_pair(temp.path());
+
+    gof_command()
+        .arg("run")
+        .arg(&app_root)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3090"))
+        .stderr(predicate::str::contains("gof mod resolve"));
+}
+
+#[test]
+fn gof_run_rejects_stale_package_lockfiles() {
+    let temp = tempdir().expect("tempdir should exist");
+    let (app_root, _) = write_local_package_pair(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success();
+
+    fs::write(
+        app_root.join("gof.mod"),
+        "module = \"example/package_app\"\nedition = \"2027\"\n\n[dependencies]\npackage_math = { path = \"../package_math\" }\n",
+    )
+    .expect("manifest should be updated");
+
+    gof_command()
+        .arg("run")
+        .arg(&app_root)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3091"))
+        .stderr(predicate::str::contains("stale"));
+}
+
+#[test]
 fn gof_run_executes_range_helpers_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")
@@ -401,6 +501,22 @@ fn gof_run_executes_channel_lifecycle_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("7"));
+}
+
+#[test]
+fn gof_run_executes_task_result_propagation_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("task_result_propagation.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)",
+        ));
 }
 
 #[test]
@@ -707,8 +823,60 @@ fn gof_mod_init_writes_manifest() {
         .success();
 
     let manifest = fs::read_to_string(temp.path().join("gof.mod")).expect("manifest should exist");
+    let main_source =
+        fs::read_to_string(temp.path().join("src").join("main.gof")).expect("main should exist");
     assert!(manifest.contains("module = \"example/app\""));
     assert!(manifest.contains("edition = \"2026\""));
+    assert_eq!(main_source, "fn main() -> int:\n    return 0\n");
+}
+
+#[test]
+fn gof_mod_init_and_resolve_support_a_new_local_package_pair() {
+    let temp = tempdir().expect("tempdir should exist");
+    let app_root = temp.path().join("app");
+    let math_root = temp.path().join("math");
+
+    gof_command()
+        .args(["mod", "init", "example/package_app", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success();
+    gof_command()
+        .args(["mod", "init", "example/package_math", "--dir"])
+        .arg(&math_root)
+        .assert()
+        .success();
+
+    fs::remove_file(math_root.join("src").join("main.gof")).expect("math main should be removed");
+    fs::write(
+        math_root.join("src").join("lib.gof"),
+        "fn square(value: int) -> int:\n    return value * value\n",
+    )
+    .expect("math library should exist");
+    fs::write(
+        app_root.join("gof.mod"),
+        "module = \"example/package_app\"\nedition = \"2026\"\n\n[dependencies]\npackage_math = { path = \"../math\" }\n",
+    )
+    .expect("app manifest should be rewritten");
+    fs::write(
+        app_root.join("src").join("main.gof"),
+        "import package_math\n\nfn main() -> int:\n    return square(9)\n",
+    )
+    .expect("app main should be rewritten");
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("gof.lock"));
+
+    gof_command()
+        .arg("run")
+        .arg(&app_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("81"));
 }
 
 #[test]

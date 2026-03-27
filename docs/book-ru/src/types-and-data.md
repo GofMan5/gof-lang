@@ -201,6 +201,8 @@ concurrency и бот-ориентированного network code.
 - `Io(message: string)`
 - `ChannelClosed`
 - `Cancelled`
+- `TaskFailed(message: string)`
+- `TaskPanicked(task: string)`
 - `ParseInt(message: string)`
 - `EmptySequence(message: string)`
 - `Slice(message: string)`

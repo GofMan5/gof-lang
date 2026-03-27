@@ -45,6 +45,7 @@ After installation, open a new shell and use `gof` directly. Rust is not require
 
 ```bash
 gof run examples/geometry.gof          # run a program
+gof mod resolve --dir examples/package_app
 gof build app.gof --native             # build a native executable
 gof fmt src/main.gof                   # format
 gof test tests/fixtures                # run conformance suite
@@ -62,12 +63,16 @@ gof test tests/fixtures                # run conformance suite
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
 | JSON helpers and bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
-| Same-directory imports | stable |
+| Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, typed channels, `close`, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | Formatter, conformance tests | stable |
 
 See the [language spec](spec/language-v1.md) for the full contract.
+
+Manifest-backed packages now require a committed, fresh `gof.lock` for `gof run`,
+`gof build`, and package-aware `gof test`. Refresh it explicitly with
+`gof mod resolve --dir <package-root>`.
 
 ## Documentation
 

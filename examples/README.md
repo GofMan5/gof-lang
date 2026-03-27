@@ -23,6 +23,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `hello_print.gof`: builtin `print(...)` plus normal return value rendering
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
+- `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
 - `channel_select.gof`: channels, `Result`-based `send`/`recv`, and `select`
 - `channel_lifecycle.gof`: `close(channel)`, `recv(...)`, and `RuntimeError.ChannelClosed`
 - `dict_report.gof`: dict literals, dict indexing, and key membership
@@ -47,6 +48,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `string_metrics.gof`: list of strings, indexing to string, `len(string)`
 - `parallel_report.gof`: lists plus task fan-out and aggregation
 - `modules/main.gof`: same-directory imports and multi-file resolution
+- `package_app/`: manifest-resolved local package dependency plus package-root import resolution and committed `gof.lock`
 - `portfolio/main.gof`: imports, lists, `while`, `if`, indexing, and typed contracts together
 - `records/main.gof`: imported `struct`, field access across modules, typed contracts
 
@@ -59,6 +61,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `hello_print.gof` -> prints `gof ready`, `42`, then `7`
 - `io_roundtrip.gof` -> `Result.Ok(value: 6)`
 - `concurrent_squares.gof` -> `225`
+- `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``
 - `channel_select.gof` -> `Result.Ok(value: 9)`
 - `channel_lifecycle.gof` -> `7`
 - `dict_report.gof` -> `11`
@@ -83,5 +86,15 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `string_metrics.gof` -> `10`
 - `parallel_report.gof` -> `104`
 - `modules/main.gof` -> `121`
+- `package_app/` -> `90`
 - `portfolio/main.gof` -> `160`
 - `records/main.gof` -> `140`
+
+## Package note
+
+`package_app/` is a manifest-backed example. If you edit `package_app/gof.mod` or
+move local dependency paths, refresh `package_app/gof.lock` with:
+
+```text
+gof mod resolve --dir examples/package_app
+```

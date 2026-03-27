@@ -40,7 +40,8 @@
 
 The bootstrap compiler in this repository currently supports:
 
-- local same-directory imports through `import name`
+- local imports through `import name`, including same-directory modules, package-root modules, and manifest-resolved local path packages
+- deterministic local package lockfiles through `gof.lock` and `gof mod resolve`
 - top-level `struct`
 - top-level `enum` with unit and payload variants
 - top-level `fn`
@@ -116,11 +117,14 @@ The bootstrap compiler in this repository currently supports:
 - function parameters can currently also be annotated with known enum names
 - function return types can currently be annotated with the same builtin types plus known struct and enum names
 - local bindings and return contracts can currently use parameterized builtin annotations like `list[int]`, `dict[int]`, `channel[int]`, `task[int]`, and `Result[int, RuntimeError]`
-- `import name` currently resolves `name.gof` next to the importing source file and merges top-level functions, structs, and enums into one bootstrap module graph
+- `import name` currently resolves in deterministic order: `name.gof` next to the importing source file, then `src/name.gof` inside the nearest package root with `gof.mod`, then `src/lib.gof` from a local path dependency declared under `[dependencies]` in `gof.mod`
+- package directories currently use `src/main.gof` as the executable entrypoint and `src/lib.gof` as the dependency entrypoint
+- manifest-backed `gof run`, `gof build`, and package-aware `gof test` require a fresh `gof.lock`
 - import cycles are rejected during module graph loading
 - duplicate top-level function names across the module graph are rejected
 - duplicate struct names across the module graph are rejected
 - duplicate enum names across the module graph are rejected
+- malformed `gof.mod` files and dependency paths without `gof.mod` are rejected during local package resolution
 - struct, enum, and function names cannot conflict at top level because constructors, type references, and enum variant access must stay unambiguous
 - builtin helper names are not reserved; a top-level user function with the same name shadows the builtin call
 - plain function calls currently target only top-level named functions
@@ -232,6 +236,7 @@ The bootstrap compiler in this repository currently supports:
 - `go` currently accepts only `go some_function(...)`
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
+- when a spawned function explicitly declares `Result[..., RuntimeError]`, task-boundary evaluator failures surface at `await` as `Result.Err(RuntimeError.TaskFailed(...))` and panics surface as `Result.Err(RuntimeError.TaskPanicked(...))`
 - `channel()` currently creates a bootstrap channel value backed by the runtime queue model
 - `close(channel)` currently closes the channel and wakes blocked receive operations
 - `send(channel, value)` currently returns `Result[unit, RuntimeError]`
@@ -245,7 +250,7 @@ The bootstrap compiler in this repository currently supports:
 - each `select` arm currently must be written as either `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
 - `select` currently polls its arms until one receive operation resolves to either `Result.Ok(...)` or `Result.Err(...)` and then executes only that arm body
 - channels currently have no explicit buffering syntax and no fairness contract beyond first completed receive
-- most operational bootstrap builtins now return `Result[..., RuntimeError]`; runtime diagnostics remain for invariant failures, assertion failures, bad helper contracts, and a small set of bootstrap evaluator gaps
+- most operational bootstrap builtins now return `Result[..., RuntimeError]`; task joins with explicit `Result[..., RuntimeError]` contracts also preserve task-boundary failures as runtime errors, while runtime diagnostics remain for invariant failures, assertion failures, bad helper contracts, plain `task[T]` joins, and a small set of bootstrap evaluator gaps
 - control-flow conditions must evaluate to `bool`
 - `for binding in iterable:` currently supports lists, strings, and dicts
 - list iteration currently yields list elements in order

@@ -85,7 +85,7 @@
 Сейчас в репозитории уже есть:
 
 - функции и явные return contracts
-- локальные импорты по соседним файлам
+- локальные импорты по соседним файлам и manifest-resolved local packages с детерминированным lockfile
 - `struct`
 - `enum`
 - исчерпывающий `match`
@@ -101,7 +101,7 @@
 
 - native build пока оборачивает bootstrap evaluator
 - stdlib намеренно маленькая
-- package system еще не готова
+- package system пока ограничена локальными пакетами без registry и solver
 - concurrency semantics еще не production-grade
 
 ## Чего не надо предполагать

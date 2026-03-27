@@ -22,6 +22,11 @@ Current rules:
 - `go` currently spawns a top-level named function call
 - the result is a task value
 - `await` waits for that task value
+- when the spawned function explicitly declares `-> Result[..., RuntimeError]`,
+  task-boundary evaluator failures now come back as
+  `Result.Err(RuntimeError.TaskFailed(...))` or
+  `Result.Err(RuntimeError.TaskPanicked(...))` instead of tearing down the
+  caller immediately
 
 The mental model is:
 
@@ -97,7 +102,7 @@ This is a real concurrency baseline, but not the final story.
 Still missing:
 
 - fairness guarantees
-- task panic and `Result` propagation hardening
+- task panic and `Result` propagation hardening for plain `task[T]` joins
 - production scheduler hardening
 
 ## The right way to read current concurrency docs

@@ -355,6 +355,20 @@ fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
                     fields: Vec::new(),
                 },
                 EnumVariantSignature {
+                    name: "TaskFailed".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "TaskPanicked".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "task".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
                     name: "ParseInt".to_string(),
                     fields: vec![EnumVariantFieldSignature {
                         name: "message".to_string(),
@@ -6556,6 +6570,19 @@ mod tests {
         assert_eq!(module.functions[0].return_type, Type::Bool);
         assert_eq!(module.functions[1].return_type, Type::Bool);
         assert_eq!(module.functions[2].return_type, Type::Int);
+    }
+
+    #[test]
+    fn builtin_runtime_error_task_variants_typecheck() {
+        let module = lower_source(
+            "fn choose(flag: bool) -> RuntimeError:\n    if flag:\n        return RuntimeError.TaskPanicked(\"worker\")\n    return RuntimeError.TaskFailed(\"boom\")\n",
+        )
+        .expect("task runtime error variants should typecheck");
+
+        assert_eq!(
+            module.functions[0].return_type,
+            Type::Enum("RuntimeError".to_string())
+        );
     }
 
     #[test]

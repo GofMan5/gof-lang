@@ -358,6 +358,32 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                     span: Span::new(0, 0, 0),
                 },
                 EnumVariant {
+                    name: "TaskFailed".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "TaskPanicked".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "task".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
                     name: "ParseInt".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
@@ -498,9 +524,30 @@ impl TaskValue {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskBoundary {
+    Direct,
+    RuntimeResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskPanic {
+    function_name: String,
+    source_path: PathBuf,
+    span: Span,
+}
+
+#[derive(Debug, Clone)]
+enum TaskOutcome {
+    Value(Value),
+    Diagnostics(Diagnostics),
+    Panic(TaskPanic),
+}
+
 #[derive(Debug)]
 struct TaskHandle {
-    result: Arc<(Mutex<Option<Result<Value, Diagnostics>>>, Condvar)>,
+    boundary: TaskBoundary,
+    result: Arc<(Mutex<Option<TaskOutcome>>, Condvar)>,
 }
 
 #[derive(Debug)]
@@ -544,19 +591,32 @@ impl OutputBuffer {
 }
 
 impl TaskHandle {
-    fn new() -> Self {
+    fn new(boundary: TaskBoundary) -> Self {
         Self {
+            boundary,
             result: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
 
-    fn store(&self, result: Result<Value, Diagnostics>) {
+    fn store(&self, outcome: TaskOutcome) {
         let (lock, ready) = &*self.result;
         let mut slot = lock
             .lock()
             .expect("task result mutex should not be poisoned");
-        *slot = Some(result);
+        *slot = Some(outcome);
         ready.notify_all();
+    }
+
+    fn store_value(&self, value: Value) {
+        self.store(TaskOutcome::Value(value));
+    }
+
+    fn store_diagnostics(&self, diagnostics: Diagnostics) {
+        self.store(TaskOutcome::Diagnostics(diagnostics));
+    }
+
+    fn store_panic(&self, panic: TaskPanic) {
+        self.store(TaskOutcome::Panic(panic));
     }
 
     fn await_value(&self) -> Result<Value, Diagnostics> {
@@ -569,9 +629,25 @@ impl TaskHandle {
                 .wait(slot)
                 .expect("task result wait should not be poisoned");
         }
-        slot.as_ref()
+        match slot
+            .as_ref()
             .expect("task result should exist after wait")
             .clone()
+        {
+            TaskOutcome::Value(value) => Ok(value),
+            TaskOutcome::Diagnostics(diagnostics) => match self.boundary {
+                TaskBoundary::Direct => Err(diagnostics),
+                TaskBoundary::RuntimeResult => Ok(result_err(runtime_task_failed_error(
+                    task_failure_message(&diagnostics),
+                ))),
+            },
+            TaskOutcome::Panic(panic) => match self.boundary {
+                TaskBoundary::Direct => Err(task_panic_diagnostics(&panic)),
+                TaskBoundary::RuntimeResult => Ok(result_err(runtime_task_panicked_error(
+                    &panic.function_name,
+                ))),
+            },
+        }
     }
 }
 
@@ -733,6 +809,22 @@ fn runtime_cancelled_error() -> Value {
     enum_value("RuntimeError", "Cancelled", Vec::new())
 }
 
+fn runtime_task_failed_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "TaskFailed",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_task_panicked_error(task: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "TaskPanicked",
+        vec![("task".to_string(), Value::String(task.into()))],
+    )
+}
+
 fn runtime_parse_int_error(message: impl Into<String>) -> Value {
     enum_value(
         "RuntimeError",
@@ -782,6 +874,43 @@ fn runtime_http_status_error(code: i64, body: String) -> Value {
             ("body".to_string(), Value::String(body)),
         ],
     )
+}
+
+fn task_failure_message(diagnostics: &Diagnostics) -> String {
+    if diagnostics.0.is_empty() {
+        return "spawned task failed before producing a value".to_string();
+    }
+
+    diagnostics
+        .0
+        .iter()
+        .map(|diagnostic| format!("{}: {}", diagnostic.code, diagnostic.message))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn task_panic_diagnostics(panic: &TaskPanic) -> Diagnostics {
+    Diagnostics(vec![
+        Diagnostic::error(
+            "GOF3010",
+            format!("task `{}` panicked", panic.function_name),
+            "a spawned task hit an internal failure before producing a value",
+            panic.span,
+        )
+        .with_fix_it("inspect the spawned function and remove invariant-breaking panics")
+        .with_source_path(panic.source_path.clone()),
+    ])
+}
+
+fn function_returns_runtime_result(return_type: Option<&crate::ast::TypeRef>) -> bool {
+    let Some(return_type) = return_type else {
+        return false;
+    };
+
+    return_type.name == "Result"
+        && return_type.args.len() == 2
+        && return_type.args[1].name == "RuntimeError"
+        && return_type.args[1].args.is_empty()
 }
 
 fn host_program_args() -> Vec<String> {
@@ -2727,7 +2856,12 @@ fn spawn_task(
         ])
     })?;
 
-    let task = Arc::new(TaskHandle::new());
+    let boundary = if function_returns_runtime_result(function.return_type.as_ref()) {
+        TaskBoundary::RuntimeResult
+    } else {
+        TaskBoundary::Direct
+    };
+    let task = Arc::new(TaskHandle::new(boundary));
     let task_handle = Arc::clone(&task);
     let function_name = callee.to_string();
     let functions = Arc::clone(functions);
@@ -2737,24 +2871,19 @@ fn spawn_task(
     let output = output.clone();
 
     std::thread::spawn(move || {
-        let result = match std::panic::catch_unwind(AssertUnwindSafe(|| {
+        match std::panic::catch_unwind(AssertUnwindSafe(|| {
             eval_function(
                 &function, &args, &functions, &methods, &structs, &enums, &output,
             )
         })) {
-            Ok(result) => result,
-            Err(_) => Err(Diagnostics(vec![
-                Diagnostic::error(
-                    "GOF3010",
-                    format!("task `{function_name}` panicked"),
-                    "a spawned task hit an internal failure before producing a value",
-                    span,
-                )
-                .with_fix_it("inspect the spawned function and remove invariant-breaking panics")
-                .with_source_path(function.source_path.clone()),
-            ])),
-        };
-        task_handle.store(result);
+            Ok(Ok(value)) => task_handle.store_value(value),
+            Ok(Err(diagnostics)) => task_handle.store_diagnostics(diagnostics),
+            Err(_) => task_handle.store_panic(TaskPanic {
+                function_name,
+                source_path: function.source_path.clone(),
+                span,
+            }),
+        }
     });
 
     Ok(Value::Task(TaskValue(task)))
@@ -6629,13 +6758,15 @@ fn condition_span(stmt: &Stmt) -> Span {
 
 #[cfg(test)]
 mod tests {
-    use super::{Value, run, run_with_output};
+    use super::{TaskBoundary, TaskHandle, TaskPanic, Value, run, run_with_output};
     use crate::ast::parse;
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
+    use crate::source::Span;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::tempdir;
 
@@ -6669,6 +6800,64 @@ mod tests {
         let diagnostics =
             run_source("fn main():\n    return await 42\n").expect_err("await should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3009"]);
+    }
+
+    #[test]
+    fn await_converts_result_task_failures_into_runtime_errors() {
+        let value = run_source(
+            "fn broken() -> Result[int, RuntimeError]:\n    return 1 / 0\nfn main() -> string:\n    task = go broken()\n    outcome = await task\n    match outcome:\n        Result.Ok(value):\n            return to_string(value)\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("result-returning task failure should stay inside Result");
+
+        assert_eq!(
+            value.cli_text().as_deref(),
+            Some("RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)")
+        );
+    }
+
+    #[test]
+    fn await_keeps_diagnostics_for_non_result_tasks() {
+        let diagnostics = run_source(
+            "fn broken() -> int:\n    return 1 / 0\nfn main() -> int:\n    task = go broken()\n    return await task\n",
+        )
+        .expect_err("plain task failure should still surface diagnostics");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3068"]);
+    }
+
+    #[test]
+    fn runtime_result_tasks_convert_panics_into_runtime_errors() {
+        let task = TaskHandle::new(TaskBoundary::RuntimeResult);
+        task.store_panic(TaskPanic {
+            function_name: "worker".to_string(),
+            source_path: PathBuf::from("worker.gof"),
+            span: Span::new(1, 1, 1),
+        });
+
+        let value = task
+            .await_value()
+            .expect("runtime result task panic should be captured");
+
+        assert_eq!(
+            value.cli_text().as_deref(),
+            Some("Result.Err(error: RuntimeError.TaskPanicked(task: worker))")
+        );
+    }
+
+    #[test]
+    fn direct_tasks_keep_panic_diagnostics() {
+        let task = TaskHandle::new(TaskBoundary::Direct);
+        task.store_panic(TaskPanic {
+            function_name: "worker".to_string(),
+            source_path: PathBuf::from("worker.gof"),
+            span: Span::new(1, 1, 1),
+        });
+
+        let diagnostics = task
+            .await_value()
+            .expect_err("direct task panic should still be a diagnostic");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3010"]);
     }
 
     #[test]

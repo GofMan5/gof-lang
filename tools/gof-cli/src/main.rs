@@ -1,7 +1,13 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use gof_compiler::{
-    CompileMode, Diagnostics, SourceFile, compile_source, format_source, run_module_with_output,
+    CompileMode, Diagnostics, SourceFile, compile_source, format_source,
+    package::{
+        PackageGraphError, PackageManifestError, ensure_fresh_lockfile_for_source,
+        find_package_root, package_library_entry_path, package_main_entry_path,
+        write_lockfile_for_directory,
+    },
+    run_module_with_output,
 };
 use gof_runtime::profile;
 use std::fs;
@@ -62,6 +68,7 @@ struct TestArgs {
 #[derive(Subcommand)]
 enum ModCommand {
     Init(ModInitArgs),
+    Resolve(ModResolveArgs),
 }
 
 #[derive(Args)]
@@ -69,6 +76,12 @@ struct ModInitArgs {
     module: String,
     #[arg(long, default_value = "2026")]
     edition: String,
+    #[arg(long, default_value = ".")]
+    dir: PathBuf,
+}
+
+#[derive(Args)]
+struct ModResolveArgs {
     #[arg(long, default_value = ".")]
     dir: PathBuf,
 }
@@ -87,24 +100,27 @@ fn run() -> Result<()> {
         Command::Run(args) => run_file(args),
         Command::Test(args) => test_fixtures(args),
         Command::Fmt(args) => format_file(args),
-        Command::Mod {
-            command: ModCommand::Init(args),
-        } => init_module(args),
+        Command::Mod { command } => match command {
+            ModCommand::Init(args) => init_module(args),
+            ModCommand::Resolve(args) => resolve_module_lockfile(args),
+        },
         Command::Doc => print_docs(),
         Command::Bench => print_benchmarks(),
     }
 }
 
 fn build(args: BuildArgs) -> Result<()> {
-    let source = SourceFile::from_path(&args.input)?;
+    let resolved_input = resolve_source_input_path(&args.input)?;
+    ensure_package_lockfile(&resolved_input, "build")?;
+    let source = SourceFile::from_path(&resolved_input)?;
     let compiled = compile_source(&source, CompileMode::Executable)
         .map_err(|error| render_error(&source, error))?;
     let output = if args.native {
-        default_native_build_path(&args.input, args.output)
+        default_native_build_path(&resolved_input, args.output)
     } else {
         args.output
             .clone()
-            .unwrap_or_else(|| default_build_path(&args.input))
+            .unwrap_or_else(|| default_build_path(&resolved_input))
     };
 
     if let Some(parent) = output.parent() {
@@ -122,7 +138,9 @@ fn build(args: BuildArgs) -> Result<()> {
 
 fn run_file(args: FileInput) -> Result<()> {
     let _program_args = &args.args;
-    let source = SourceFile::from_path(&args.input)?;
+    let resolved_input = resolve_source_input_path(&args.input)?;
+    ensure_package_lockfile(&resolved_input, "run")?;
+    let source = SourceFile::from_path(&resolved_input)?;
     let result = run_module_with_output(&source).map_err(|error| render_error(&source, error))?;
     if !result.stdout.is_empty() {
         print!("{}", result.stdout);
@@ -134,6 +152,13 @@ fn run_file(args: FileInput) -> Result<()> {
 }
 
 fn test_fixtures(args: TestArgs) -> Result<()> {
+    if let Some(package_entry) = resolve_package_test_input(&args.fixtures)? {
+        ensure_package_lockfile(&package_entry, "test")?;
+        run_package_test(&package_entry)?;
+        println!("passed 1 package target(s)");
+        return Ok(());
+    }
+
     let fixtures = discover_fixtures(&args.fixtures)?;
     let mut failures = Vec::new();
     let mut passed = 0usize;
@@ -182,7 +207,88 @@ fn init_module(args: ModInitArgs) -> Result<()> {
         args.module, args.edition
     );
     fs::write(&manifest_path, manifest)?;
+    let source_root = args.dir.join("src");
+    fs::create_dir_all(&source_root)?;
+    let main_path = source_root.join("main.gof");
+    fs::write(&main_path, "fn main() -> int:\n    return 0\n")?;
     println!("created {}", manifest_path.display());
+    println!("created {}", main_path.display());
+    Ok(())
+}
+
+fn resolve_module_lockfile(args: ModResolveArgs) -> Result<()> {
+    let lockfile_path = write_lockfile_for_directory(&args.dir).map_err(render_package_error)?;
+    println!("wrote {}", display_path(&lockfile_path));
+    Ok(())
+}
+
+fn resolve_source_input_path(input: &Path) -> Result<PathBuf> {
+    if input.is_dir() {
+        let manifest_path = input.join("gof.mod");
+        if !manifest_path.is_file() {
+            bail!(
+                "package directory is missing manifest: {}",
+                manifest_path.display()
+            );
+        }
+
+        let entry_path = package_main_entry_path(input);
+        if !entry_path.is_file() {
+            bail!(
+                "package directory is missing executable entrypoint: {}",
+                entry_path.display()
+            );
+        }
+
+        return Ok(entry_path);
+    }
+
+    Ok(input.to_path_buf())
+}
+
+fn resolve_package_test_input(input: &Path) -> Result<Option<PathBuf>> {
+    if input.is_file() {
+        return Ok(Some(input.to_path_buf()));
+    }
+
+    let Some(package_root) = find_package_root(input) else {
+        return Ok(None);
+    };
+    if package_root != input {
+        return Ok(None);
+    }
+
+    let main_entry = package_main_entry_path(&package_root);
+    if main_entry.is_file() {
+        return Ok(Some(main_entry));
+    }
+
+    let library_entry = package_library_entry_path(&package_root);
+    if library_entry.is_file() {
+        return Ok(Some(library_entry));
+    }
+
+    bail!(
+        "package directory is missing a testable entrypoint: {} or {}",
+        package_main_entry_path(&package_root).display(),
+        package_library_entry_path(&package_root).display()
+    );
+}
+
+fn run_package_test(entry_path: &Path) -> Result<()> {
+    let source = SourceFile::from_path(entry_path)?;
+    let mode = if entry_path.file_name().and_then(|value| value.to_str()) == Some("lib.gof") {
+        CompileMode::Library
+    } else {
+        CompileMode::Executable
+    };
+    compile_source(&source, mode).map_err(|error| render_error(&source, error))?;
+    Ok(())
+}
+
+fn ensure_package_lockfile(source_path: &Path, operation: &str) -> Result<()> {
+    ensure_fresh_lockfile_for_source(source_path)
+        .map_err(|error| render_package_error_with_operation(error, operation))?;
     Ok(())
 }
 
@@ -406,4 +512,115 @@ fn validate_expected_diagnostics(path: &Path, error: &Diagnostics) -> Result<()>
 
 fn render_error(source: &SourceFile, error: Diagnostics) -> anyhow::Error {
     anyhow!(error.render(source))
+}
+
+fn render_package_error(error: PackageGraphError) -> anyhow::Error {
+    render_package_error_with_operation(error, "resolve")
+}
+
+fn render_package_error_with_operation(error: PackageGraphError, operation: &str) -> anyhow::Error {
+    match error {
+        PackageGraphError::Manifest(error) => anyhow!(render_manifest_error(error)),
+        PackageGraphError::MissingLockfile {
+            module,
+            package_root,
+            path,
+        } => anyhow!(format!(
+            "error[GOF3090]: manifest-backed package `{module}` is missing a lockfile for `{operation}`\n  note: expected {}\n  note: package root {}\n  help: run `gof mod resolve --dir {}`",
+            display_path(&path),
+            display_path(&package_root),
+            display_path(&package_root)
+        )),
+        PackageGraphError::StaleLockfile {
+            module,
+            package_root,
+            path,
+            reason,
+        } => anyhow!(format!(
+            "error[GOF3091]: lockfile for manifest-backed package `{module}` is stale for `{operation}`\n  note: {}\n  note: lockfile {}\n  note: package root {}\n  help: run `gof mod resolve --dir {}`",
+            reason,
+            display_path(&path),
+            display_path(&package_root),
+            display_path(&package_root)
+        )),
+        PackageGraphError::ConflictingModuleIdentity {
+            module,
+            existing_root,
+            new_root,
+        } => anyhow!(format!(
+            "error[GOF3092]: conflicting package identity in the local dependency graph for `{module}`\n  note: first root {}\n  note: second root {}\n  help: make each local package module name unique",
+            display_path(&existing_root),
+            display_path(&new_root)
+        )),
+        PackageGraphError::ConflictingPackageMetadata {
+            package_root,
+            existing_module,
+            existing_edition,
+            new_module,
+            new_edition,
+        } => anyhow!(format!(
+            "error[GOF3092]: conflicting package metadata for `{}`\n  note: expected module `{existing_module}` edition `{existing_edition}`\n  note: got module `{new_module}` edition `{new_edition}`\n  help: keep one stable manifest identity per package root",
+            display_path(&package_root)
+        )),
+        PackageGraphError::LockfileParse { path, message } => anyhow!(format!(
+            "error[GOF3091]: failed to parse lockfile `{}`\n  note: {}\n  help: run `gof mod resolve --dir {}`",
+            display_path(&path),
+            message,
+            display_path(path.parent().unwrap_or_else(|| Path::new(".")))
+        )),
+        PackageGraphError::LockfileRead { path, message } => anyhow!(format!(
+            "error[GOF3091]: failed to read lockfile `{}`\n  note: {}\n  help: ensure the lockfile is readable and rerun `gof mod resolve`",
+            display_path(&path),
+            message
+        )),
+        PackageGraphError::DependencyCycle { cycle } => anyhow!(format!(
+            "error: local package dependency cycle detected during `{operation}`\n  note: {}\n  help: break the cycle by extracting shared code into an acyclic package",
+            cycle
+                .iter()
+                .map(|path| display_path(path))
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        )),
+        PackageGraphError::MissingEntrypoint {
+            module,
+            package_root,
+            expected_entry,
+        } => anyhow!(format!(
+            "error: package `{module}` is missing the required entrypoint `{}`\n  note: package root {}\n  help: add the expected package entrypoint before rerunning `{operation}`",
+            display_path(&expected_entry),
+            display_path(&package_root)
+        )),
+        PackageGraphError::MissingRootManifest { start } => anyhow!(format!(
+            "error: no `gof.mod` manifest was found starting from {}\n  help: run `gof mod init` first or point `--dir` at an existing package root",
+            display_path(&start)
+        )),
+    }
+}
+
+fn render_manifest_error(error: PackageManifestError) -> String {
+    match error {
+        PackageManifestError::Read { path, message } => format!(
+            "error[GOF3089]: invalid package manifest\n  note: failed to read {}\n  note: {}\n  help: repair `gof.mod` or remove the broken local package configuration",
+            display_path(&path),
+            message
+        ),
+        PackageManifestError::Parse { path, message } => format!(
+            "error[GOF3089]: invalid package manifest\n  note: failed to parse {}\n  note: {}\n  help: fix the TOML syntax in `gof.mod`",
+            display_path(&path),
+            message
+        ),
+        PackageManifestError::MissingDependencyManifest {
+            manifest,
+            dependency,
+            expected_manifest,
+        } => format!(
+            "error[GOF3089]: invalid local dependency `{dependency}`\n  note: {} declares `{dependency}` but {} does not exist\n  help: point the dependency at a directory that contains a valid `gof.mod`",
+            display_path(&manifest),
+            display_path(&expected_manifest)
+        ),
+    }
+}
+
+fn display_path(path: &Path) -> String {
+    path.display().to_string().replace("\\\\?\\", "")
 }

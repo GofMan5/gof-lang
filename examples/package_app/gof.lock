@@ -1,0 +1,27 @@
+version = 1
+
+[root]
+module = "example/package_app"
+edition = "2026"
+
+[[package]]
+module = "example/package_app"
+identity = "example/package_app@cdb4ee2aea69cc6a83331bbe96dc2caa9a299d21329efb0336fc02a82e1839a8"
+manifest_digest = "4a432a47b7c78af11baa4d0c2caf6c911bc4e5628772dfbf898c5af92ec4fa8d"
+dependencies = ["example/package_math"]
+entry = "src/main.gof"
+
+[package.source]
+kind = "path"
+path = "."
+
+[[package]]
+module = "example/package_math"
+identity = "example/package_math@ea4e3d38c23cbd0688075128d016b13aa3d02f6a8fcf09274a8e1c87649a5ecd"
+manifest_digest = "9a126ff5c36c142751a97f8f57404569bf77c4b564c566cdfd3e1444de60aad5"
+dependencies = []
+entry = "src/lib.gof"
+
+[package.source]
+kind = "path"
+path = "../package_math"

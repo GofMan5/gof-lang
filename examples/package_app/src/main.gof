@@ -1,0 +1,4 @@
+import package_math
+
+fn main() -> int:
+    return square(9) + square(3)

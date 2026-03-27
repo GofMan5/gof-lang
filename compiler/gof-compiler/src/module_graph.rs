@@ -2,6 +2,7 @@ use crate::ast::{Module, parse};
 use crate::cst::CstModule;
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::lexer::lex;
+use crate::package::{PackageContext, PackageManifestError, find_package_context_for_source};
 use crate::source::SourceFile;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,8 +10,15 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default)]
 struct ModuleResolver {
     modules: HashMap<PathBuf, Module>,
+    package_contexts: HashMap<PathBuf, Option<PackageContext>>,
     load_order: Vec<PathBuf>,
     loading_stack: Vec<PathBuf>,
+}
+
+#[derive(Debug)]
+enum ImportResolutionError {
+    Manifest(PackageManifestError),
+    Unresolved { searched: Vec<PathBuf> },
 }
 
 pub fn parse_single_source(source: &SourceFile) -> Result<Module, Diagnostics> {
@@ -76,7 +84,35 @@ impl ModuleResolver {
         self.loading_stack.push(path.clone());
 
         for import in &module.imports {
-            let import_path = resolve_import_path(&path, &import.module);
+            let import_path = match self.resolve_import_path(&path, &import.module) {
+                Ok(import_path) => import_path,
+                Err(ImportResolutionError::Manifest(error)) => {
+                    diagnostics.push(package_manifest_diagnostic(&path, import.span, error));
+                    continue;
+                }
+                Err(ImportResolutionError::Unresolved { searched }) => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3014",
+                            format!("cannot resolve import `{}`", import.module),
+                            format!(
+                                "searched: {}",
+                                searched
+                                    .iter()
+                                    .map(|candidate| candidate.display().to_string())
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ),
+                            import.span,
+                        )
+                        .with_fix_it(
+                            "create the imported module, add a local dependency in `gof.mod`, or remove the import",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+            };
 
             if let Some(position) = self
                 .loading_stack
@@ -111,19 +147,12 @@ impl ModuleResolver {
             let import_source = match SourceFile::from_path(&import_path) {
                 Ok(source) => source,
                 Err(_) => {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            "GOF3014",
-                            format!("cannot resolve import `{}`", import.module),
-                            format!(
-                                "expected a sibling module file at {}",
-                                import_path.display()
-                            ),
-                            import.span,
-                        )
-                        .with_fix_it("create the imported `.gof` file next to the current module or remove the import")
-                        .with_source_path(path.clone()),
-                    );
+                    diagnostics.push(import_resolution_missing_file_diagnostic(
+                        &path,
+                        &import.module,
+                        import.span,
+                        &import_path,
+                    ));
                     continue;
                 }
             };
@@ -388,6 +417,60 @@ impl ModuleResolver {
 
         (structs, enums, functions)
     }
+
+    fn package_context_for_source(
+        &mut self,
+        source_path: &Path,
+    ) -> Result<Option<PackageContext>, PackageManifestError> {
+        let normalized_source = normalize_path(source_path);
+        if let Some(context) = self.package_contexts.get(&normalized_source) {
+            return Ok(context.clone());
+        }
+
+        let context = find_package_context_for_source(source_path)?;
+        self.package_contexts
+            .insert(normalized_source, context.clone());
+        Ok(context)
+    }
+
+    fn resolve_import_path(
+        &mut self,
+        current_module_path: &Path,
+        module_name: &str,
+    ) -> Result<PathBuf, ImportResolutionError> {
+        let same_directory_candidate = current_module_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join(format!("{module_name}.gof"));
+        let mut searched = vec![same_directory_candidate.clone()];
+        if same_directory_candidate.is_file() {
+            return Ok(normalize_path(&same_directory_candidate));
+        }
+
+        if let Some(package_context) = self
+            .package_context_for_source(current_module_path)
+            .map_err(ImportResolutionError::Manifest)?
+        {
+            let package_root_candidate = package_context
+                .source_root
+                .join(format!("{module_name}.gof"));
+            if package_root_candidate != same_directory_candidate {
+                searched.push(package_root_candidate.clone());
+                if package_root_candidate.is_file() {
+                    return Ok(normalize_path(&package_root_candidate));
+                }
+            }
+
+            if let Some(dependency) = package_context.dependencies.get(module_name) {
+                searched.push(dependency.entry_path.clone());
+                if dependency.entry_path.is_file() {
+                    return Ok(normalize_path(&dependency.entry_path));
+                }
+            }
+        }
+
+        Err(ImportResolutionError::Unresolved { searched })
+    }
 }
 
 fn normalize_path(path: &Path) -> PathBuf {
@@ -402,11 +485,63 @@ fn normalize_path(path: &Path) -> PathBuf {
     })
 }
 
-fn resolve_import_path(current_module_path: &Path, module_name: &str) -> PathBuf {
-    current_module_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(format!("{module_name}.gof"))
+fn package_manifest_diagnostic(
+    source_path: &Path,
+    span: crate::source::Span,
+    error: PackageManifestError,
+) -> Diagnostic {
+    match error {
+        PackageManifestError::Read { path, message } => Diagnostic::error(
+            "GOF3089",
+            "invalid package manifest",
+            format!("failed to read {}: {message}", path.display()),
+            span,
+        )
+        .with_fix_it("repair `gof.mod` or remove the broken local package configuration")
+        .with_source_path(source_path.to_path_buf()),
+        PackageManifestError::Parse { path, message } => Diagnostic::error(
+            "GOF3089",
+            "invalid package manifest",
+            format!("failed to parse {}: {message}", path.display()),
+            span,
+        )
+        .with_fix_it("fix the TOML syntax in `gof.mod`")
+        .with_source_path(source_path.to_path_buf()),
+        PackageManifestError::MissingDependencyManifest {
+            manifest,
+            dependency,
+            expected_manifest,
+        } => Diagnostic::error(
+            "GOF3089",
+            format!("invalid local dependency `{dependency}`"),
+            format!(
+                "{} declares `{dependency}`, but `{}` does not exist",
+                manifest.display(),
+                expected_manifest.display()
+            ),
+            span,
+        )
+        .with_fix_it("point the dependency at a directory that contains a valid `gof.mod`")
+        .with_source_path(source_path.to_path_buf()),
+    }
+}
+
+fn import_resolution_missing_file_diagnostic(
+    source_path: &Path,
+    module_name: &str,
+    span: crate::source::Span,
+    import_path: &Path,
+) -> Diagnostic {
+    Diagnostic::error(
+        "GOF3014",
+        format!("cannot resolve import `{module_name}`"),
+        format!("expected a module entrypoint at {}", import_path.display()),
+        span,
+    )
+    .with_fix_it(
+        "create the imported `.gof` entrypoint, add the missing local dependency file, or remove the import",
+    )
+    .with_source_path(source_path.to_path_buf())
 }
 
 #[cfg(test)]
@@ -588,5 +723,115 @@ mod tests {
                 .expect_err("duplicate methods should fail");
 
         assert!(diagnostics.codes().contains(&"GOF3034"));
+    }
+
+    #[test]
+    fn loads_modules_from_package_source_root() {
+        let temp = tempdir().expect("tempdir should exist");
+        let manifest_path = temp.path().join("gof.mod");
+        let source_root = temp.path().join("src");
+        let cmd_root = source_root.join("cmd");
+        let helper_path = source_root.join("math.gof");
+        let main_path = cmd_root.join("main.gof");
+
+        fs::create_dir_all(&cmd_root).expect("command directory should exist");
+        fs::write(
+            &manifest_path,
+            "module = \"example/app\"\nedition = \"2026\"\n\n[dependencies]\n",
+        )
+        .expect("manifest should be written");
+        fs::write(
+            &helper_path,
+            "fn square(x: int) -> int:\n    return x * x\n",
+        )
+        .expect("helper module should be written");
+        fs::write(
+            &main_path,
+            "import math\n\nfn main() -> int:\n    return square(9)\n",
+        )
+        .expect("main module should be written");
+
+        let module =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
+                .expect("package-root module graph should load");
+
+        assert_eq!(module.functions.len(), 2);
+        assert_eq!(module.functions[0].name, "square");
+        assert_eq!(module.functions[1].name, "main");
+    }
+
+    #[test]
+    fn loads_functions_from_local_package_dependencies() {
+        let temp = tempdir().expect("tempdir should exist");
+        let math_root = temp.path().join("package_math");
+        let math_source_root = math_root.join("src");
+        let app_root = temp.path().join("package_app");
+        let app_source_root = app_root.join("src");
+        let math_lib_path = math_source_root.join("lib.gof");
+        let math_ops_path = math_source_root.join("ops.gof");
+        let app_main_path = app_source_root.join("main.gof");
+
+        fs::create_dir_all(&math_source_root).expect("math source root should exist");
+        fs::create_dir_all(&app_source_root).expect("app source root should exist");
+        fs::write(
+            math_root.join("gof.mod"),
+            "module = \"example/package_math\"\nedition = \"2026\"\n\n[dependencies]\n",
+        )
+        .expect("math manifest should be written");
+        fs::write(
+            &math_lib_path,
+            "import ops\n\nfn square(value: int) -> int:\n    return multiply(value, value)\n",
+        )
+        .expect("math lib should be written");
+        fs::write(
+            &math_ops_path,
+            "fn multiply(lhs: int, rhs: int) -> int:\n    return lhs * rhs\n",
+        )
+        .expect("math ops should be written");
+        fs::write(
+            app_root.join("gof.mod"),
+            "module = \"example/package_app\"\nedition = \"2026\"\n\n[dependencies]\npackage_math = { path = \"../package_math\" }\n",
+        )
+        .expect("app manifest should be written");
+        fs::write(
+            &app_main_path,
+            "import package_math\n\nfn main() -> int:\n    return square(9) + square(3)\n",
+        )
+        .expect("app main should be written");
+
+        let module = load_module_graph(
+            &SourceFile::from_path(&app_main_path).expect("app main should load"),
+        )
+        .expect("local package dependency graph should load");
+
+        assert_eq!(module.functions.len(), 3);
+        assert_eq!(module.functions[0].name, "multiply");
+        assert_eq!(module.functions[1].name, "square");
+        assert_eq!(module.functions[2].name, "main");
+    }
+
+    #[test]
+    fn rejects_invalid_package_manifests() {
+        let temp = tempdir().expect("tempdir should exist");
+        let source_root = temp.path().join("src");
+        let main_path = source_root.join("main.gof");
+
+        fs::create_dir_all(&source_root).expect("source root should exist");
+        fs::write(
+            temp.path().join("gof.mod"),
+            "module = \"broken\"\nedition = [\n",
+        )
+        .expect("manifest should be written");
+        fs::write(
+            &main_path,
+            "import math\n\nfn main() -> int:\n    return square(9)\n",
+        )
+        .expect("main should be written");
+
+        let diagnostics =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main should load"))
+                .expect_err("invalid manifest should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3089"]);
     }
 }

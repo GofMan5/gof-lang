@@ -100,3 +100,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3086`: invalid negative duration for builtin `sleep`
 - `GOF3087`: invalid operand for equality or ordering
 - `GOF3088`: invalid operand for sequence helpers
+- `GOF3089`: invalid package manifest or local dependency configuration
+- `GOF3090`: missing lockfile for manifest-backed package execution, build, or test
+- `GOF3091`: stale or unreadable lockfile for a manifest-backed package
+- `GOF3092`: conflicting package identity or metadata in the local dependency graph
