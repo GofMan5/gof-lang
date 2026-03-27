@@ -530,6 +530,14 @@ impl ChannelValue {
     fn try_recv(&self, token: Option<&CancelTokenValue>) -> Option<ChannelReceiveState> {
         self.0.try_recv(token)
     }
+
+    fn try_send(
+        &self,
+        value: Value,
+        token: Option<&CancelTokenValue>,
+    ) -> Option<ChannelReceiveState> {
+        self.0.try_send(value, token)
+    }
 }
 
 #[derive(Clone)]
@@ -577,6 +585,7 @@ struct ChannelState {
     rendezvous_slot: Option<Value>,
     closed: bool,
     capacity: Option<usize>,
+    waiting_receivers: usize,
 }
 
 #[derive(Debug)]
@@ -682,6 +691,7 @@ impl ChannelHandle {
                 rendezvous_slot: None,
                 closed: false,
                 capacity,
+                waiting_receivers: 0,
             }),
             ready: Condvar::new(),
         }
@@ -770,26 +780,90 @@ impl ChannelHandle {
             .state
             .lock()
             .expect("channel state mutex should not be poisoned");
+        let mut waiting_registered = false;
         loop {
             if let Some(value) = state.queue.pop_front() {
+                if waiting_registered {
+                    state.waiting_receivers -= 1;
+                }
                 self.ready.notify_all();
                 return ChannelReceiveState::Value(value);
             }
             if let Some(value) = state.rendezvous_slot.take() {
+                if waiting_registered {
+                    state.waiting_receivers -= 1;
+                }
                 self.ready.notify_all();
                 return ChannelReceiveState::Value(value);
             }
             if state.closed {
+                if waiting_registered {
+                    state.waiting_receivers -= 1;
+                    self.ready.notify_all();
+                }
                 return ChannelReceiveState::Closed;
             }
             if token.is_some_and(CancelTokenValue::is_cancelled) {
+                if waiting_registered {
+                    state.waiting_receivers -= 1;
+                    self.ready.notify_all();
+                }
                 return ChannelReceiveState::Cancelled;
+            }
+            if matches!(state.capacity, Some(0)) && !waiting_registered {
+                state.waiting_receivers += 1;
+                waiting_registered = true;
+                self.ready.notify_all();
             }
             let (next_state, _) = self
                 .ready
                 .wait_timeout(state, Duration::from_millis(10))
                 .expect("channel wait should not be poisoned");
             state = next_state;
+        }
+    }
+
+    fn try_send(
+        &self,
+        value: Value,
+        token: Option<&CancelTokenValue>,
+    ) -> Option<ChannelReceiveState> {
+        if token.is_some_and(CancelTokenValue::is_cancelled) {
+            return Some(ChannelReceiveState::Cancelled);
+        }
+
+        let mut state = self
+            .state
+            .lock()
+            .expect("channel state mutex should not be poisoned");
+        if state.closed {
+            return Some(ChannelReceiveState::Closed);
+        }
+
+        match state.capacity {
+            None => {
+                state.queue.push_back(value);
+                self.ready.notify_all();
+                Some(ChannelReceiveState::Value(Value::Unit))
+            }
+            Some(0) => {
+                if state.waiting_receivers > 0 && state.rendezvous_slot.is_none() {
+                    state.rendezvous_slot = Some(value);
+                    self.ready.notify_all();
+                    Some(ChannelReceiveState::Value(Value::Unit))
+                } else {
+                    None
+                }
+            }
+            Some(capacity) => {
+                if state.queue.len() < capacity {
+                    state.queue.push_back(value);
+                    self.ready.notify_all();
+                    Some(ChannelReceiveState::Value(Value::Unit))
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -1675,20 +1749,32 @@ fn eval_stmt(
                     Diagnostic::error(
                         "GOF3047",
                         "`select` requires at least one arm",
-                        "the bootstrap select model needs one or more `recv(channel)` or `default` arms",
+                        "the bootstrap select model needs one or more `recv(channel)`, `send(channel, value)`, or `default` arms",
                         *span,
                     )
-                    .with_fix_it("add a select arm like `value = recv(ch):` or `default:`")
+                    .with_fix_it("add a select arm like `value = recv(ch):`, `send(ch, value):`, or `default:`")
                     .with_source_path(source_path.to_path_buf()),
                 ])
                 .into());
             }
 
-            let mut recv_arms = Vec::new();
+            let mut prepared_arms = Vec::new();
             let mut default_arm: Option<&SelectArm> = None;
             for arm in arms {
                 match arm.kind {
-                    SelectArmKind::Recv { .. } => recv_arms.push(arm),
+                    SelectArmKind::Operation { ref operation } => prepared_arms.push((
+                        arm,
+                        prepare_select_operation(
+                            operation,
+                            scopes,
+                            functions,
+                            methods,
+                            structs,
+                            enums,
+                            output,
+                            source_path,
+                        )?,
+                    )),
                     SelectArmKind::Default => {
                         if default_arm.is_some() {
                             return Err(Diagnostics(vec![
@@ -1708,7 +1794,7 @@ fn eval_stmt(
                 }
             }
 
-            if recv_arms.is_empty() {
+            if prepared_arms.is_empty() {
                 if let Some(arm) = default_arm {
                     return eval_select_arm_body(
                         arm,
@@ -1726,23 +1812,12 @@ fn eval_stmt(
             }
 
             let mut start_index =
-                NEXT_SELECT_ARM_START.fetch_add(1, Ordering::Relaxed) % recv_arms.len();
+                NEXT_SELECT_ARM_START.fetch_add(1, Ordering::Relaxed) % prepared_arms.len();
             loop {
-                for offset in 0..recv_arms.len() {
-                    let arm = recv_arms[(start_index + offset) % recv_arms.len()];
-                    let SelectArmKind::Recv { operation } = &arm.kind else {
-                        continue;
-                    };
-                    if let Some(received) = try_eval_select_operation(
-                        operation,
-                        scopes,
-                        functions,
-                        methods,
-                        structs,
-                        enums,
-                        output,
-                        source_path,
-                    )? {
+                for offset in 0..prepared_arms.len() {
+                    let (arm, prepared) =
+                        &prepared_arms[(start_index + offset) % prepared_arms.len()];
+                    if let Some(received) = poll_select_operation(prepared) {
                         return eval_select_arm_body(
                             arm,
                             Some(received),
@@ -1773,7 +1848,7 @@ fn eval_stmt(
                     );
                 }
 
-                start_index = (start_index + 1) % recv_arms.len();
+                start_index = (start_index + 1) % prepared_arms.len();
                 std::thread::yield_now();
             }
         }
@@ -6054,7 +6129,20 @@ fn eval_recv_builtin(
     })
 }
 
-fn try_eval_select_operation(
+#[derive(Clone)]
+enum PreparedSelectOperation {
+    Recv {
+        channel: ChannelValue,
+        cancel_token: Option<CancelTokenValue>,
+    },
+    Send {
+        channel: ChannelValue,
+        value: Value,
+        cancel_token: Option<CancelTokenValue>,
+    },
+}
+
+fn prepare_select_operation(
     operation: &Expr,
     scopes: &ScopeStack,
     functions: &FunctionTable,
@@ -6063,17 +6151,17 @@ fn try_eval_select_operation(
     enums: &EnumTable,
     output: &OutputBuffer,
     source_path: &Path,
-) -> EvalResult<Option<Value>> {
+) -> EvalResult<PreparedSelectOperation> {
     match operation {
         Expr::Call { callee, args, span } if callee == "recv" => {
-                if !(1..=2).contains(&args.len()) {
-                    return eval_diagnostics(Diagnostics(vec![
-                        Diagnostic::error(
-                            "GOF3047",
-                            "`select` arms currently require `recv(channel)` operations or `default`",
-                            "each select arm must call `recv` with one channel argument and an optional cancellation token",
-                            *span,
-                        )
+            if !(1..=2).contains(&args.len()) {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3047",
+                        "`select` arms currently require `recv(...)`, `send(...)`, or `default`",
+                        "select receive arms must call `recv` with one channel argument and an optional cancellation token",
+                        *span,
+                    )
                     .with_fix_it("rewrite the arm as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, or `value = recv(channel, token):`")
                     .with_source_path(source_path.to_path_buf()),
                 ]));
@@ -6103,11 +6191,11 @@ fn try_eval_select_operation(
             } else {
                 None
             };
-            let Value::Channel(channel_value) = channel_value else {
+            let Value::Channel(channel) = channel_value else {
                 return eval_diagnostics(Diagnostics(vec![
                     Diagnostic::error(
                         "GOF3047",
-                        "`select` arms require channel receives",
+                        "`select` receive arms require a channel argument",
                         format!(
                             "this arm resolves to `{}` instead of a channel",
                             value_name(&channel_value)
@@ -6119,34 +6207,127 @@ fn try_eval_select_operation(
                 ]));
             };
 
-            Ok(channel_value
-                .try_recv(cancel_token.as_ref())
-                .map(|state| match state {
-                    ChannelReceiveState::Value(value) => result_ok(value),
-                    ChannelReceiveState::Closed => result_err(runtime_channel_closed_error()),
-                    ChannelReceiveState::Cancelled => result_err(runtime_cancelled_error()),
-                }))
+            Ok(PreparedSelectOperation::Recv {
+                channel,
+                cancel_token,
+            })
+        }
+        Expr::Call { callee, args, span } if callee == "send" => {
+            if !(2..=3).contains(&args.len()) {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3047",
+                        "`select` arms currently require `recv(...)`, `send(...)`, or `default`",
+                        "select send arms must call `send` with a channel, a value, and an optional cancellation token",
+                        *span,
+                    )
+                    .with_fix_it("rewrite the arm as `send(channel, value):`, `send(channel, value, token):`, `result = send(channel, value):`, or `result = send(channel, value, token):`")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+
+            let channel_value = eval_expr(
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+            )?;
+            let value = eval_expr(
+                &args[1],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+            )?;
+            let cancel_token = if args.len() == 3 {
+                Some(eval_cancel_token_argument(
+                    &args[2],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )?)
+            } else {
+                None
+            };
+            let Value::Channel(channel) = channel_value else {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3047",
+                        "`select` send arms require a channel argument",
+                        format!(
+                            "this arm resolves to `{}` instead of a channel",
+                            value_name(&channel_value)
+                        ),
+                        args[0].span(),
+                    )
+                    .with_fix_it("pass a channel value as the first argument to `send` inside the select arm")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            };
+
+            Ok(PreparedSelectOperation::Send {
+                channel,
+                value,
+                cancel_token,
+            })
         }
         Expr::Call { callee, .. } => eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3047",
-                "`select` arms currently require `recv(channel)` operations or `default`",
+                "`select` arms currently require `recv(...)`, `send(...)`, or `default`",
                 format!("this arm uses `{callee}(...)` instead"),
                 operation.span(),
             )
-            .with_fix_it("replace the arm operation with `recv(channel_value)`")
+            .with_fix_it("replace the arm operation with `recv(...)`, `send(...)`, or `default`")
             .with_source_path(source_path.to_path_buf()),
         ])),
         _ => eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3047",
-                "`select` arms currently require `recv(channel)` operations or `default`",
-                "select arms must be written as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, `value = recv(channel, token):`, or `default:`",
+                "`select` arms currently require `recv(...)`, `send(...)`, or `default`",
+                "select arms must be written as `recv(channel):`, `recv(channel, token):`, `send(channel, value):`, `send(channel, value, token):`, `value = recv(channel):`, `value = recv(channel, token):`, `value = send(channel, value):`, `value = send(channel, value, token):`, or `default:`",
                 operation.span(),
             )
-            .with_fix_it("replace this arm with a `recv(channel)`, `recv(channel, token)`, or `default` arm")
+            .with_fix_it("replace this arm with `recv(...)`, `send(...)`, or `default`")
             .with_source_path(source_path.to_path_buf()),
         ])),
+    }
+}
+
+fn poll_select_operation(operation: &PreparedSelectOperation) -> Option<Value> {
+    match operation {
+        PreparedSelectOperation::Recv {
+            channel,
+            cancel_token,
+        } => channel
+            .try_recv(cancel_token.as_ref())
+            .map(|state| match state {
+                ChannelReceiveState::Value(value) => result_ok(value),
+                ChannelReceiveState::Closed => result_err(runtime_channel_closed_error()),
+                ChannelReceiveState::Cancelled => result_err(runtime_cancelled_error()),
+            }),
+        PreparedSelectOperation::Send {
+            channel,
+            value,
+            cancel_token,
+        } => channel
+            .try_send(value.clone(), cancel_token.as_ref())
+            .map(|state| match state {
+                ChannelReceiveState::Value(_) => result_ok(Value::Unit),
+                ChannelReceiveState::Closed => result_err(runtime_channel_closed_error()),
+                ChannelReceiveState::Cancelled => result_err(runtime_cancelled_error()),
+            }),
     }
 }
 
@@ -7642,6 +7823,24 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 10)"));
+    }
+
+    #[test]
+    fn evaluates_select_send_arm_when_channel_is_ready() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel(1)\n    select:\n        sent = send(ch, 7):\n            sent?\n            return Result.Ok(recv(ch)? + 1)\n        default:\n            return Result.Ok(0)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 8)"));
+    }
+
+    #[test]
+    fn select_send_arm_falls_back_to_default_when_send_would_block() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel(1)\n    send(ch, 1)?\n    select:\n        sent = send(ch, 2):\n            sent?\n            return Result.Ok(99)\n        default:\n            return Result.Ok(recv(ch)?)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 1)"));
     }
 
     #[test]

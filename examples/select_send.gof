@@ -1,0 +1,22 @@
+fn main() -> Result[int, RuntimeError]:
+    ready: channel[int] = channel(1)
+    full: channel[int] = channel(1)
+    send(full, 3)?
+
+    mut total = 0
+
+    select:
+        sent = send(ready, 7):
+            sent?
+            total = total + recv(ready)?
+        default:
+            return Result.Ok(0)
+
+    select:
+        sent = send(full, 5):
+            sent?
+            total = total + 100
+        default:
+            total = total + recv(full)?
+
+    return Result.Ok(total)

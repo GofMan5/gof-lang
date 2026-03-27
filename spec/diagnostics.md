@@ -64,7 +64,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3043`: invalid operand for bootstrap file I/O builtins
 - `GOF3045`: invalid operand for bootstrap dict insert
 - `GOF3046`: invalid channel operation
-- `GOF3047`: invalid `select` contract or arm
+- `GOF3047`: invalid `select` contract or send/receive arm
 - `GOF3048`: invalid iterable operand for `for`
 - `GOF3049`: invalid dict literal key type
 - `GOF3050`: incompatible dict literal value types

@@ -80,11 +80,12 @@ fn main() -> Result[int, RuntimeError]:
 
 Current `select` contract:
 
-- receive arms and a single `default` arm are supported
+- receive arms, send arms, and a single `default` arm are supported
 - receive arms must be `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
-- `default:` executes immediately when no receive arm is ready during the current polling pass
-- the bootstrap runtime polls receive arms until one receive resolves to `Result.Ok(...)` or `Result.Err(...)`
-- when multiple receive arms are already ready, the bootstrap runtime rotates the polling start arm in a deterministic round-robin baseline so the first source arm does not always win
+- send arms must be `send(channel, value):`, `value = send(channel, value):`, `send(channel, value, token):`, or `value = send(channel, value, token):`
+- `default:` executes immediately when no send/receive arm is ready during the current polling pass
+- the bootstrap runtime prepares each send/receive operation once at select-entry, then polls those prepared operations until one resolves to `Result.Ok(...)` or `Result.Err(...)`
+- when multiple send/receive arms are already ready, the bootstrap runtime rotates the polling start arm in a deterministic round-robin baseline so the first source arm does not always win
 
 That is enough to model simple message-passing choices, which is already more honest
 than adding pretty syntax with no execution model behind it.

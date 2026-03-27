@@ -146,7 +146,7 @@ pub struct HirSelectArm {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum HirSelectArmKind {
-    Recv { operation: HirExpr },
+    Operation { operation: HirExpr },
     Default,
 }
 
@@ -392,7 +392,7 @@ fn lower_select_arm(arm: &SelectArm) -> HirSelectArm {
     HirSelectArm {
         binding: arm.binding.clone(),
         kind: match &arm.kind {
-            SelectArmKind::Recv { operation } => HirSelectArmKind::Recv {
+            SelectArmKind::Operation { operation } => HirSelectArmKind::Operation {
                 operation: lower_expr(operation),
             },
             SelectArmKind::Default => HirSelectArmKind::Default,

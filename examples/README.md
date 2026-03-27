@@ -28,6 +28,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `channel_capacity.gof`: explicit rendezvous and bounded channel capacities without leaving the typed channel model
 - `select_round_robin.gof`: deterministic round-robin `select` arm rotation when multiple receives are ready
 - `select_default.gof`: immediate `default` fallback when no `recv(...)` arm is ready
+- `select_send.gof`: `select` send-arms plus immediate `default` fallback when a send would block
 - `timeout_cancellation.gof`: timeout-backed cancellation tokens for blocked channel operations
 - `channel_lifecycle.gof`: `close(channel)`, `recv(...)`, and `RuntimeError.ChannelClosed`
 - `dict_report.gof`: dict literals, dict indexing, and key membership
@@ -70,6 +71,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `channel_capacity.gof` -> `Result.Ok(value: 12)`
 - `select_round_robin.gof` -> `Result.Ok(value: 16)`
 - `select_default.gof` -> `Result.Ok(value: 7)`
+- `select_send.gof` -> `Result.Ok(value: 10)`
 - `timeout_cancellation.gof` -> `42`
 - `channel_lifecycle.gof` -> `7`
 - `dict_report.gof` -> `11`

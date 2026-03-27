@@ -198,6 +198,7 @@ pub struct TypedSelectArm {
 #[derive(Debug, Clone, Serialize)]
 pub enum TypedSelectArmKind {
     Recv { operation: TypedExpr },
+    Send { operation: TypedExpr },
     Default,
 }
 
@@ -1586,10 +1587,10 @@ fn lower_select_arms(
             Diagnostic::error(
                 "GOF3047",
                 "`select` requires at least one arm",
-                "the bootstrap select model needs one or more `recv(channel)` or `default` arms",
+                "the bootstrap select model needs one or more `recv(channel)`, `send(channel, value)`, or `default` arms",
                 span,
             )
-            .with_fix_it("add a select arm like `value = recv(ch):` or `default:`")
+            .with_fix_it("add a select arm like `value = recv(ch):`, `send(ch, value):`, or `default:`")
             .with_source_path(source_path.to_path_buf()),
         );
     }
@@ -1599,7 +1600,7 @@ fn lower_select_arms(
 
     for arm in arms {
         let (kind, binding_ty) = match &arm.kind {
-            HirSelectArmKind::Recv { operation } => {
+            HirSelectArmKind::Operation { operation } => {
                 let operation = lower_expr(
                     operation,
                     scopes,
@@ -1613,9 +1614,14 @@ fn lower_select_arms(
                     function_return_type,
                     source_path,
                 );
-                validate_select_operation(&operation, diagnostics, source_path);
+                let select_kind = validate_select_operation(&operation, diagnostics, source_path);
                 let ty = operation.ty.clone();
-                (TypedSelectArmKind::Recv { operation }, Some(ty))
+                let kind = match select_kind {
+                    Some(SelectOperationKind::Recv) => TypedSelectArmKind::Recv { operation },
+                    Some(SelectOperationKind::Send) => TypedSelectArmKind::Send { operation },
+                    None => TypedSelectArmKind::Recv { operation },
+                };
+                (kind, Some(ty))
             }
             HirSelectArmKind::Default => {
                 if saw_default {
@@ -6710,33 +6716,56 @@ fn infer_recv_return_type(args: &[TypedExpr]) -> Type {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectOperationKind {
+    Recv,
+    Send,
+}
+
 fn validate_select_operation(
     operation: &TypedExpr,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
-) {
+) -> Option<SelectOperationKind> {
     match &operation.kind {
-        TypedExprKind::Call { callee, args } if callee == "recv" && (1..=2).contains(&args.len()) => {}
-        TypedExprKind::Call { callee, .. } => diagnostics.push(
-            Diagnostic::error(
-                "GOF3047",
-                "`select` arms currently require `recv(channel)` operations or `default`",
-                format!("this arm uses `{callee}(...)` instead"),
-                operation.span,
-            )
-            .with_fix_it("replace the arm operation with `recv(channel_value)` or `recv(channel_value, token)`")
-            .with_source_path(source_path.to_path_buf()),
-        ),
-        _ => diagnostics.push(
-            Diagnostic::error(
-                "GOF3047",
-                "`select` arms currently require `recv(channel)` operations or `default`",
-                "select arms must be written as `recv(channel):`, `recv(channel, token):`, `value = recv(channel):`, `value = recv(channel, token):`, or `default:`",
-                operation.span,
-            )
-            .with_fix_it("replace this arm with `recv(channel)`, `recv(channel, token)`, or `default`")
-            .with_source_path(source_path.to_path_buf()),
-        ),
+        TypedExprKind::Call { callee, args }
+            if callee == "recv" && (1..=2).contains(&args.len()) =>
+        {
+            Some(SelectOperationKind::Recv)
+        }
+        TypedExprKind::Call { callee, args }
+            if callee == "send" && (2..=3).contains(&args.len()) =>
+        {
+            Some(SelectOperationKind::Send)
+        }
+        TypedExprKind::Call { callee, .. } => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3047",
+                    "`select` arms currently require `recv(...)`, `send(...)`, or `default`",
+                    format!("this arm uses `{callee}(...)` instead"),
+                    operation.span,
+                )
+                .with_fix_it(
+                    "replace the arm operation with `recv(...)`, `send(...)`, or `default`",
+                )
+                .with_source_path(source_path.to_path_buf()),
+            );
+            None
+        }
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3047",
+                    "`select` arms currently require `recv(...)`, `send(...)`, or `default`",
+                    "select arms must be written as `recv(channel):`, `recv(channel, token):`, `send(channel, value):`, `send(channel, value, token):`, `value = recv(channel):`, `value = recv(channel, token):`, `value = send(channel, value):`, `value = send(channel, value, token):`, or `default:`",
+                    operation.span,
+                )
+                .with_fix_it("replace this arm with `recv(...)`, `send(...)`, or `default`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            None
+        }
     }
 }
 
@@ -7366,6 +7395,24 @@ mod tests {
                 assert_eq!(arms.len(), 1);
                 assert_eq!(arms[0].binding.as_deref(), Some("received"));
                 assert!(matches!(arms[0].kind, TypedSelectArmKind::Recv { .. }));
+            }
+            other => panic!("expected select statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_select_send_arms() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel(1)\n    select:\n        sent = send(ch, 7):\n            sent?\n            return Result.Ok(recv(ch)?)\n        default:\n            return Result.Ok(0)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Select { arms } => {
+                assert_eq!(arms.len(), 2);
+                assert_eq!(arms[0].binding.as_deref(), Some("sent"));
+                assert!(matches!(arms[0].kind, TypedSelectArmKind::Send { .. }));
+                assert!(matches!(arms[1].kind, TypedSelectArmKind::Default));
             }
             other => panic!("expected select statement, got {other:?}"),
         }

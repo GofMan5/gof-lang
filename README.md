@@ -75,11 +75,16 @@ Manifest-backed packages now require a committed, fresh `gof.lock` for `gof run`
 `gof mod resolve --dir <package-root>`.
 
 `select` now rotates its polling start arm in a deterministic round-robin
-baseline when multiple receive arms are already ready, but scheduler-level
+baseline when multiple send/receive arms are already ready, but scheduler-level
 fairness is still a roadmap item rather than a finished guarantee.
 
-`select` also has a bootstrap `default:` arm baseline now, so non-blocking
-fallback loops do not need to fake readiness through helper channels.
+`select` also has a bootstrap `default:` arm baseline plus direct
+`send(channel, value)` arms, so non-blocking fallback loops and bounded-channel
+backpressure paths do not need to fake readiness through helper channels.
+
+`select` currently prepares each send/receive operation once at select-entry
+before polling, so arm expressions with side effects are not re-evaluated on
+every poll pass.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

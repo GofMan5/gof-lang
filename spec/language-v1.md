@@ -81,7 +81,7 @@ The bootstrap compiler in this repository currently supports:
 - payload destructuring in `match` arms through `EnumName.Variant(binding, ...)`
 - payload destructuring in `match` arms through `Result.Ok(binding)` and `Result.Err(binding)`
 - postfix propagation through `expr?`
-- statement-level `select` over receive operations plus a single `default` fallback arm
+- statement-level `select` over send/receive operations plus a single `default` fallback arm
 - struct receiver methods through `fn TypeName.method(...)`
 - field access through `value.field`
 - method calls through `value.method(...)`
@@ -250,12 +250,13 @@ The bootstrap compiler in this repository currently supports:
 - `is_cancelled(token)` currently reports whether the token was cancelled
 - `timeout_token(milliseconds)` currently creates a cancellation token that flips itself after a non-negative millisecond delay
 - `cancel_after(token, milliseconds)` currently schedules cancellation for an existing token after a non-negative millisecond delay
-- `select:` currently requires one or more receive arms or a `default` arm
+- `select:` currently requires one or more send/receive arms or a `default` arm
 - each receive `select` arm currently must be written as either `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
+- each send `select` arm currently must be written as either `send(channel, value):`, `value = send(channel, value):`, `send(channel, value, token):`, or `value = send(channel, value, token):`
 - at most one `default:` arm is allowed in a single `select`
-- `select` currently polls its receive arms until one receive operation resolves to either `Result.Ok(...)` or `Result.Err(...)` and then executes only that arm body
-- `select` executes its `default:` arm immediately when no receive arm is ready during the current polling pass
-- `select` currently rotates its polling start arm in a deterministic round-robin baseline when multiple receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
+- `select` currently prepares each send/receive operation once at select-entry and then polls those prepared operations until one resolves to either `Result.Ok(...)` or `Result.Err(...)`
+- `select` executes its `default:` arm immediately when no send/receive arm is ready during the current polling pass
+- `select` currently rotates its polling start arm in a deterministic round-robin baseline when multiple send/receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
 - channels currently expose an explicit capacity baseline only through `channel(capacity)`; richer buffering policies are still future work
 - most operational bootstrap builtins now return `Result[..., RuntimeError]`; task joins with explicit `Result[..., RuntimeError]` contracts also preserve task-boundary failures as runtime errors, while runtime diagnostics remain for invariant failures, assertion failures, bad helper contracts, plain `task[T]` joins, and a small set of bootstrap evaluator gaps
 - control-flow conditions must evaluate to `bool`

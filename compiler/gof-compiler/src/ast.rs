@@ -154,7 +154,7 @@ pub struct SelectArm {
 
 #[derive(Debug, Clone, Serialize)]
 pub enum SelectArmKind {
-    Recv { operation: Expr },
+    Operation { operation: Expr },
     Default,
 }
 
@@ -785,7 +785,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block("expected an indented block after a select arm");
         SelectArm {
             binding,
-            kind: SelectArmKind::Recv { operation },
+            kind: SelectArmKind::Operation { operation },
             body,
             span,
         }
@@ -1849,8 +1849,29 @@ mod tests {
             Stmt::Select { arms, .. } if arms.len() == 2 && arms[0].binding.as_deref() == Some("value") && arms[1].binding.is_none()
         ));
         if let Stmt::Select { arms, .. } = &module.functions[1].body[2] {
-            assert!(matches!(arms[0].kind, SelectArmKind::Recv { .. }));
-            assert!(matches!(arms[1].kind, SelectArmKind::Recv { .. }));
+            assert!(matches!(arms[0].kind, SelectArmKind::Operation { .. }));
+            assert!(matches!(arms[1].kind, SelectArmKind::Operation { .. }));
+        }
+    }
+
+    #[test]
+    fn parses_select_send_arms() {
+        let source = SourceFile::new(
+            "test.gof",
+            "fn main() -> int:\n    ch = channel(1)\n    select:\n        sent = send(ch, 7):\n            return 1\n        send(ch, 8):\n            return 2\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        assert!(matches!(
+            &module.functions[0].body[1],
+            Stmt::Select { arms, .. }
+                if arms.len() == 2
+                    && arms[0].binding.as_deref() == Some("sent")
+                    && arms[1].binding.is_none()
+        ));
+        if let Stmt::Select { arms, .. } = &module.functions[0].body[1] {
+            assert!(matches!(arms[0].kind, SelectArmKind::Operation { .. }));
+            assert!(matches!(arms[1].kind, SelectArmKind::Operation { .. }));
         }
     }
 

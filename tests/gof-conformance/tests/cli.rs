@@ -497,6 +497,20 @@ fn gof_run_executes_select_default_example() {
 }
 
 #[test]
+fn gof_run_executes_select_send_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("select_send.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 10)"));
+}
+
+#[test]
 fn gof_run_executes_timeout_cancellation_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

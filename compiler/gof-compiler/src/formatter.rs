@@ -220,10 +220,10 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                 .map(|arm| {
                     let header = match (&arm.binding, &arm.kind) {
                         (_, SelectArmKind::Default) => "default".to_string(),
-                        (Some(binding), SelectArmKind::Recv { operation }) => {
+                        (Some(binding), SelectArmKind::Operation { operation }) => {
                             format!("{binding} = {}", format_expr(operation))
                         }
-                        (None, SelectArmKind::Recv { operation }) => format_expr(operation),
+                        (None, SelectArmKind::Operation { operation }) => format_expr(operation),
                     };
                     format!(
                         "{}{}:\n{}",
@@ -517,6 +517,19 @@ mod tests {
         assert_eq!(
             formatted,
             "fn main() -> int:\n    select:\n        default:\n            return 1\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_select_send_arms() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn main()->int:\n    ch:channel=channel(1)\n    select:\n        sent=send(ch,7):\n            return 1\n        send(ch,8):\n            return 2\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fn main() -> int:\n    ch: channel = channel(1)\n    select:\n        sent = send(ch, 7):\n            return 1\n        send(ch, 8):\n            return 2\n"
         );
     }
 

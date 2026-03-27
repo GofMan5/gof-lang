@@ -932,6 +932,37 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_select_send_arms() {
+        let source = SourceFile::new(
+            "select_send.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel(1)\n    select:\n        sent = send(ch, 7):\n            sent?\n            return Result.Ok(recv(ch)?)\n        default:\n            return Result.Ok(0)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Select { arms } => {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(
+                    arms[0].kind,
+                    crate::typed_hir::TypedSelectArmKind::Send { .. }
+                ));
+                assert!(matches!(
+                    arms[1].kind,
+                    crate::typed_hir::TypedSelectArmKind::Default
+                ));
+            }
+            other => panic!("expected select statement, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(value.instruction, SsaInstruction::SelectArm { .. }))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_explicit_channel_capacity_baseline() {
         let source = SourceFile::new(
             "channel_capacity.gof",

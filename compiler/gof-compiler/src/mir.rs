@@ -274,6 +274,22 @@ impl MirBuilder {
                                 });
                             }
                         }
+                        TypedSelectArmKind::Send { operation } => {
+                            let operation = self.lower_expr(operation);
+                            self.instructions.push(MirInstruction::SelectArm {
+                                operation: Some(operation),
+                                binding: arm.binding.clone(),
+                                is_default: false,
+                            });
+                            if let Some(binding) = &arm.binding {
+                                self.instructions.push(MirInstruction::StoreLocal {
+                                    name: binding.clone(),
+                                    src: operation,
+                                    mutable: false,
+                                    declare: true,
+                                });
+                            }
+                        }
                         TypedSelectArmKind::Default => {
                             self.instructions.push(MirInstruction::SelectArm {
                                 operation: None,
