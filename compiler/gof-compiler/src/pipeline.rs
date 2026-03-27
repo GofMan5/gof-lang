@@ -932,6 +932,31 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_explicit_channel_capacity_baseline() {
+        let source = SourceFile::new(
+            "channel_capacity.gof",
+            "fn main() -> channel[int]:\n    return channel(0)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(
+            compiled.typed_hir.functions[0].return_type,
+            Type::Channel(Box::new(Type::Int))
+        );
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Return(expr) => {
+                assert!(matches!(
+                    &expr.kind,
+                    crate::typed_hir::TypedExprKind::Call { callee, args }
+                        if callee == "channel" && args.len() == 1
+                ));
+            }
+            other => panic!("expected channel return, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pipeline_supports_select_default_arm() {
         let source = SourceFile::new(
             "select_default.gof",
@@ -962,6 +987,18 @@ mod tests {
                     }
                 ))
         );
+    }
+
+    #[test]
+    fn pipeline_rejects_negative_channel_capacity() {
+        let source = SourceFile::new(
+            "negative_channel_capacity.gof",
+            "fn main() -> channel[int]:\n    return channel(-1)\n",
+        );
+        let diagnostics = compile_source(&source, CompileMode::Executable)
+            .expect_err("negative channel capacity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3097"]);
     }
 
     #[test]

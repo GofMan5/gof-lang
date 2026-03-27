@@ -574,7 +574,9 @@ struct TaskHandle {
 #[derive(Debug)]
 struct ChannelState {
     queue: VecDeque<Value>,
+    rendezvous_slot: Option<Value>,
     closed: bool,
+    capacity: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -583,7 +585,7 @@ struct ChannelHandle {
     ready: Condvar,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ChannelReceiveState {
     Value(Value),
     Closed,
@@ -673,13 +675,23 @@ impl TaskHandle {
 }
 
 impl ChannelHandle {
-    fn new() -> Self {
+    fn new(capacity: Option<usize>) -> Self {
         Self {
             state: Mutex::new(ChannelState {
                 queue: VecDeque::new(),
+                rendezvous_slot: None,
                 closed: false,
+                capacity,
             }),
             ready: Condvar::new(),
+        }
+    }
+
+    fn can_send(state: &ChannelState) -> bool {
+        match state.capacity {
+            None => true,
+            Some(0) => state.rendezvous_slot.is_none(),
+            Some(capacity) => state.queue.len() < capacity,
         }
     }
 
@@ -697,16 +709,60 @@ impl ChannelHandle {
             return ChannelReceiveState::Cancelled;
         }
 
+        let mut pending = Some(value);
+        let mut rendezvous_enqueued = false;
         let mut state = self
             .state
             .lock()
             .expect("channel state mutex should not be poisoned");
-        if state.closed {
-            return ChannelReceiveState::Closed;
+        loop {
+            if rendezvous_enqueued && state.rendezvous_slot.is_none() {
+                return ChannelReceiveState::Value(Value::Unit);
+            }
+            if state.closed {
+                if rendezvous_enqueued && state.rendezvous_slot.is_some() {
+                    state.rendezvous_slot = None;
+                    self.ready.notify_all();
+                }
+                return ChannelReceiveState::Closed;
+            }
+            if token.is_some_and(CancelTokenValue::is_cancelled) {
+                if rendezvous_enqueued && state.rendezvous_slot.is_some() {
+                    state.rendezvous_slot = None;
+                    self.ready.notify_all();
+                }
+                return ChannelReceiveState::Cancelled;
+            }
+            match state.capacity {
+                Some(0) => {
+                    if !rendezvous_enqueued && Self::can_send(&state) {
+                        state.rendezvous_slot = Some(
+                            pending
+                                .take()
+                                .expect("pending rendezvous send value should exist"),
+                        );
+                        rendezvous_enqueued = true;
+                        self.ready.notify_all();
+                    }
+                }
+                _ => {
+                    if Self::can_send(&state) {
+                        state.queue.push_back(
+                            pending
+                                .take()
+                                .expect("pending channel send value should exist"),
+                        );
+                        self.ready.notify_all();
+                        return ChannelReceiveState::Value(Value::Unit);
+                    }
+                }
+            }
+            let (next_state, _) = self
+                .ready
+                .wait_timeout(state, Duration::from_millis(10))
+                .expect("channel wait should not be poisoned");
+            state = next_state;
         }
-        state.queue.push_back(value);
-        self.ready.notify_one();
-        ChannelReceiveState::Value(Value::Unit)
     }
 
     fn recv(&self, token: Option<&CancelTokenValue>) -> ChannelReceiveState {
@@ -716,6 +772,11 @@ impl ChannelHandle {
             .expect("channel state mutex should not be poisoned");
         loop {
             if let Some(value) = state.queue.pop_front() {
+                self.ready.notify_all();
+                return ChannelReceiveState::Value(value);
+            }
+            if let Some(value) = state.rendezvous_slot.take() {
+                self.ready.notify_all();
                 return ChannelReceiveState::Value(value);
             }
             if state.closed {
@@ -742,6 +803,10 @@ impl ChannelHandle {
             .lock()
             .expect("channel state mutex should not be poisoned");
         if let Some(value) = state.queue.pop_front() {
+            self.ready.notify_all();
+            Some(ChannelReceiveState::Value(value))
+        } else if let Some(value) = state.rendezvous_slot.take() {
+            self.ready.notify_all();
             Some(ChannelReceiveState::Value(value))
         } else if state.closed {
             Some(ChannelReceiveState::Closed)
@@ -2314,7 +2379,17 @@ fn eval_expr(
             }
 
             if callee == "channel" {
-                return Ok(eval_channel_builtin(args, source_path, *span)?);
+                return Ok(eval_channel_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                )?);
             }
 
             if callee == "close" {
@@ -5722,20 +5797,63 @@ fn eval_values_builtin(
     Ok(Value::List(dict_value.values_list()))
 }
 
-fn eval_channel_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult<Value> {
-    if !args.is_empty() {
+fn eval_channel_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() > 1 {
         return eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3005",
                 "wrong number of arguments for `channel`",
-                format!("expected 0 arguments, got {}", args.len()),
+                format!("expected 0 or 1 arguments, got {}", args.len()),
                 span,
             )
-            .with_fix_it("call `channel()` without arguments")
+            .with_fix_it("call `channel()` or `channel(capacity)`")
             .with_source_path(source_path.to_path_buf()),
         ]));
     }
-    Ok(Value::Channel(ChannelValue(Arc::new(ChannelHandle::new()))))
+
+    let capacity = if let Some(capacity_expr) = args.first() {
+        let capacity = eval_int_argument(
+            "channel",
+            capacity_expr,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            "GOF3096",
+        )?;
+        if capacity < 0 {
+            return eval_diagnostics(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3097",
+                    "`channel` requires a non-negative capacity",
+                    format!("this capacity resolves to `{capacity}`"),
+                    capacity_expr.span(),
+                )
+                .with_fix_it("pass `0` or another non-negative channel capacity")
+                .with_source_path(source_path.to_path_buf()),
+            ]));
+        }
+        Some(capacity as usize)
+    } else {
+        None
+    };
+
+    Ok(Value::Channel(ChannelValue(Arc::new(ChannelHandle::new(
+        capacity,
+    )))))
 }
 
 fn eval_close_builtin(
@@ -7020,7 +7138,10 @@ fn condition_span(stmt: &Stmt) -> Span {
 
 #[cfg(test)]
 mod tests {
-    use super::{TaskBoundary, TaskHandle, TaskPanic, Value, run, run_with_output};
+    use super::{
+        ChannelHandle, ChannelReceiveState, TaskBoundary, TaskHandle, TaskPanic, Value, run,
+        run_with_output,
+    };
     use crate::ast::parse;
     use crate::cst::CstModule;
     use crate::lexer::lex;
@@ -7428,6 +7549,84 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_explicit_channel_capacity_baseline() {
+        let value = run_source(
+            "fn echo(ch: channel[int]) -> Result[int, RuntimeError]:\n    return recv(ch)\nfn main() -> Result[int, RuntimeError]:\n    buffered: channel[int] = channel(2)\n    send(buffered, 3)?\n    send(buffered, 4)?\n    rendezvous: channel[int] = channel(0)\n    task = go echo(rendezvous)\n    send(rendezvous, 5)?\n    echoed = await task\n    match echoed:\n        Result.Ok(value):\n            return Result.Ok(recv(buffered)? + recv(buffered)? + value)\n        Result.Err(error):\n            return Result.Err(error)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 12)"));
+    }
+
+    #[test]
+    fn rendezvous_channels_wait_for_receivers() {
+        let channel = Arc::new(ChannelHandle::new(Some(0)));
+        let sender_channel = Arc::clone(&channel);
+
+        let sender = std::thread::spawn(move || sender_channel.send(Value::Int(7), None));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !sender.is_finished(),
+            "rendezvous send should block until a receiver is waiting"
+        );
+
+        let received = channel.recv(None);
+        assert_eq!(
+            sender.join().expect("sender thread should join"),
+            ChannelReceiveState::Value(Value::Unit)
+        );
+        assert_eq!(received, ChannelReceiveState::Value(Value::Int(7)));
+    }
+
+    #[test]
+    fn bounded_channels_block_senders_until_buffer_space_frees_up() {
+        let channel = Arc::new(ChannelHandle::new(Some(1)));
+        assert_eq!(
+            channel.send(Value::Int(1), None),
+            ChannelReceiveState::Value(Value::Unit)
+        );
+
+        let sender_channel = Arc::clone(&channel);
+        let sender = std::thread::spawn(move || sender_channel.send(Value::Int(2), None));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !sender.is_finished(),
+            "bounded send should wait while the buffer is full"
+        );
+
+        assert_eq!(
+            channel.recv(None),
+            ChannelReceiveState::Value(Value::Int(1))
+        );
+        assert_eq!(
+            sender.join().expect("sender thread should join"),
+            ChannelReceiveState::Value(Value::Unit)
+        );
+        assert_eq!(
+            channel.recv(None),
+            ChannelReceiveState::Value(Value::Int(2))
+        );
+    }
+
+    #[test]
+    fn rendezvous_channels_expose_pending_sends_to_try_recv() {
+        let channel = Arc::new(ChannelHandle::new(Some(0)));
+        let sender_channel = Arc::clone(&channel);
+        let sender = std::thread::spawn(move || sender_channel.send(Value::Int(9), None));
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            channel.try_recv(None),
+            Some(ChannelReceiveState::Value(Value::Int(9)))
+        );
+        assert_eq!(
+            sender.join().expect("sender thread should join"),
+            ChannelReceiveState::Value(Value::Unit)
+        );
+    }
+
+    #[test]
     fn evaluates_select_default_arm_when_no_receive_is_ready() {
         let value = run_source(
             "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel()\n    select:\n        received = recv(ch):\n            return received\n        default:\n            return Result.Ok(7)\n",
@@ -7676,6 +7875,15 @@ mod tests {
         let diagnostics = run_source("fn main() -> unit:\n    cancel_after(cancel_token(), -1)\n")
             .expect_err("negative cancel_after duration should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3094"]);
+    }
+
+    #[test]
+    fn rejects_dynamic_negative_channel_capacity() {
+        let diagnostics = run_source(
+            "fn main() -> channel[int]:\n    mut zero = 0\n    return channel(zero - 1)\n",
+        )
+        .expect_err("negative channel capacity should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3097"]);
     }
 
     #[test]

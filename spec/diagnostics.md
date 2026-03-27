@@ -107,3 +107,5 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3093`: invalid operand for timeout-backed cancellation helpers
 - `GOF3094`: invalid negative duration for timeout-backed cancellation helpers
 - `GOF3095`: duplicate `default` arm in `select`
+- `GOF3096`: invalid operand for explicit channel capacity
+- `GOF3097`: invalid negative channel capacity

@@ -6383,7 +6383,74 @@ fn validate_channel_call(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
-    validate_no_argument_call("channel", args, span, diagnostics, source_path);
+    if args.len() > 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `channel`",
+                format!("expected 0 or 1 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `channel()` or `channel(capacity)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    let Some(capacity) = args.first() else {
+        return;
+    };
+
+    if !matches!(capacity.ty, Type::Int | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3096",
+                "`channel` requires an integer capacity when an argument is provided",
+                format!("this argument resolves to `{}`", capacity.ty.display_name()),
+                capacity.span,
+            )
+            .with_fix_it("pass an integer channel capacity like `channel(0)` or `channel(2)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_non_negative_channel_capacity(capacity, diagnostics, source_path);
+}
+
+fn validate_non_negative_channel_capacity(
+    arg: &TypedExpr,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    let value = match &arg.kind {
+        TypedExprKind::Int(value) => Some(*value),
+        TypedExprKind::Unary {
+            op: UnaryOp::Neg,
+            value,
+        } => match &value.kind {
+            TypedExprKind::Int(value) => Some(-*value),
+            _ => None,
+        },
+        _ => None,
+    };
+
+    let Some(value) = value else {
+        return;
+    };
+
+    if value < 0 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3097",
+                "`channel` requires a non-negative capacity",
+                format!("this capacity resolves to `{value}`"),
+                arg.span,
+            )
+            .with_fix_it("pass `0` or another non-negative channel capacity")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
 }
 
 fn validate_send_call(
@@ -7305,6 +7372,25 @@ mod tests {
     }
 
     #[test]
+    fn supports_explicit_channel_capacity_baseline() {
+        let module = lower_source("fn main() -> channel[int]:\n    return channel(0)\n")
+            .expect("typing should succeed");
+
+        assert_eq!(module.functions[0].return_type, Type::channel(Type::Int));
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Return(expr) => {
+                assert_eq!(expr.ty, Type::channel(Type::Unknown));
+                assert!(matches!(
+                    &expr.kind,
+                    TypedExprKind::Call { callee, args } if callee == "channel" && args.len() == 1
+                ));
+            }
+            other => panic!("expected channel return, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_select_default_arm() {
         let module = lower_source(
             "fn main() -> int:\n    select:\n        default:\n            return 1\n",
@@ -7437,6 +7523,23 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3094"]);
+    }
+
+    #[test]
+    fn rejects_invalid_channel_capacity_operands() {
+        let diagnostics =
+            lower_source("fn main() -> channel[int]:\n    return channel(\"wide\")\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3096"]);
+    }
+
+    #[test]
+    fn rejects_negative_channel_capacity_values() {
+        let diagnostics = lower_source("fn main() -> channel[int]:\n    return channel(-1)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3097"]);
     }
 
     #[test]

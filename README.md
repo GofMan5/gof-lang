@@ -64,7 +64,7 @@ gof test tests/fixtures                # run conformance suite
 | `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
 | JSON helpers and bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
-| `go`, `await`, typed channels, `close`, cancellation tokens, `select` | bootstrap |
+| `go`, `await`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | Formatter, conformance tests | stable |
 
@@ -84,6 +84,12 @@ fallback loops do not need to fake readiness through helper channels.
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while
 full deadline/context propagation remains future work.
+
+Channels now also have an explicit capacity baseline:
+
+- `channel()` keeps the bootstrap unbounded queue path for existing examples
+- `channel(0)` creates a rendezvous channel that blocks `send(...)` until a receiver takes the value
+- `channel(n)` for `n > 0` creates a bounded channel that applies backpressure when the buffer is full
 
 ## Documentation
 

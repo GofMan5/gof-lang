@@ -46,6 +46,8 @@ Current channel baseline:
 
 - `channel[T]` is a real parameterized builtin type annotation
 - `channel()` creates a bootstrap channel
+- `channel(0)` creates a rendezvous channel baseline
+- `channel(n)` for `n > 0` creates a bounded channel baseline
 - `close(channel)` closes it explicitly
 - `send(channel, value)` returns `Result[unit, RuntimeError]`
 - `recv(channel)` returns `Result[T, RuntimeError]`
@@ -55,6 +57,12 @@ With channel lifecycle, the bootstrap runtime already distinguishes:
 - successful send/receive
 - closed channel
 - cancelled wait
+
+Current capacity rules:
+
+- `channel()` keeps the existing unbounded queue-backed bootstrap path
+- `channel(0)` blocks `send(...)` until a receiver takes the value
+- `channel(n)` with `n > 0` blocks `send(...)` when the buffer is full until a receiver frees space
 
 ## Step 3: `select`
 

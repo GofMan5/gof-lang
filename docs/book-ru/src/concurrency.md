@@ -44,6 +44,8 @@ fn main() -> Result[int, RuntimeError]:
 
 - `channel[T]` уже существует как parameterized builtin type annotation
 - `channel()` создает bootstrap channel
+- `channel(0)` создает rendezvous channel baseline
+- `channel(n)` при `n > 0` создает bounded channel baseline
 - `close(channel)` закрывает канал явно
 - `send(channel, value)` возвращает `Result[unit, RuntimeError]`
 - `recv(channel)` возвращает `Result[T, RuntimeError]`
@@ -53,6 +55,12 @@ fn main() -> Result[int, RuntimeError]:
 - успешную отправку/получение
 - закрытый канал
 - отмененное ожидание
+
+Текущие правила capacity:
+
+- `channel()` сохраняет существующий unbounded queue-backed bootstrap path
+- `channel(0)` блокирует `send(...)`, пока receiver не заберет значение
+- `channel(n)` при `n > 0` блокирует `send(...)`, когда буфер заполнен, пока `recv(...)` не освободит место
 
 ## Шаг 3: `select`
 

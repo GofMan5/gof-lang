@@ -101,7 +101,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `parse_int(...)` and `to_string(...)` for explicit numeric and text conversion
 - builtin `range(...)` for explicit integer sequence construction
 - builtin `sleep(...)` for explicit delay and retry/backoff control
-- builtin `channel()`, `close(...)`, `send(...)`, and `recv(...)` for bootstrap message passing
+- builtin `channel()`, `channel(capacity)`, `close(...)`, `send(...)`, and `recv(...)` for bootstrap message passing
 - builtin `cancel_token()`, `cancel(...)`, `is_cancelled(...)`, `timeout_token(...)`, and `cancel_after(...)` for cooperative cancellation and timeout-backed token baselines
 - builtin `json_parse(...)`, `json_stringify(...)`, `json_get(...)`, `json_index(...)`, `json_len(...)`, `json_string(...)`, and `json_int(...)` for explicit JSON handling
 - builtin `http_get(...)` and `http_post(...)` for bootstrap HTTP work
@@ -177,7 +177,7 @@ The bootstrap compiler in this repository currently supports:
 - `append(list, value)` is currently a builtin recognized by the compiler and evaluator
 - `first`, `last`, `slice`, `reverse`, `sort`, `min`, and `max` are currently builtins recognized by the compiler and evaluator
 - `contains(haystack, needle)` is currently a builtin recognized by the compiler and evaluator
-- `channel()`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
+- `channel()`, `channel(capacity)`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
 - `print` currently accepts exactly one printable value and returns `unit`
 - `assert` currently accepts either `(bool)` or `(bool, string)` and returns `unit`
 - `dict` currently accepts no arguments and returns an empty dict value
@@ -237,7 +237,9 @@ The bootstrap compiler in this repository currently supports:
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
 - when a spawned function explicitly declares `Result[..., RuntimeError]`, task-boundary evaluator failures surface at `await` as `Result.Err(RuntimeError.TaskFailed(...))` and panics surface as `Result.Err(RuntimeError.TaskPanicked(...))`
-- `channel()` currently creates a bootstrap channel value backed by the runtime queue model
+- `channel()` currently creates a bootstrap channel value backed by the unbounded runtime queue model
+- `channel(0)` currently creates a rendezvous channel baseline that blocks `send(...)` until a receiver takes the value
+- `channel(n)` for `n > 0` currently creates a bounded channel baseline that blocks `send(...)` while the buffer is full
 - `close(channel)` currently closes the channel and wakes blocked receive operations
 - `send(channel, value)` currently returns `Result[unit, RuntimeError]`
 - `send(channel, value, token)` currently supports cooperative cancellation for blocked send operations
@@ -254,7 +256,7 @@ The bootstrap compiler in this repository currently supports:
 - `select` currently polls its receive arms until one receive operation resolves to either `Result.Ok(...)` or `Result.Err(...)` and then executes only that arm body
 - `select` executes its `default:` arm immediately when no receive arm is ready during the current polling pass
 - `select` currently rotates its polling start arm in a deterministic round-robin baseline when multiple receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
-- channels currently have no explicit buffering syntax
+- channels currently expose an explicit capacity baseline only through `channel(capacity)`; richer buffering policies are still future work
 - most operational bootstrap builtins now return `Result[..., RuntimeError]`; task joins with explicit `Result[..., RuntimeError]` contracts also preserve task-boundary failures as runtime errors, while runtime diagnostics remain for invariant failures, assertion failures, bad helper contracts, plain `task[T]` joins, and a small set of bootstrap evaluator gaps
 - control-flow conditions must evaluate to `bool`
 - `for binding in iterable:` currently supports lists, strings, and dicts

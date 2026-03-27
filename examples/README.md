@@ -25,6 +25,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
 - `channel_select.gof`: channels, `Result`-based `send`/`recv`, and `select`
+- `channel_capacity.gof`: explicit rendezvous and bounded channel capacities without leaving the typed channel model
 - `select_round_robin.gof`: deterministic round-robin `select` arm rotation when multiple receives are ready
 - `select_default.gof`: immediate `default` fallback when no `recv(...)` arm is ready
 - `timeout_cancellation.gof`: timeout-backed cancellation tokens for blocked channel operations
@@ -66,6 +67,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `concurrent_squares.gof` -> `225`
 - `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``
 - `channel_select.gof` -> `Result.Ok(value: 9)`
+- `channel_capacity.gof` -> `Result.Ok(value: 12)`
 - `select_round_robin.gof` -> `Result.Ok(value: 16)`
 - `select_default.gof` -> `Result.Ok(value: 7)`
 - `timeout_cancellation.gof` -> `42`

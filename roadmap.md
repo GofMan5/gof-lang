@@ -235,6 +235,7 @@ Hard sequencing rule:
 - `[x]` task spawning baseline via `go`
 - `[x]` typed `await`
 - `[x]` typed channels
+- `[x]` explicit channel capacity baseline with rendezvous and bounded backpressure
 - `[x]` `select`
 - `[~]` cancellation contract
 - `[x]` channel lifecycle with explicit close semantics
@@ -242,6 +243,7 @@ Hard sequencing rule:
 - `[ ]` scheduler stress and concurrency benchmarks
 - Checkpoints:
 - `[x]` CP-M5-1: channels with explicit semantics
+- `[x]` CP-M5-1a: explicit channel capacity baseline for rendezvous and bounded queues
 - `[x]` CP-M5-2: `select` semantics and diagnostics
 - `[x]` CP-M5-2a: single-`default` fallback baseline for non-blocking `select`
 - `[~]` CP-M5-3: cancellation and propagation rules

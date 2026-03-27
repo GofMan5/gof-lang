@@ -1,0 +1,18 @@
+fn echo(ch: channel[int]) -> Result[int, RuntimeError]:
+    return recv(ch)
+
+fn main() -> Result[int, RuntimeError]:
+    buffered: channel[int] = channel(2)
+    send(buffered, 3)?
+    send(buffered, 4)?
+
+    rendezvous: channel[int] = channel(0)
+    task = go echo(rendezvous)
+    send(rendezvous, 5)?
+
+    echoed = await task
+    match echoed:
+        Result.Ok(value):
+            return Result.Ok(recv(buffered)? + recv(buffered)? + value)
+        Result.Err(error):
+            return Result.Err(error)
