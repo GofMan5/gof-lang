@@ -1,6 +1,16 @@
-# gof
+<div align="center">
+  <h1>gof</h1>
+  <p><strong>Python-like readability. Go-like concurrency. Rust-grade engineering discipline.</strong></p>
+  <p>Build automation, services, and systems-oriented tooling without runtime chaos, semantic mud, or fake ergonomics.</p>
 
-A programming language with Python-like readability, Go-like concurrency, and Rust-grade engineering discipline.
+  <p>
+    <a href="https://gofman5.github.io/gof-lang/"><img alt="Docs" src="https://img.shields.io/badge/docs-gof_book-0f172a?style=for-the-badge&logo=gitbook&logoColor=white"></a>
+    <a href="https://gofman5.github.io/gof-lang/ru/"><img alt="Docs RU" src="https://img.shields.io/badge/docs-ru_book-1d4ed8?style=for-the-badge&logo=gitbook&logoColor=white"></a>
+    <a href="spec/language-v1.md"><img alt="Spec" src="https://img.shields.io/badge/spec-language_v1-111827?style=for-the-badge&logo=readthedocs&logoColor=white"></a>
+    <a href="https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language"><img alt="VS Code Extension" src="https://img.shields.io/badge/VS_Code-extension-0098ff?style=for-the-badge&logo=visualstudiocode&logoColor=white"></a>
+    <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge"></a>
+  </p>
+</div>
 
 ```gof doctest
 enum JobState:
@@ -232,10 +242,11 @@ Channels now also have an explicit capacity baseline:
 |---|---|
 | **[The gof Book](https://gofman5.github.io/gof-lang/)** | Learning path - start here |
 | **[The gof Book (RU)](https://gofman5.github.io/gof-lang/ru/)** | Russian edition |
+| **[VS Code Extension](https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language)** | Install `gof Programming Language` from the Marketplace |
 | [Examples](examples/) | Runnable programs |
 | [Detailed plans](plans/roadmap/00-index.md) | Ordered implementation plans by area |
 | [Telegram bot example](examples/telegram_long_polling.gof) | Long-polling baseline |
-| [VS Code extension](tools/vscode-gof/) | Syntax highlighting, snippets, compiler-backed diagnostics, and installable packaging for `.gof` files |
+| [VS Code extension source](tools/vscode-gof/) | Editor package source, diagnostics plumbing, snippets, and grammar |
 | [Language spec](spec/language-v1.md) | Formal contract |
 | [Diagnostics spec](spec/diagnostics.md) | Error behavior |
 | [Roadmap](roadmap.md) | Milestones and current focus |
@@ -271,26 +282,11 @@ npm test
 npm run package
 ```
 
-The extension now uses the real compiler through `gof check --json --stdin`
-when a toolchain is available, so syntax/type diagnostics stay aligned with the
-language contract instead of drifting into extension-only heuristics. Stale
-editor checks are now cancelled single-flight per document so rapid edits do
-not pile up obsolete compiler processes.
-
-Or package the same `.vsix` through the repo-level release helper:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\package-vscode-extension.ps1 -DistDir dist-vscode
-```
-
-Publish it through the repo-level helper when Marketplace/Open VSX tokens are
-available:
-
-```powershell
-$env:VSCE_PAT="..."
-$env:OVSX_PAT="..."
-powershell -ExecutionPolicy Bypass -File .\scripts\publish-vscode-extension.ps1
-```
+The extension uses the real compiler through `gof check --json --stdin`, so
+syntax and type diagnostics stay aligned with the language contract instead of
+drifting into editor-only heuristics. `npm run package` leaves the packaged
+extension artifact directly in `tools/vscode-gof/` for manual Marketplace
+upload.
 
 ## Project structure
 

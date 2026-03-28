@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIST_DIR="${DIST_DIR:-dist}"
+DIST_DIR="${DIST_DIR:-tools/vscode-gof}"
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
 SKIP_TESTS="${SKIP_TESTS:-0}"
 
@@ -29,7 +29,9 @@ fi
 npm run package
 
 asset_name="$(node -p "const pkg=require('./package.json'); `${pkg.name}-${pkg.version}.vsix`")"
-cp "$asset_name" "$TARGET_DIR/$asset_name"
+if [[ "$(realpath "$asset_name")" != "$(realpath -m "$TARGET_DIR/$asset_name")" ]]; then
+  cp "$asset_name" "$TARGET_DIR/$asset_name"
+fi
 echo "Created $TARGET_DIR/$asset_name"
 
 popd >/dev/null

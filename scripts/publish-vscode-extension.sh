@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DIST_DIR="${DIST_DIR:-dist-vscode-publish}"
+DIST_DIR="${DIST_DIR:-tools/vscode-gof}"
 SKIP_INSTALL="${SKIP_INSTALL:-0}"
 SKIP_TESTS="${SKIP_TESTS:-0}"
 SKIP_MARKETPLACE="${SKIP_MARKETPLACE:-0}"

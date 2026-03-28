@@ -1,83 +1,54 @@
-# gof Language Support for VS Code
+# gof Programming Language for VS Code
 
-This extension provides an installable editor baseline for `gof`:
+The `gof` VS Code extension gives the language a real editor surface instead of
+fake syntax-only demo tooling.
+
+It ships:
 
 - `.gof` file association
-- syntax highlighting
-- starter snippets for the core language surface
-- snippets and syntax coverage for language-level `test fn`, `fixture(scope) fn`, and the shipped `testing` stdlib
-- compiler-backed diagnostics powered by `gof check --json`
-- comment toggling with `#`
-- bracket pairing
-- indentation rules for colon-ended blocks
-- marketplace-ready packaging metadata and icon
+- syntax highlighting for the current language surface, including `test fn` and
+  `fixture(scope) fn`
+- starter snippets for the shipped language and testing baseline
+- compiler-backed diagnostics through `gof check --json --stdin`
+- indentation rules, bracket pairs, and comment toggling
 
-This is intentionally an editor-first baseline, not the full IDE/platform layer
-yet. It now does real compiler diagnostics, but it still does not ship LSP,
-debugger, profiler, rename support, or go-to-definition.
+It does not pretend to be the final IDE layer yet. LSP, debugger, profiler,
+rename, and go-to-definition remain future platform work.
 
-## Compiler-backed diagnostics
+## Install
 
-When a `gof` toolchain is available, the extension runs:
+Install from the VS Code Marketplace:
+
+- [gof Programming Language](https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language)
+
+CLI install:
+
+```bash
+code --install-extension gofman5.gof-language
+```
+
+## Why this extension is different
+
+The key design choice is simple: diagnostics come from the real compiler.
+
+When a toolchain is available, the extension runs:
 
 ```bash
 gof check /path/to/file.gof --json --stdin
 ```
 
-and maps the reported diagnostics back into VS Code. That means:
+That means:
 
-- syntax and type errors come from the real compiler, not hand-written editor heuristics
-- the active buffer is checked through stdin, so diagnostics track unsaved edits
-- diagnostics stay aligned with the language's stable CLI contract instead of hidden extension-only logic
-- rapid edits and config refreshes keep only one live compiler check per document; stale runs are cancelled instead of piling up in the background
+- syntax and type errors stay aligned with the language contract
+- unsaved edits are checked through stdin
+- stale editor checks are cancelled instead of piling up
+- there is no hidden editor-only validation layer drifting away from `gof`
 
-The extension only publishes diagnostics for the active file it checked. If the
-compiler reports an imported module error, open that `.gof` file directly to see
-its inline diagnostics.
-
-### Toolchain resolution order
-
-The extension resolves the diagnostics toolchain in this order:
+Toolchain resolution order:
 
 1. `gof.toolchain.path`
 2. repo-local cargo fallback inside the `gof` repository
 3. `gof` on `PATH`
-
-The cargo fallback runs:
-
-```bash
-cargo run -q -p gof-cli --bin gof -- check /path/to/file.gof --json --stdin
-```
-
-That keeps the extension useful while working directly inside the `gof` repo,
-even before a standalone CLI is installed globally.
-
-### Settings
-
-- `gof.diagnostics.enabled`
-- `gof.diagnostics.debounceMs`
-- `gof.diagnostics.runOnSaveOnly`
-- `gof.toolchain.path`
-- `gof.toolchain.useCargoFallback`
-
-Use `gof: Recheck Active Document` to force an immediate refresh and
-`gof: Show Diagnostics Output` to inspect toolchain errors or invalid JSON
-payloads.
-
-## Marketplace readiness
-
-The extension is already shaped so other users can install it without manual
-repo surgery:
-
-- a dedicated extension icon
-- gallery banner metadata for Marketplace/Open VSX listings
-- bundled snippets for common `gof` constructs
-- compiler-backed diagnostics commands and settings
-- packaging tests that validate manifest metadata, snippets, icon shape, and diagnostics plumbing
-
-It still does not claim full language tooling. The package is ready to publish
-and useful for real editing, but the deeper M12 platform layer is still future
-work.
 
 ## Local development
 
@@ -89,64 +60,15 @@ npm test
 npm run package
 ```
 
-That produces a `.vsix` package in this directory.
+The packaged extension artifact is left in this folder for manual Marketplace
+upload by the maintainer.
 
-The test suite covers:
+## Maintainer note
 
-- TextMate grammar scopes
-- manifest/configuration packaging contract
-- diagnostics helper logic, single-flight cancellation, and toolchain resolution
-
-That means the editor package is kept in sync not only with scripting/stdlib
-surface but also with the current testing baseline that ships through
-`test fn`, `fixture(scope) fn`, and `import testing`.
-
-## Local installation in VS Code
-
-1. Open VS Code.
-2. Open the Extensions view.
-3. Run `Extensions: Install from VSIX...`.
-4. Choose the generated `.vsix` file.
-
-## How other users can install it
-
-There are two sane distribution paths:
-
-1. Ship the `.vsix` file as a GitHub release asset.
-2. Publish the extension to the VS Code Marketplace.
-
-The repository snapshot release path now also attaches the generated `.vsix`
-asset, so users who do not want Marketplace publishing can still install the
-same package directly from the rolling prerelease.
-
-If you publish a `.vsix` only, users install it through `Install from VSIX...`.
-If you publish to the Marketplace, users can install it directly from the
-Extensions UI or with:
-
-```bash
-code --install-extension gofman5.gof-language
-```
-
-## Publishing
-
-The extension already has a valid `publisher` field. To publish it:
-
-```bash
-npx @vscode/vsce login gofman5
-npx @vscode/vsce publish
-```
-
-For VSCodium and Open VSX users, publish the same package to Open VSX as a
-separate step if you want one-click installation there too.
-
-At the repository level there is also a repeatable helper that packages the
-same VSIX and publishes it from one command when the required tokens are set:
+If you need to repack without touching release assets:
 
 ```powershell
-$env:VSCE_PAT="..."
-$env:OVSX_PAT="..."
-powershell -ExecutionPolicy Bypass -File .\scripts\publish-vscode-extension.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\package-vscode-extension.ps1
 ```
 
-Use `-PackageOnly` if you only want the packaged `.vsix`, and `-DryRun` if you
-want to verify the publish commands without sending anything.
+That leaves the packaged artifact in `tools/vscode-gof/`.

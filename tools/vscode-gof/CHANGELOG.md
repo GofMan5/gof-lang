@@ -1,5 +1,9 @@
 # Change Log
 
+## 0.2.11
+
+- Renamed the marketplace display name to `gof Programming Language` to avoid generic-name collisions during first publish
+
 ## 0.2.10
 
 - Added syntax coverage for `fixture(test|module) fn`

@@ -1,8 +1,8 @@
 {
   "name": "gof-language",
-  "displayName": "gof Language Support",
-  "description": "Syntax highlighting, snippets, and compiler-backed diagnostics for the gof language.",
-  "version": "0.2.10",
+  "displayName": "gof Programming Language",
+  "description": "Compiler-backed syntax highlighting, snippets, and diagnostics for the gof programming language.",
+  "version": "0.2.11",
   "publisher": "gofman5",
   "icon": "media/gof-icon.png",
   "main": "./extension.cjs",

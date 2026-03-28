@@ -133,7 +133,10 @@ CLI делает runnable host executable.
 
 ## VS Code editor baseline
 
-В репозитории есть и installable-расширение для VS Code в `tools/vscode-gof`.
+В репозитории есть и расширение для VS Code в `tools/vscode-gof`, а основной
+пользовательский install path теперь идет через Marketplace:
+
+- [gof Programming Language](https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language)
 
 Сейчас оно покрывает:
 
@@ -173,15 +176,12 @@ npm test
 npm run package
 ```
 
-После этого получается `.vsix`, который можно поставить через
-`Extensions: Install from VSIX...`.
+После этого packaged artifact остается прямо в `tools/vscode-gof/` для ручной
+загрузки maintainer-ом в Marketplace. Snapshot release больше не прикладывает
+editor package по умолчанию.
 
-Если нужен нормальный one-click install для других пользователей, этот же пакет
-нужно публиковать в VS Code Marketplace. Это уже реальный editor tooling, но
-пока только editor baseline, а не финальный IDE/platform слой из M12.
-
-Rolling prerelease `snapshot-main` тоже прикладывает готовый `.vsix`, так что
-install-тестирование не зависит от публикации в Marketplace.
+Это уже реальный editor tooling, но пока только editor baseline, а не
+финальный IDE/platform слой из M12.
 
 ## Сборка книги
 

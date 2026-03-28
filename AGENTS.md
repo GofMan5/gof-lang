@@ -1,570 +1,228 @@
 # AGENTS.md
 
-`AGENTS.md` задает обязательный рабочий контракт для всех агентов, разработчиков и автоматизированных изменений в репозитории `gof`.
+This file is the working contract for humans and agents in `gof`.
 
-Это не декоративный манифест. Это набор правил, по которым принимаются инженерные решения.
+It exists to keep changes fast, correct, and non-chaotic.
+If a rule here conflicts with convenience, convenience loses.
 
-Если между скоростью внесения изменения и качеством архитектуры есть конфликт, всегда выбираются:
+## 1. Project target
 
-- корректность
-- надежность
-- предсказуемость
-- архитектурная чистота
-- долгосрочная скорость развития проекта
+`gof` is not a toy syntax experiment.
 
-## 1. Миссия проекта
+Target profile:
 
-`gof` должен стать языком уровня Ferrari, а не набором случайных фич.
+- Python-like readability and DX
+- Go-like operational simplicity and concurrency
+- Rust-grade reliability, explicitness, and engineering discipline
+- predictable runtime and toolchain behavior
 
-Целевой профиль языка:
+The bar is not "good enough". The bar is "credible as a serious language".
 
-- Python-like DX и читаемость
-- Go-like concurrency и операционная практичность
-- Rust-grade reliability, safety и инженерная строгость
-- высокая производительность runtime
-- быстрый и предсказуемый toolchain
-- развитие без архитектурной грязи, временных костылей и сломанных слоев
+## 2. Priority order
 
-`gof` не должен быть просто "похожим на Python".  
-`gof` должен быть инженерно лучше: быстрее, надежнее, строже и стабильнее.
+When tradeoffs are real, use this order:
 
-Стратегическая амбиция проекта:
-
-- `gof` должен бороться не за "свое небольшое место", а за позицию лучшего языка в мире
-- цель проекта: задать новый мировой стандарт качества языка, toolchain, concurrency, diagnostics, DX и инженерной дисциплины
-- каждая крупная проектная ставка должна оцениваться вопросом: приближает ли она `gof` к статусу языка, на который захотят перейти практически все
-- проект не должен целиться в "достаточно хороший" результат; проект должен целиться в доминирующий результат
-
-### 1.1. Язык-синтез, а не копия одного предка
-
-`gof` проектируется как осознанный гибрид, который забирает лучшее из нескольких языковых школ:
-
-- `Python`:
-  читаемость, низкий порог входа, сильный DX, компактность пользовательского кода
-- `Go`:
-  простота operational story, concurrency, практичность toolchain, fast build/deploy mindset
-- `Rust`:
-  надежность, safety-first discipline, инженерная строгость, explicit contracts
-- `C`:
-  близость к железу, предсказуемый cost model, прямолинейность low-level контуров, ABI-осознанность
-- `C++`:
-  zero-cost abstraction mindset, высокопроизводительные абстракции, контроль над layout и lifetime в performance-sensitive областях
-- `C#`:
-  продуктивность, качество tooling, ясность API surface, сильная developer ergonomics для больших codebase
-- `Java`:
-  дисциплина публичных контрактов, стабильность platform story, предсказуемость эволюции API и runtime-интеграций
-- `JavaScript`:
-  удобство scripting-сценариев, embeddability, событийная модель там, где она уместна, быстрый feedback loop
-
-При этом `gof` не имеет права механически копировать исторические слабости этих языков.
-
-Жесткое правило:
-
-- брать сильные инженерные свойства, а не переносить legacy baggage
-- синтезировать coherent system, а не свалку знакомых фич
-- не жертвовать soundness, predictability и performance ради "узнаваемости"
-- не добавлять feature только потому, что она есть в одном из языков-предков
-- каждое заимствование обязано объяснять, почему оно усиливает `gof` как целостный язык
-
-## 2. Порядок приоритетов
-
-При конфликте целей порядок всегда такой:
-
-1. Корректность
-2. Надежность и safety
-3. Runtime performance
-4. Compile-time performance
+1. correctness
+2. reliability and safety
+3. runtime performance
+4. compile-time performance
 5. DX
-6. Расширяемость surface syntax
+6. surface-area growth
 
-Правила интерпретации:
+Do not sacrifice semantics or architecture just to imitate another language.
 
-- если "похожесть на Python" конфликтует с производительностью, safety или архитектурой, Python-совместимость проигрывает
-- если есть выбор между синтаксической милотой и ясной семантикой, побеждает ясная семантика
-- если есть выбор между коротким решением сейчас и правильной архитектурой надолго, побеждает правильная архитектура
+## 3. Non-negotiables
 
-## 3. Абсолютный стандарт качества
+Never:
 
-Проект обязан держать SSS+ качество.
+- merge half-finished public behavior
+- hide instability behind README polish
+- add hacky shortcuts across compiler layers
+- keep silent TODOs that mask architectural debt
+- solve a local task by making the long-term design worse
 
-Запрещено:
+Always:
 
-- делать публичные временные хаки
-- тащить костыли в syntax, semantics, runtime, toolchain или package system
-- мерджить частично готовую архитектуру под видом "потом доделаем"
-- прятать нестабильность за красивым README
-- ломать слоистость compiler pipeline ради локального удобства
-- принимать решения, которые ускоряют текущую задачу, но ухудшают язык через 3-12 месяцев
-- принимать средние и безопасно-посредственные решения только потому, что они проще
+- finish the slice end-to-end
+- add tests for behavior changes
+- make contracts explicit
+- prefer extending good structure over inventing parallel structure
 
-Обязательно:
+## 4. Architecture discipline
 
-- каждый change доводится до рабочего состояния
-- каждая новая возможность тестируется
-- каждая архитектурная граница делается явной
-- каждый публичный контракт фиксируется документами
-- каждая performance-sensitive область проектируется осознанно
-- каждая значимая фича продумывается не только на сегодня, но и на 3-5 следующих шагов эволюции языка
-- пользовательская дистрибуция опирается на нормальные платформенные механизмы, а не на самодельные bootstrap-обходы, если в системе есть более правильный путь
+Compiler pipeline stays layered:
 
-## 4. Языковые guardrails
-
-`gof` нельзя превращать в:
-
-- CPython-compatible слой
-- динамический хаос с monkey patching
-- язык с runtime-магией вместо строгой семантики
-- язык, в котором невозможно предсказывать performance
-- язык, где "гибкость" убивает надежность, оптимизируемость и дебагабельность
-
-Базовые правила языка:
-
-- immutability by default
-- `mut` только явно
-- recoverable ошибки через явные типизированные результаты
-- `panic` только для сломанного инварианта
-- shared mutable state не является поведением по умолчанию
-- unsafe код изолируется и оборачивается safe API
-- FFI допускается только с безопасной оболочкой и явным контрактом
-
-Нельзя добавлять feature, если неясно:
-
-- кто владеет данными
-- как живут значения
-- где возможны гонки
-- где происходит аллокация
-- где может возникнуть блокировка
-- как фича будет дебажиться
-
-Каждое существенное изменение языка должно быть проверено на:
-
-- soundness
-- predictability
-- observability
-- evolution safety
-- misuse resistance
-
-Запрещено тащить в `gof` худшие стороны языков-источников:
-
-- из `Python`:
-  динамический хаос, monkey patching, runtime-магия вместо контракта
-- из `Go`:
-  упрощения, которые мешают выразительности type system или эволюции error model
-- из `Rust`:
-  сложность ради сложности без реального выигрыша в надежности или оптимизируемости
-- из `C`:
-  undefined behavior как норму, небезопасность по умолчанию, бесконтрольную работу с памятью
-- из `C++`:
-  метапрограммную перегруженность, ABI-хаос, неочевидную семантику языка
-- из `C#` и `Java`:
-  тяжеловесность платформы, избыточную церемониальность, раздутый boilerplate
-- из `JavaScript`:
-  неявные coercion-правила, runtime-surprise семантику, динамические ловушки как часть нормального DX
-
-## 5. Архитектурная дисциплина
-
-Compiler pipeline развивается строго послойно:
-
-1. Lexer
+1. lexer
 2. CST
 3. AST
 4. HIR
-5. Typed HIR
+5. typed HIR
 6. MIR
 7. SSA
-8. Backend IR / backend artifact
+8. backend IR / artifact
 
-Жесткие запреты:
+Forbidden:
 
-- cross-layer shortcuts
-- backend knowledge inside parser
-- ad hoc typing inside parser
+- parser-level typing hacks
+- backend knowledge inside frontend parsing
 - undocumented IR invariants
-- hidden feature flags для публичного поведения
-- смешивание frontend и runtime-логики в одну кучу
+- hidden public behavior switches
+- mixed frontend/runtime logic without a clear boundary
 
-Каждый слой обязан иметь:
+Every layer must have:
 
-- свои инварианты
-- свои тесты
-- ясную ответственность
-- однонаправленные зависимости
+- a clear responsibility
+- explicit invariants
+- one-way dependencies
+- direct tests
 
-Любой новый слой, сущность или abstraction boundary обязан отвечать на вопросы:
+## 5. Language guardrails
 
-- зачем он нужен
-- что именно он упрощает
-- что он запрещает
-- как он тестируется
-- как он будет эволюционировать без слома существующего кода
+`gof` must stay explicit and predictable.
 
-## 6. Concurrency-модель
+Baseline rules:
 
-`gof` должен быть реально многопоточным и удобным, а не просто иметь ключевые слова.
+- immutability by default
+- `mut` only when explicit
+- recoverable errors through typed results
+- `panic` only for broken invariants
+- no implicit shared mutable state as the default model
+- unsafe/FFI only behind explicit safe boundaries
 
-Обязательные свойства concurrency model:
+Do not add a feature unless it is clear:
 
-- structured concurrency как базовая модель
-- cheap task spawning
-- typed task values
-- message passing как основная линия дизайна
-- typed channels
-- `select`
-- cancellation
-- ясные правила ожидания, завершения и propagation ошибок
-- понятная история для memory visibility и debugging stuck tasks
+- who owns the data
+- where values live
+- where allocation happens
+- where blocking can happen
+- how races are prevented
+- how the feature is debugged
 
-Запрещено:
+## 6. Concurrency rules
 
-- неявно делиться mutable state между потоками
-- прятать race-prone семантику за удобным синтаксисом
-- добавлять concurrency feature без четкой memory model
-- добавлять async/concurrency sugar раньше, чем стабилизированы базовые правила исполнения
+Concurrency features are product features, not syntax decoration.
 
-Любая concurrency feature обязана иметь:
-
-- semantic spec
-- diagnostics contract
-- integration tests
-- stress tests
-- benchmark plan
-- ясный story для cancellation
-- ясный story для panic/error propagation
-
-## 7. Runtime и performance
-
-Скорость в `gof` означает не только быстрый runtime. Она включает:
-
-- latency исполнения
-- throughput
-- memory efficiency
-- бинарный размер
-- compile-time
-- predictability under load
-
-Жесткие правила:
-
-- никакого GIL
-- никакой скрытой глобальной блокировки на hot path
-- никакой неочевидной динамической магии, которая ломает оптимизацию
-- никакого hidden boxing без архитектурной причины
-- никакого лишнего копирования данных в hot path
-- никакой случайной квадратичности там, где нужен linear or better
-- никакой runtime-магии, которую невозможно анализировать и оптимизировать
-
-Каждое performance-sensitive изменение обязано:
-
-- иметь benchmark baseline
-- не вносить необъясненный регресс
-- иметь понятный cost model
-- иметь reasoned justification, если код становится сложнее
-
-Для hot-path и runtime-sensitive кода обязательно продумывать:
-
-- layout значений
-- количество аллокаций
-- число копирований
-- точки синхронизации
-- деградацию compile-time
-- деградацию дебага и observability
-
-Правила runtime:
-
-- stack-first mindset
-- heap только там, где это действительно нужно
-- аллокации должны быть объяснимыми
-- scheduler не должен быть случайным набором потоковых хаков
-- ABI и FFI contracts должны быть стабильными и явными
-- debugability не жертвуется ради псевдо-магии
-
-Bootstrap interpreter разрешен только как:
-
-- oracle для тестов
-- ранний execution path
-- временный инструмент разработки языка
-
-Bootstrap interpreter не должен становиться постоянным production runtime.
-
-## 8. Диагностика как часть продукта
-
-Diagnostics в `gof` не побочный эффект, а часть качества языка.
-
-Каждая диагностика обязана иметь:
-
-- code
-- severity
-- primary span
-- message
-- note
-- fix-it, если он применим
-
-Диагностики должны быть:
-
-- детерминированными
-- полезными
-- короткими, но точными
-- стабильными между запусками
-
-Нельзя оставлять "непонятную ошибку, потом улучшим".  
-Плохая диагностика считается дефектом продукта, а не косметическим недостатком.
-
-## 9. Тесты и покрытие
-
-Тестирование в `gof` обязательно.
-
-Жесткие правила:
-
-- каждый новый файл с поведением обязан иметь тесты
-- каждая новая языковая фича обязана иметь positive и negative tests
-- каждая новая диагностика обязана иметь fixture или unit test
-- каждая исправленная ошибка обязана иметь regression test
-- каждый performance-sensitive change обязан иметь benchmark coverage или baseline
-
-Целевой стандарт проекта:
-
-- 100% line coverage для deterministic compiler/runtime/toolchain code
-- 100% branch coverage для deterministic compiler/runtime/toolchain code
-
-Если новый код нельзя нормально протестировать, значит его дизайн еще не готов.
-
-Если фича большая, тесты обязаны быть многослойными:
-
-- unit
-- integration
-- conformance
-- diagnostics
-- benchmark or stress where applicable
-
-## 10. Документация и source of truth
-
-Пользователи должны учить `gof` по versioned документации в репозитории, а не по дрейфующим чатам, issue и wiki.
-
-Канонический учебный путь проекта:
-
-1. `docs/book/`
-2. `examples/`
-3. `README.md`
-4. `spec/`
-5. `roadmap.md`
-
-Жесткие правила:
-
-- GitHub wiki не считается source of truth
-- если wiki когда-либо появится, она может быть только зеркалом или кратким навигатором
-- каждая новая публичная фича языка обязана обновлять `docs/book/`
-- каждая новая публичная фича языка обязана обновлять минимум один runnable example, если это применимо
-- каждая новая публичная фича языка обязана синхронизировать `README.md`, `spec/` и `roadmap.md`, если пользовательский контракт изменился
-- фича не считается законченной, если ее невозможно нормально выучить по репозиторию без чтения исходников компилятора
-
-Документация обязана:
-
-- честно описывать текущий статус языка
-- содержать примеры, совпадающие с реально работающей реализацией
-- объяснять ограничения bootstrap-стадии
-- давать понятный путь изучения без перегруза
-
-Запрещено:
-
-- писать документацию, которая обещает то, чего язык не умеет
-- маскировать bootstrap-ограничения под "почти production"
-- оставлять значимые новые возможности только в spec без обучающего объяснения
-- делать README красивым, но бесполезным для первого знакомства
-
-### 10.1. VS Code extension is part of the product
-
-The installable VS Code extension in `tools/vscode-gof` is a first-class
-user-facing surface. It is not optional garnish.
-
-Mandatory rules:
-
-- every public syntax, builtin, keyword, formatting, or diagnostics change that
-  affects editing UX must evaluate whether `tools/vscode-gof` needs an update
-- if editing UX changes, the same change must update the extension grammar,
-  snippets, diagnostics integration, tests, and user docs as applicable
-- compiler-backed editor diagnostics must track the stable
-  `gof check --json` contract; breaking that contract without updating the
-  extension in the same change is forbidden
-- a language feature is not considered done if the extension silently lags
-  behind the language on user-visible syntax or diagnostics
-- extension-affecting changes must run `npm test` and `npm run package` in
-  `tools/vscode-gof`
-- release-quality pushes must keep the packaged VSIX and snapshot release path
-  current whenever the extension surface changes
-- if a change intentionally does not affect the extension, that decision should
-  be explicit rather than accidental
-
-## 11. Roadmap, spec-first, RFC и ADR
-
-### 11.1. Обязательный `roadmap.md`
-
-В корне репозитория обязан существовать `roadmap.md`.
-
-Это рабочий управляющий документ проекта, а не файл "для галочки".
-
-Жесткие правила:
-
-- перед значимой реализацией нужно определить, к какому checkpoint относится задача
-- после значимой реализации нужно обновить статус roadmap
-- нельзя добавлять крупную фичу, если она никак не отражена в roadmap
-- нельзя держать roadmap в виде размытого списка пожеланий без статусов и критериев завершения
-
-`roadmap.md` обязан содержать:
-
-- vision проекта
-- стратегические принципы
-- milestones
-- checkpoints внутри milestone
-- статус каждого checkpoint
-- критерии завершения
-- ближайший активный фокус
-- явно отмеченные non-goals
-
-Статусы roadmap используются только так:
-
-- `[x]` завершено
-- `[~]` в работе
-- `[ ]` запланировано
-- `[!]` заблокировано или требует архитектурного решения
-
-Если задача закрыта в коде, но не отражена в roadmap, она считается формально незавершенной.
-
-### 11.2. Spec-first обязателен
-
-Нельзя вносить значимые изменения без формального следа в областях:
-
-- syntax
-- type system
-- memory model
-- concurrency model
-- ABI
-- editions
-- stdlib surface
-- package resolution
-- runtime behavior
-
-Правила:
-
-- RFC обязателен для изменений публичного поведения
-- ADR обязателен для архитектурных решений
-- spec обязателен для стабильного пользовательского контракта
-
-Для любой значимой фичи нужно продумать:
-
-- current semantics
-- future extensibility
-- failure modes
-- performance envelope
-- interaction with existing diagnostics
-- migration cost для будущих editions
-
-## 12. Release и snapshot publish path
-
-Для этого репозитория агентам запрещено делать "голый" `git push`, если изменение должно уйти наружу как свежая устанавливаемая сборка.
-
-Жесткие правила:
-
-- каждый push агента должен идти через `scripts/push-and-release.ps1` или эквивалентный путь, который после push обновляет rolling prerelease `snapshot-main`
-- если push уже был выполнен отдельно, агент обязан сразу после этого прогнать `scripts/publish-snapshot.ps1`
-- перед snapshot publish агент обязан убедиться, что локальная проверка изменения пройдена
-- rolling snapshot release должен указывать на актуальный commit агента, а не на устаревший tag
-- нельзя вручную выкладывать snapshot через хаотический набор одноразовых команд, если это можно сделать стандартизированным скриптом репозитория
-
-Минимальный ожидаемый поток:
-
-1. локальная проверка
-2. `git push`
-3. сборка snapshot-артефактов
-4. обновление prerelease `snapshot-main`
-
-Для Windows-релизов обязательно:
-
-- основной установщик собирается через `Inno Setup`, а не через кастомный self-extracting bootstrapper
-- silent install, update, PATH integration и uninstall проверяются end-to-end
-
-## 13. Правила поведения для агентов
-
-Любой агент, работающий с этим репозиторием, не имеет права:
-
-- выдавать сырой черновик за завершенную работу
-- останавливаться на полпути, если задача не доведена до рабочего результата
-- пропускать тесты, если изменение затрагивает поведение
-- умалчивать о недоделанном
-- ухудшать архитектуру ради скорости ответа
-- добавлять мусорные абстракции
-- имитировать качество вместо реального качества
-
-Агент обязан:
-
-- доводить change до завершенного состояния
-- явно говорить о рисках, если они реально остались
-- усиливать решение, если текущее выглядит как времянка
-- не менять язык молча без обновления документов, когда меняется пользовательский или архитектурный контракт
-
-Если есть сомнение между "проще сейчас" и "правильно надолго", выбирается правильно надолго.
-
-## 14. Обязательная глубина проектирования
-
-Перед любой значимой реализацией нужно мысленно или явно проверить:
+Required for serious concurrency work:
 
 - semantics
-- type impact
-- runtime impact
-- performance impact
-- diagnostics impact
-- testability
-- future extensibility
-- removal cost, если дизайн окажется неверным
+- diagnostics contract
+- integration tests
+- stress plan
+- benchmark plan
+- cancellation story
+- panic/error propagation story
 
-Нельзя делать значимые изменения без детального продумывания этих слоев.
+Do not hide race-prone behavior behind "nice" syntax.
 
-## 15. Definition of Done
+## 7. Testing and verification
 
-Задача считается завершенной только если:
+Every behavior change needs tests.
 
-- код реализован полностью
-- архитектурные границы не нарушены
-- тесты добавлены и проходят
-- форматирование проходит
-- документация обновлена
-- diagnostics обновлены, если менялось поведение ошибок
-- benchmark gate пройден, если затронута производительность
-- нет временного публичного мусора
-- нет скрытых TODO, которые прикрывают архитектурный дефект
+Minimum expected coverage:
 
-Definition of Done для любой значимой пользовательской фичи включает минимум:
+- new feature: positive + negative tests
+- bug fix: regression test
+- new diagnostic: fixture or unit test
+- performance-sensitive change: benchmark or baseline
 
-- код
-- тесты
-- examples
-- diagnostics/spec
-- обновление `docs/book/`
-- обновление `README.md` и `roadmap.md`, если меняется пользовательский контракт
+Use minimal sufficient verification, not ritual full-suite spam.
 
-Если хотя бы один пункт не выполнен, задача не считается завершенной.
+Expected verification by area:
 
-## 16. Краткая формула проекта
+- parser / AST / HIR / typechecker / runtime: focused Rust tests + conformance where relevant
+- CLI: CLI/conformance tests
+- `tools/vscode-gof`: `npm test` and `npm run package`
+- docs/book: build touched books
+- release/install scripts: targeted packaging checks
 
-`gof` должен быть:
+Run the whole world only when the change is truly cross-cutting or release-risky.
 
-- мировым ориентиром, а не локальным экспериментом
-- быстрее
-- стабильнее
-- чище архитектурно
-- проще для пользователя
-- проще для развития
-- сильнее по concurrency, чем обычные scripting languages
-- сильнее по DX, чем тяжелые systems languages
-- достаточно строгим, чтобы его можно было оптимизировать по-настоящему
-- достаточно мощным и удобным, чтобы переезд на `gof` был рациональным выбором для максимально широкого круга разработчиков и команд
+When reporting verification, say what was run and why it is sufficient.
 
-Высшая цель проекта:
+## 8. Docs, spec, roadmap
 
-- сделать `gof` новым языковым стандартом, а не еще одной альтернативой
-- строить язык, на который хотят переходить, потому что он объективно лучше по качеству, скорости, надежности, DX и эволюционной устойчивости
-- выигрывать не маркетингом, а инженерным превосходством
+Public behavior is not done until the repository teaches it.
 
-Никакой халтуры.  
-Никаких костылей.  
-Никакого "и так сойдет".  
+If you change public syntax, semantics, tooling, stdlib, diagnostics, runtime
+behavior, or package behavior, update the relevant source of truth:
 
-Только качество, надежность, скорость и масштабируемое развитие на годы вперед.
+- `docs/book/`
+- `examples/`
+- `README.md`
+- `spec/`
+- `roadmap.md`
+
+Use:
+
+- RFC for public behavior changes
+- ADR for architecture decisions
+
+If code changed but roadmap/spec/docs did not, the feature is not complete.
+
+## 9. VS Code extension policy
+
+`tools/vscode-gof` is a first-class product surface.
+
+Any syntax, diagnostics, snippet, formatting, or editing-surface change must
+evaluate whether the extension also needs an update.
+
+If extension-visible behavior changes, update:
+
+- grammar/snippets/docs as needed
+- tests
+- packaging validation
+
+Required verification for extension-visible changes:
+
+- `npm test`
+- `npm run package`
+
+Distribution rule:
+
+- the packaged extension artifact stays in `tools/vscode-gof/`
+- do not attach the VS Code package to snapshot releases by default
+- manual Marketplace publication is the primary release path
+
+## 10. Release policy
+
+For repository pushes intended to go outward:
+
+- verify locally first
+- use `scripts/push-and-release.ps1` or the equivalent standardized path
+- do not use ad hoc push + release command soup
+
+For Windows releases, prefer normal platform-grade installers over custom hacks.
+
+## 11. Agent behavior
+
+Agents must:
+
+- finish the requested slice, not stop at analysis
+- state real blockers clearly
+- avoid unrelated churn in a mixed worktree
+- stage only task-relevant files when the worktree is mixed
+- choose the correct branch/push target explicitly when the user asks
+
+Agents must not:
+
+- fake completion
+- silently skip necessary tests
+- hide unfinished work
+- bloat the task with unnecessary bureaucracy or redundant full-suite runs
+
+If the architecture is weak, improve it. Do not normalize garbage.
+
+## 12. Definition of done
+
+A task is done only when:
+
+- the code is complete
+- architecture boundaries remain clean
+- relevant tests pass
+- formatting/packaging checks pass when applicable
+- docs/spec/roadmap are updated when the public contract changed
+- diagnostics are updated when error behavior changed
+- no temporary public garbage was left behind
+
+For narrow changes, targeted verification is enough if it really covers the
+affected contract.

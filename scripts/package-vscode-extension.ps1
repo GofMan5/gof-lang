@@ -1,5 +1,5 @@
 param(
-    [string]$DistDir = "dist",
+    [string]$DistDir = "tools/vscode-gof",
     [switch]$SkipInstall,
     [switch]$SkipTests
 )
@@ -60,5 +60,7 @@ if (-not (Test-Path $sourceAsset)) {
     throw "Expected VSIX package not found: $sourceAsset"
 }
 
-Copy-Item $sourceAsset $targetAsset -Force
+if ((Resolve-Path $sourceAsset).Path -ne [System.IO.Path]::GetFullPath($targetAsset)) {
+    Copy-Item $sourceAsset $targetAsset -Force
+}
 Write-Host "Created $targetAsset"

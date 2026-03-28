@@ -81,7 +81,6 @@ function New-ReleaseNotes {
         $assetLines
         ""
         "This is an automatically refreshed prerelease snapshot intended for fast install and update testing."
-        "It now also carries the installable VS Code extension package for `.gof` syntax and snippets."
     ) | Set-Content -Path $Path
 }
 
@@ -110,7 +109,6 @@ $generatedAt = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss K")
 Push-Location $root
 try {
     & (Join-Path $root "scripts/package-release.ps1") -Version $Tag -DistDir $distRoot
-    & (Join-Path $root "scripts/package-vscode-extension.ps1") -DistDir $distRoot
 
     if (-not $SkipLinux) {
         $bash = Get-Command bash -ErrorAction SilentlyContinue

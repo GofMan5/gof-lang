@@ -1,5 +1,5 @@
 param(
-    [string]$DistDir = "dist-vscode-publish",
+    [string]$DistDir = "tools/vscode-gof",
     [switch]$SkipInstall,
     [switch]$SkipTests,
     [switch]$SkipMarketplace,

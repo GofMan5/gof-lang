@@ -138,8 +138,11 @@ What this slice still does not provide:
 
 ## VS Code editor baseline
 
-The repository now also ships an installable VS Code extension in
-`tools/vscode-gof`.
+The repository now also ships a VS Code extension for `gof` in
+`tools/vscode-gof`, with the primary user-facing install path through the
+Marketplace:
+
+- [gof Programming Language](https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language)
 
 It currently covers:
 
@@ -179,15 +182,12 @@ npm test
 npm run package
 ```
 
-That produces a `.vsix` file that users can install through
-`Extensions: Install from VSIX...`.
+That leaves the packaged extension artifact in `tools/vscode-gof/` for manual
+Marketplace upload by the maintainer. The repository snapshot release no longer
+attaches the editor package by default.
 
-If you want one-click installation for other users, publish the same package to
-the VS Code Marketplace. The extension is real editor tooling, but it is still
-an editor baseline rather than the full IDE/platform story from M12.
-
-The rolling `snapshot-main` prerelease now also attaches the generated `.vsix`
-asset, so install testing does not have to wait for Marketplace publication.
+The extension is real editor tooling, but it is still an editor baseline rather
+than the full IDE/platform story from M12.
 
 ## Building the book
 
