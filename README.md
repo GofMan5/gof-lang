@@ -146,6 +146,21 @@ npm test
 npm run package
 ```
 
+Or package the same `.vsix` through the repo-level release helper:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\package-vscode-extension.ps1 -DistDir dist-vscode
+```
+
+Publish it through the repo-level helper when Marketplace/Open VSX tokens are
+available:
+
+```powershell
+$env:VSCE_PAT="..."
+$env:OVSX_PAT="..."
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-vscode-extension.ps1
+```
+
 ## Project structure
 
 ```text

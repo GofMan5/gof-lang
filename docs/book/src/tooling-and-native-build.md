@@ -108,6 +108,9 @@ If you want one-click installation for other users, publish the same package to
 the VS Code Marketplace. The extension is real editor tooling, but it is still
 an editor baseline rather than the full IDE/platform story from M12.
 
+The rolling `snapshot-main` prerelease now also attaches the generated `.vsix`
+asset, so install testing does not have to wait for Marketplace publication.
+
 ## Building the book
 
 The learning docs are built with `mdBook`.

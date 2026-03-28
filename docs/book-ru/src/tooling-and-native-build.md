@@ -103,6 +103,9 @@ npm run package
 надо публиковать в VS Code Marketplace. Это уже реальный editor tooling, но
 пока только editor baseline, а не финальный IDE/platform слой из M12.
 
+Rolling prerelease `snapshot-main` теперь тоже прикладывает готовый `.vsix`,
+так что install-тестирование не зависит от публикации в Marketplace.
+
 ## Сборка книги
 
 Документация книги собирается через `mdBook`.

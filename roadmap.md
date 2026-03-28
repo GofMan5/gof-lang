@@ -347,6 +347,7 @@ Hard sequencing rule:
 ### M12. Java-Class Platform, Compatibility, and Large-Codebase Coverage
 
 - `[x]` installable VS Code editor baseline for `.gof` with syntax highlighting and snippets
+- `[x]` rolling snapshot release now ships the installable VS Code extension asset
 - `[ ]` package identity, registry, and deterministic dependency model
 - `[ ]` editions or compatibility policy for long-lived codebases
 - `[ ]` LSP, debugger, profiler, and richer IDE support
@@ -354,7 +355,7 @@ Hard sequencing rule:
 - `[ ]` large-workspace build graph and incremental compilation strategy
 - `[ ]` diagnostics and observability suitable for multi-team repos
 - Checkpoints:
-- `[x]` CP-M12-0: installable VS Code editor baseline with syntax-highlighting, snippets, and packaging
+- `[x]` CP-M12-0: installable VS Code editor baseline with syntax-highlighting, snippets, packaging, and snapshot distribution
 - `[ ]` CP-M12-1: long-term compatibility and evolution policy
 - `[ ]` CP-M12-2: enterprise-scale tooling surface
 - `[ ]` CP-M12-3: workspace and package ergonomics for large codebases

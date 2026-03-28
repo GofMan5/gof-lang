@@ -53,13 +53,15 @@ function New-ReleaseNotes {
         [string]$ShortSha,
         [string]$Branch,
         [string]$CommitMessage,
-        [string]$GeneratedAt
+        [string]$GeneratedAt,
+        [string[]]$AssetNames
     )
 
-    $assetLine = if ($SkipLinux) {
-        "- gof-linux-x86_64.tar.gz (skipped for this run)"
-    } else {
-        "- gof-linux-x86_64.tar.gz"
+    $assetLines = @(
+        $AssetNames | ForEach-Object { "- $_" }
+    )
+    if ($SkipLinux -and ($AssetLines -notcontains "- gof-linux-x86_64.tar.gz")) {
+        $assetLines += "- gof-linux-x86_64.tar.gz (skipped for this run)"
     }
 
     @(
@@ -76,12 +78,10 @@ function New-ReleaseNotes {
         ""
         "## Assets"
         ""
-        "- gof-windows-x86_64.zip"
-        "- gof-windows-x86_64-setup.exe"
-        $assetLine
-        "- SHA256SUMS.txt"
+        $assetLines
         ""
         "This is an automatically refreshed prerelease snapshot intended for fast install and update testing."
+        "It now also carries the installable VS Code extension package for `.gof` syntax and snippets."
     ) | Set-Content -Path $Path
 }
 
@@ -110,6 +110,7 @@ $generatedAt = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss K")
 Push-Location $root
 try {
     & (Join-Path $root "scripts/package-release.ps1") -Version $Tag -DistDir $distRoot
+    & (Join-Path $root "scripts/package-vscode-extension.ps1") -DistDir $distRoot
 
     if (-not $SkipLinux) {
         $bash = Get-Command bash -ErrorAction SilentlyContinue
@@ -135,7 +136,19 @@ $hashLines = Get-ChildItem -Path $distRoot -File | Where-Object { $_.Name -ne "S
 }
 Set-Content -Path $hashesPath -Value $hashLines
 
-New-ReleaseNotes -Path $notesPath -CommitSha $commitSha -ShortSha $shortSha -Branch $branch -CommitMessage $commitMessage -GeneratedAt $generatedAt
+$assetNames = Get-ChildItem -Path $distRoot -File |
+    Where-Object { $_.Name -notin @("SHA256SUMS.txt", "RELEASE_NOTES.md") } |
+    Sort-Object Name |
+    ForEach-Object { $_.Name }
+
+New-ReleaseNotes `
+    -Path $notesPath `
+    -CommitSha $commitSha `
+    -ShortSha $shortSha `
+    -Branch $branch `
+    -CommitMessage $commitMessage `
+    -GeneratedAt $generatedAt `
+    -AssetNames ($assetNames + @("SHA256SUMS.txt"))
 
 if ($DryRun) {
     Write-Host "Dry run complete. Built snapshot assets in $distRoot"

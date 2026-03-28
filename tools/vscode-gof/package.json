@@ -1,7 +1,7 @@
 {
   "name": "gof-language",
   "displayName": "gof Language Support",
-  "description": "Syntax highlighting, comments, brackets, and indentation rules for the gof language.",
+  "description": "Syntax highlighting, snippets, comments, brackets, and indentation rules for the gof language.",
   "version": "0.1.0",
   "publisher": "gofman5",
   "icon": "media/gof-icon.png",

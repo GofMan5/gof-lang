@@ -52,6 +52,10 @@ There are two sane distribution paths:
 1. Ship the `.vsix` file as a GitHub release asset.
 2. Publish the extension to the VS Code Marketplace.
 
+The repository snapshot release path now also attaches the generated `.vsix`
+asset, so users who do not want Marketplace publishing can still install the
+same package directly from the rolling prerelease.
+
 If you publish a `.vsix` only, users install it through `Install from VSIX...`.
 If you publish to the Marketplace, users can install it directly from the
 Extensions UI or with:
@@ -71,3 +75,15 @@ npx @vscode/vsce publish
 
 For VSCodium and Open VSX users, publish the same package to Open VSX as a
 separate step if you want one-click installation there too.
+
+At the repository level there is also a repeatable helper that packages the
+same VSIX and publishes it from one command when the required tokens are set:
+
+```powershell
+$env:VSCE_PAT="..."
+$env:OVSX_PAT="..."
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-vscode-extension.ps1
+```
+
+Use `-PackageOnly` if you only want the packaged `.vsix`, and `-DryRun` if you
+want to verify the publish commands without sending anything.
