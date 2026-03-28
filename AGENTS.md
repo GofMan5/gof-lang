@@ -14,9 +14,32 @@ Target profile:
 - Python-like readability and DX
 - Go-like operational simplicity and concurrency
 - Rust-grade reliability, explicitness, and engineering discipline
+- C and C++ level cost-model awareness and systems reach where they matter
+- C# and Java grade tooling clarity, API discipline, and large-codebase ergonomics
+- JavaScript grade scripting practicality and fast feedback loops where that helps
 - predictable runtime and toolchain behavior
 
 The bar is not "good enough". The bar is "credible as a serious language".
+
+`gof` is a language synthesis project, not a clone of one ancestor.
+
+It should combine the strongest properties of:
+
+- Python
+- Go
+- Rust
+- C
+- C++
+- C#
+- Java
+- JavaScript
+
+Rule:
+
+- borrow strengths, not historical baggage
+- do not add a feature just because another language has it
+- prefer coherent semantics over familiarity cosplay
+- reject dynamic chaos, hidden magic, undefined behavior as a norm, accidental complexity, and platform bloat
 
 ## 2. Priority order
 
