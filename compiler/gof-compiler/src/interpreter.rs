@@ -3199,6 +3199,20 @@ fn eval_expr(
                 );
             }
 
+            if callee == "http_request" {
+                return eval_http_request_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
             if callee == "http_get" {
                 return eval_http_get_builtin(
                     args,
@@ -6180,6 +6194,70 @@ fn eval_string_argument(
     Ok(text)
 }
 
+fn eval_http_headers_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<BTreeMap<String, String>> {
+    let value = eval_expr(
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::Dict(headers) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                diagnostic_code,
+                format!("`{builtin_name}` requires a `dict[string]` headers argument"),
+                format!("this argument resolves to `{}`", value_name(&value)),
+                expr.span(),
+            )
+            .with_fix_it(
+                "pass a dict of string header values like `{\"Accept\": \"application/json\"}`",
+            )
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    let mut rendered_headers = BTreeMap::new();
+    let mut diagnostics = Diagnostics::default();
+    for (name, value) in headers.entries {
+        match value {
+            Value::String(text) => {
+                rendered_headers.insert(name, text);
+            }
+            other => diagnostics.push(
+                Diagnostic::error(
+                    diagnostic_code,
+                    format!("`{builtin_name}` requires string header values"),
+                    format!("header `{name}` resolves to `{}`", value_name(&other)),
+                    expr.span(),
+                )
+                .with_fix_it("ensure every header value is a string")
+                .with_source_path(source_path.to_path_buf()),
+            ),
+        }
+    }
+
+    if !diagnostics.is_empty() {
+        return eval_diagnostics(diagnostics);
+    }
+
+    Ok(rendered_headers)
+}
+
 fn eval_string_list_argument(
     builtin_name: &str,
     expr: &Expr,
@@ -8472,6 +8550,124 @@ fn json_template_type_name(value: &JsonValue) -> &'static str {
     }
 }
 
+struct HttpRequestSpec {
+    method: String,
+    url: String,
+    body: Option<String>,
+    headers: BTreeMap<String, String>,
+    timeout_ms: u64,
+}
+
+fn eval_http_request_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if !(2..=5).contains(&args.len()) {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `http_request`",
+                format!("expected 2 to 5 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(
+                "call `http_request(method, url)` or `http_request(method, url, body, headers, timeout_ms)`",
+            )
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let method = eval_string_argument(
+        "http_request",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3106",
+    )?;
+    let url = eval_string_argument(
+        "http_request",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3106",
+    )?;
+    let body = if args.len() >= 3 {
+        Some(eval_string_argument(
+            "http_request",
+            &args[2],
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            "GOF3106",
+        )?)
+    } else {
+        None
+    };
+    let headers = if args.len() >= 4 {
+        eval_http_headers_argument(
+            "http_request",
+            &args[3],
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            "GOF3106",
+        )?
+    } else {
+        BTreeMap::new()
+    };
+    let timeout_ms = if args.len() == 5 {
+        eval_non_negative_duration_argument(
+            "http_request",
+            &args[4],
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            "GOF3107",
+            "GOF3107",
+        )? as u64
+    } else {
+        35_000
+    };
+
+    let spec = HttpRequestSpec {
+        method,
+        url,
+        body,
+        headers,
+        timeout_ms,
+    };
+    Ok(eval_http_request_report(execute_http_request(&spec), &spec))
+}
+
 fn eval_http_get_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -8509,9 +8705,14 @@ fn eval_http_get_builtin(
         "GOF3076",
     )?;
 
-    Ok(eval_http_response(
-        ureq::get(&url).timeout(Duration::from_secs(35)).call(),
-    ))
+    let spec = HttpRequestSpec {
+        method: "GET".to_string(),
+        url,
+        body: None,
+        headers: BTreeMap::new(),
+        timeout_ms: 35_000,
+    };
+    Ok(eval_http_text_response(execute_http_request(&spec)))
 }
 
 fn eval_http_post_builtin(
@@ -8578,13 +8779,16 @@ fn eval_http_post_builtin(
     } else {
         "text/plain; charset=utf-8".to_string()
     };
-
-    Ok(eval_http_response(
-        ureq::post(&url)
-            .set("Content-Type", &content_type)
-            .timeout(Duration::from_secs(35))
-            .send_string(&body),
-    ))
+    let mut headers = BTreeMap::new();
+    headers.insert("Content-Type".to_string(), content_type);
+    let spec = HttpRequestSpec {
+        method: "POST".to_string(),
+        url,
+        body: Some(body),
+        headers,
+        timeout_ms: 35_000,
+    };
+    Ok(eval_http_text_response(execute_http_request(&spec)))
 }
 
 fn eval_sleep_builtin(
@@ -8629,7 +8833,20 @@ fn eval_sleep_builtin(
     Ok(Value::Unit)
 }
 
-fn eval_http_response(response: Result<ureq::Response, ureq::Error>) -> Value {
+fn execute_http_request(spec: &HttpRequestSpec) -> Result<ureq::Response, ureq::Error> {
+    let mut request = ureq::request(&spec.method, &spec.url);
+    for (name, value) in &spec.headers {
+        request = request.set(name, value);
+    }
+    request = request.timeout(Duration::from_millis(spec.timeout_ms));
+    if let Some(body) = &spec.body {
+        request.send_string(body)
+    } else {
+        request.call()
+    }
+}
+
+fn eval_http_text_response(response: Result<ureq::Response, ureq::Error>) -> Value {
     match response {
         Ok(response) => {
             let status = i64::from(response.status());
@@ -8647,6 +8864,67 @@ fn eval_http_response(response: Result<ureq::Response, ureq::Error>) -> Value {
             result_err(runtime_http_request_error(error.to_string()))
         }
     }
+}
+
+fn eval_http_request_report(
+    response: Result<ureq::Response, ureq::Error>,
+    spec: &HttpRequestSpec,
+) -> Value {
+    match response {
+        Ok(response) => {
+            let status = i64::from(response.status());
+            let headers = http_response_headers_json(&response);
+            match response.into_string() {
+                Ok(body) => result_ok(Value::Json(http_response_report_json(
+                    spec, status, body, headers,
+                ))),
+                Err(error) => result_err(runtime_http_request_error(error.to_string())),
+            }
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let status = i64::from(code);
+            let headers = http_response_headers_json(&response);
+            let body = response.into_string().unwrap_or_else(|_| String::new());
+            result_ok(Value::Json(http_response_report_json(
+                spec, status, body, headers,
+            )))
+        }
+        Err(ureq::Error::Transport(error)) => {
+            result_err(runtime_http_request_error(error.to_string()))
+        }
+    }
+}
+
+fn http_response_headers_json(response: &ureq::Response) -> JsonValue {
+    let mut names = response.headers_names();
+    names.sort_unstable_by_key(|name| name.to_ascii_lowercase());
+    names.dedup_by(|lhs, rhs| lhs.eq_ignore_ascii_case(rhs));
+
+    let mut headers = BTreeMap::new();
+    for name in names {
+        let values = response
+            .all(&name)
+            .into_iter()
+            .map(|value| JsonValue::String(value.to_string()))
+            .collect();
+        headers.insert(name.to_ascii_lowercase(), JsonValue::Array(values));
+    }
+    JsonValue::Object(headers)
+}
+
+fn http_response_report_json(
+    spec: &HttpRequestSpec,
+    status: i64,
+    body: String,
+    headers: JsonValue,
+) -> JsonValue {
+    let mut report = BTreeMap::new();
+    report.insert("method".to_string(), JsonValue::String(spec.method.clone()));
+    report.insert("url".to_string(), JsonValue::String(spec.url.clone()));
+    report.insert("status".to_string(), JsonValue::Int(status));
+    report.insert("body".to_string(), JsonValue::String(body));
+    report.insert("headers".to_string(), headers);
+    JsonValue::Object(report)
 }
 
 fn eval_index(
@@ -9327,6 +9605,166 @@ mod tests {
             "expected payload body, got {requests:?}"
         );
         assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 4)"));
+    }
+
+    #[test]
+    fn evaluates_http_request_builtin_with_headers_and_structured_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener.local_addr().expect("listener addr should exist");
+        let observed_requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let observed_requests_thread = observed_requests.clone();
+
+        let server = std::thread::spawn(move || {
+            fn expected_request_len(bytes: &[u8]) -> Option<usize> {
+                let header_end = bytes
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|index| index + 4)?;
+                let headers = std::str::from_utf8(&bytes[..header_end]).ok()?;
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("Content-Length: ")
+                            .or_else(|| line.strip_prefix("content-length: "))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                Some(header_end + content_length)
+            }
+
+            let (mut stream, _) = listener.accept().expect("request should arrive");
+            let mut buffer = [0_u8; 4096];
+            let mut request_bytes = Vec::new();
+            loop {
+                let size = stream
+                    .read(&mut buffer)
+                    .expect("request should be readable");
+                if size == 0 {
+                    break;
+                }
+                request_bytes.extend_from_slice(&buffer[..size]);
+                if let Some(total_len) = expected_request_len(&request_bytes) {
+                    if request_bytes.len() >= total_len {
+                        request_bytes.truncate(total_len);
+                        break;
+                    }
+                }
+            }
+            let request = String::from_utf8_lossy(&request_bytes).to_string();
+            observed_requests_thread
+                .lock()
+                .expect("requests mutex should not be poisoned")
+                .push(request);
+
+            let body = "accepted";
+            let response = format!(
+                "HTTP/1.1 202 Accepted\r\nContent-Type: text/plain; charset=utf-8\r\nX-Request-Id: req-42\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should be written");
+        });
+
+        let value = run_source(&format!(
+            "fn main() -> Result[int, RuntimeError]:\n    headers: dict[string] = {{\"Authorization\": \"Bearer test-token\", \"Content-Type\": \"text/plain\", \"X-Trace-Id\": \"trace-7\"}}\n    report = http_request(\"POST\", \"http://{address}/submit\", \"payload\", headers, 1500)?\n    status = json_int(json_get(report, \"status\")?)?\n    body = json_string(json_get(report, \"body\")?)?\n    method = json_string(json_get(report, \"method\")?)?\n    url = json_string(json_get(report, \"url\")?)?\n    response_headers = json_get(report, \"headers\")?\n    request_id_values = json_get(response_headers, \"x-request-id\")?\n    request_id = json_string(json_index(request_id_values, 0)?)?\n    content_type_values = json_get(response_headers, \"content-type\")?\n    response_content_type = json_string(json_index(content_type_values, 0)?)?\n    assert(status == 202, \"expected accepted response\")\n    assert(body == \"accepted\", \"expected response body to round-trip\")\n    assert(method == \"POST\", \"expected request method to be preserved\")\n    assert(url == \"http://{address}/submit\", \"expected response report URL\")\n    assert(request_id == \"req-42\", \"expected request id header\")\n    assert(starts_with(response_content_type, \"text/plain\"), \"expected content type header\")\n    return Result.Ok(status + len(body) + len(request_id))\n"
+        ))
+        .expect("program should run");
+
+        server.join().expect("server thread should exit");
+        let requests = observed_requests
+            .lock()
+            .expect("requests mutex should not be poisoned")
+            .clone();
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("POST /submit HTTP/1.1")),
+            "expected POST request, got {requests:?}"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("Authorization: Bearer test-token")),
+            "expected authorization header, got {requests:?}"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.contains("X-Trace-Id: trace-7")),
+            "expected custom trace header, got {requests:?}"
+        );
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 216)"));
+    }
+
+    #[test]
+    fn http_request_preserves_non_success_status_reports() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener.local_addr().expect("listener addr should exist");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("request should arrive");
+            let mut buffer = [0_u8; 1024];
+            let _ = stream
+                .read(&mut buffer)
+                .expect("request should be readable");
+
+            let body = "retry later";
+            let response = format!(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should be written");
+        });
+
+        let value = run_source(&format!(
+            "fn main() -> Result[int, RuntimeError]:\n    report = http_request(\"GET\", \"http://{address}/health\")?\n    status = json_int(json_get(report, \"status\")?)?\n    body = json_string(json_get(report, \"body\")?)?\n    return Result.Ok(status + len(body))\n"
+        ))
+        .expect("program should run");
+
+        server.join().expect("server thread should exit");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 514)"));
+    }
+
+    #[test]
+    fn http_get_keeps_http_status_errors_for_legacy_body_only_calls() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener.local_addr().expect("listener addr should exist");
+
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("request should arrive");
+            let mut buffer = [0_u8; 1024];
+            let _ = stream
+                .read(&mut buffer)
+                .expect("request should be readable");
+
+            let body = "retry later";
+            let response = format!(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("response should be written");
+        });
+
+        let value = run_source(&format!(
+            "fn main() -> Result[string, RuntimeError]:\n    return http_get(\"http://{address}/health\")\n"
+        ))
+        .expect("program should run");
+
+        server.join().expect("server thread should exit");
+        assert!(
+            value
+                .cli_text()
+                .as_deref()
+                .is_some_and(|text| text.contains("RuntimeError.HttpStatus(code: 503"))
+        );
     }
 
     #[test]

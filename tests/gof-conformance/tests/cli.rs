@@ -1274,6 +1274,86 @@ fn gof_run_executes_telegram_long_polling_example_against_fake_api() {
 }
 
 #[test]
+fn gof_run_executes_http_request_report_example_against_fake_api() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("http_request_report.gof");
+    let observed_requests = Arc::new(Mutex::new(Vec::<String>::new()));
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener addr should exist");
+    let observed_requests_thread = observed_requests.clone();
+
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("request should arrive");
+        let mut buffer = [0_u8; 4096];
+        let mut request_bytes = Vec::new();
+        loop {
+            let size = stream
+                .read(&mut buffer)
+                .expect("request should be readable");
+            if size == 0 {
+                break;
+            }
+            request_bytes.extend_from_slice(&buffer[..size]);
+            if let Some(total_len) = expected_http_request_len(&request_bytes) {
+                if request_bytes.len() >= total_len {
+                    request_bytes.truncate(total_len);
+                    break;
+                }
+            }
+        }
+        let request = String::from_utf8_lossy(&request_bytes).to_string();
+        observed_requests_thread
+            .lock()
+            .expect("requests mutex should not be poisoned")
+            .push(request);
+
+        let body = "accepted";
+        let response = format!(
+            "HTTP/1.1 202 Accepted\r\nContent-Type: text/plain; charset=utf-8\r\nX-Request-Id: req-42\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("response should be written");
+    });
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .env("GOF_HTTP_REQUEST_BASE", format!("http://{address}"))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 216)"));
+
+    server.join().expect("server thread should exit");
+
+    let requests = observed_requests
+        .lock()
+        .expect("requests mutex should not be poisoned")
+        .clone();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("POST /inspect HTTP/1.1")),
+        "expected POST request, got {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("Authorization: Bearer demo-token")),
+        "expected Authorization header, got {requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.contains("X-Trace-Id: trace-7")),
+        "expected custom trace header, got {requests:?}"
+    );
+}
+
+#[test]
 fn gof_run_executes_status_report_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

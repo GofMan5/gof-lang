@@ -132,6 +132,7 @@ Today the bootstrap language surface includes:
 - `json_string(...)`
 - `json_int(...)`
 - `template_render(...)`
+- `http_request(...)`
 - `http_get(...)`
 - `http_post(...)`
 

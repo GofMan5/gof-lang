@@ -1372,6 +1372,32 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_http_request_builtin() {
+        let source = SourceFile::new(
+            "http_request_report.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    headers: dict[string] = {\"Accept\": \"application/json\"}\n    report = http_request(\"GET\", \"https://example.invalid/api\", \"\", headers, 1500)?\n    status = json_int(json_get(report, \"status\")?)?\n    return Result.Ok(status)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected http_request bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "http_request"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_range_builtin() {
         let source = SourceFile::new(
             "range_helpers.gof",

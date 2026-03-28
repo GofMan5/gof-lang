@@ -62,3 +62,9 @@ fn sample_base64() -> Result[int, RuntimeError]:
     encoded = base64_encode("gof!")
     decoded = base64_decode(encoded)?
     return Result.Ok(len(encoded) + len(decoded))
+
+fn sample_http_request() -> Result[int, RuntimeError]:
+    headers: dict[string] = {"Accept": "application/json"}
+    report = http_request("GET", "https://example.invalid/health", "", headers, 1500)?
+    status = json_int(json_get(report, "status")?)?
+    return Result.Ok(status)

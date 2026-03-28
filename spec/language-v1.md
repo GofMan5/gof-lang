@@ -110,7 +110,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `toml_parse(...)` for explicit TOML config handling through the bootstrap `json` bridge
 - builtin `yaml_parse(...)` for explicit YAML config handling through the bootstrap `json` bridge
 - builtin `template_render(...)` for explicit `{{key}}` text rendering over dict/json automation data
-- builtin `http_get(...)` and `http_post(...)` for bootstrap HTTP work
+- builtin `http_get(...)`, `http_post(...)`, and `http_request(...)` for bootstrap HTTP work
 
 ## Bootstrap binding rules
 
@@ -261,6 +261,12 @@ The bootstrap compiler in this repository currently supports:
 - `template_render` currently reports malformed placeholders, missing keys, non-object JSON contexts, and non-printable dict values as `RuntimeError.Template(message)`
 - `http_get` currently accepts exactly one string URL and returns `Result[string, RuntimeError]`
 - `http_post` currently accepts `(url, body)` or `(url, body, content_type)` and returns `Result[string, RuntimeError]`
+- `http_request` currently accepts `(method, url)`, `(method, url, body)`, `(method, url, body, headers)`, or `(method, url, body, headers, timeout_ms)` and returns `Result[json, RuntimeError]`
+- `http_request` currently reports `status`, `body`, `headers`, `method`, and `url` as a structured JSON object
+- `http_request` currently preserves non-success HTTP statuses as successful reports so callers can inspect them explicitly
+- `http_request` currently normalizes response header names to lowercase and exposes each header as `list[string]`
+- `http_request` currently accepts explicit `dict[string]` request headers and an optional non-negative timeout in milliseconds
+- HTTPS/TLS currently flows through the bootstrap `ureq + rustls` transport path
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires either a list target with an integer index or a dict target with a string key
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result

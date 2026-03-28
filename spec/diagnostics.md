@@ -117,3 +117,5 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3103`: invalid operand for bootstrap templating helpers
 - `GOF3104`: invalid operand for bootstrap YAML helpers
 - `GOF3105`: invalid operand for bootstrap base64 helpers
+- `GOF3106`: invalid operand for structured bootstrap HTTP request helpers
+- `GOF3107`: invalid timeout for structured bootstrap HTTP request helpers

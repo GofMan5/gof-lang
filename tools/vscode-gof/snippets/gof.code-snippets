@@ -108,6 +108,15 @@
     ],
     "description": "Encode and decode explicit base64 text payloads"
   },
+  "HTTP Request Report": {
+    "prefix": "gofhttp",
+    "body": [
+      "${1:headers}: dict[string] = {\"Accept\": \"application/json\"}",
+      "${2:report} = http_request(${3:\"GET\"}, ${4:\"https://example.com/health\"}, \"\", ${1:headers}, ${5:1500})?",
+      "${6:status} = json_int(json_get(${2:report}, \"status\")?)?"
+    ],
+    "description": "Send a structured HTTP request and inspect the bootstrap response report"
+  },
   "YAML Config": {
     "prefix": "gofyaml",
     "body": [

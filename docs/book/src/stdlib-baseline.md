@@ -173,12 +173,11 @@ Current sequence-helper rules:
 ## JSON, CSV, TOML, YAML, base64, HTTP, and explicit retry delays
 
 ```gof
-fn notify(base: string) -> Result[string, RuntimeError]:
+fn notify(base: string) -> Result[int, RuntimeError]:
     sleep(0)
-    body = http_post(base + "/notify", "{\"text\":\"pong\"}", "application/json")?
-    payload = json_parse(body)?
-    status = json_string(json_get(payload, "status")?)?
-    return Result.Ok(status)
+    headers: dict[string] = {"Accept": "application/json", "Content-Type": "application/json"}
+    report = http_request("POST", base + "/notify", "{\"text\":\"pong\"}", headers, 1500)?
+    return json_int(json_get(report, "status")?)
 ```
 
 Current JSON, CSV, TOML, YAML, base64, templating, and HTTP rules:
@@ -199,6 +198,12 @@ Current JSON, CSV, TOML, YAML, base64, templating, and HTTP rules:
 - `template_render(template, values)` returns `Result[string, RuntimeError]`
 - `template_render(...)` accepts either `dict[...]` values or a top-level `json` object
 - `template_render(...)` renders explicit `{{key}}` placeholders and reports malformed placeholders or missing keys as `RuntimeError.Template(message)`
+- `http_request(method, url[, body[, headers[, timeout_ms]]])` returns `Result[json, RuntimeError]`
+- `http_request(...)` exposes `status`, `body`, `headers`, `method`, and `url` as a structured response report
+- `http_request(...)` preserves non-success HTTP statuses as successful reports so callers can branch on them explicitly
+- `http_request(...)` normalizes response header names to lowercase and exposes each header as `list[string]`
+- `http_request(...)` accepts explicit `dict[string]` request headers and an optional non-negative timeout in milliseconds
+- HTTPS/TLS continues to ride on the bootstrap `ureq + rustls` transport path
 - `http_get(url)` is the current bootstrap HTTP read path
 - `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
 - `sleep(milliseconds)` makes retry and backoff intent explicit instead of hiding it in framework magic
@@ -225,6 +230,14 @@ fn main() -> Result[int, RuntimeError]:
     encoded = base64_encode("gof!")
     decoded = base64_decode(encoded)?
     return Result.Ok(len(encoded) + len(decoded))
+```
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    headers: dict[string] = {"Accept": "application/json"}
+    report = http_request("GET", "https://example.com/health", "", headers, 1500)?
+    status = json_int(json_get(report, "status")?)?
+    return Result.Ok(status)
 ```
 
 `template_render(...)` is intentionally narrow:

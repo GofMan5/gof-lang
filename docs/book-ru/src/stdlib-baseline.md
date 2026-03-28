@@ -173,12 +173,11 @@ fn main() -> Result[int, RuntimeError]:
 ## JSON, CSV, TOML, YAML, base64, HTTP и явные retry delays
 
 ```gof
-fn notify(base: string) -> Result[string, RuntimeError]:
+fn notify(base: string) -> Result[int, RuntimeError]:
     sleep(0)
-    body = http_post(base + "/notify", "{\"text\":\"pong\"}", "application/json")?
-    payload = json_parse(body)?
-    status = json_string(json_get(payload, "status")?)?
-    return Result.Ok(status)
+    headers: dict[string] = {"Accept": "application/json", "Content-Type": "application/json"}
+    report = http_request("POST", base + "/notify", "{\"text\":\"pong\"}", headers, 1500)?
+    return json_int(json_get(report, "status")?)
 ```
 
 Текущие правила JSON, CSV, TOML, YAML, base64, templating и HTTP:
@@ -199,6 +198,12 @@ fn notify(base: string) -> Result[string, RuntimeError]:
 - `template_render(template, values)` возвращает `Result[string, RuntimeError]`
 - `template_render(...)` принимает либо `dict[...]`, либо top-level `json` object
 - `template_render(...)` рендерит явные `{{key}}` placeholders и поднимает malformed placeholders или missing keys как `RuntimeError.Template(message)`
+- `http_request(method, url[, body[, headers[, timeout_ms]]])` возвращает `Result[json, RuntimeError]`
+- `http_request(...)` отдает `status`, `body`, `headers`, `method` и `url` как структурированный response report
+- `http_request(...)` сохраняет non-success HTTP statuses успешными значениями, чтобы код мог явно ветвиться по ним
+- `http_request(...)` нормализует имена response headers к lowercase и отдает каждое значение как `list[string]`
+- `http_request(...)` принимает явные `dict[string]` request headers и optional non-negative timeout в миллисекундах
+- HTTPS/TLS продолжает идти через bootstrap transport на базе `ureq + rustls`
 - `http_get(url)` — текущий bootstrap HTTP read path
 - `http_post(url, body[, content_type])` — текущий bootstrap HTTP write path
 - `sleep(milliseconds)` делает retry и backoff намерение явным, а не прячет его в framework magic
@@ -225,6 +230,14 @@ fn main() -> Result[int, RuntimeError]:
     encoded = base64_encode("gof!")
     decoded = base64_decode(encoded)?
     return Result.Ok(len(encoded) + len(decoded))
+```
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    headers: dict[string] = {"Accept": "application/json"}
+    report = http_request("GET", "https://example.com/health", "", headers, 1500)?
+    status = json_int(json_get(report, "status")?)?
+    return Result.Ok(status)
 ```
 
 `template_render(...)` специально остается узким:

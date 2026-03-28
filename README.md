@@ -64,7 +64,7 @@ gof test tests/fixtures                # run conformance suite
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `base64_encode(...)`, `base64_decode(...)`, `range`, `sleep(...)`, `unix_seconds()`, `unix_millis()` | stable |
-| JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
+| JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` / `http_request(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
@@ -132,6 +132,15 @@ Automation and HTTP-style scripting now also have explicit base64 text helpers
 through `base64_encode(text)` and `base64_decode(text)`, where decoding stays on
 the normal `Result[string, RuntimeError]` path and rejects invalid base64 text
 or non-UTF-8 decoded bytes as `RuntimeError.Base64(message)`.
+
+HTTP automation now also has a structured bootstrap request path through
+`http_request(method, url[, body[, headers[, timeout_ms]]])`. It returns
+`Result[json, RuntimeError]` with explicit `status`, `body`, `headers`,
+`method`, and `url` fields so bots, webhooks, and internal API scripts can
+manage custom headers, non-2xx responses, and timeout policy without falling
+back to host-language glue. HTTPS/TLS continues to ride on the existing
+`ureq + rustls` transport path instead of inventing a parallel custom TLS
+stack.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

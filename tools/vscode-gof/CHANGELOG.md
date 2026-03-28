@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.7
+
+- Added builtin syntax coverage for `http_request(...)`
+- Added a structured HTTP request snippet for explicit headers, timeout policy, and response-report workflows
+- Kept the VS Code editor surface aligned with the new bootstrap HTTP request contract
+
 ## 0.2.6
 
 - Added builtin syntax coverage for `base64_encode()` and `base64_decode()`

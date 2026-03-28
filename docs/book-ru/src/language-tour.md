@@ -132,6 +132,7 @@ Mutation в `gof` разрешена, но она не является silent d
 - `json_string(...)`
 - `json_int(...)`
 - `template_render(...)`
+- `http_request(...)`
 - `http_get(...)`
 - `http_post(...)`
 

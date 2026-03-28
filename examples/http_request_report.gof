@@ -1,0 +1,21 @@
+fn response_status(report: json) -> Result[int, RuntimeError]:
+    return json_int(json_get(report, "status")?)
+
+fn response_body(report: json) -> Result[string, RuntimeError]:
+    return json_string(json_get(report, "body")?)
+
+fn response_header(report: json, name: string) -> Result[string, RuntimeError]:
+    headers = json_get(report, "headers")?
+    values = json_get(headers, name)?
+    return json_string(json_index(values, 0)?)
+
+fn main() -> Result[int, RuntimeError]:
+    base = env("GOF_HTTP_REQUEST_BASE")?
+    headers: dict[string] = {"Accept": "application/json", "Authorization": "Bearer demo-token", "Content-Type": "text/plain", "X-Trace-Id": "trace-7"}
+    report = http_request("POST", base + "/inspect", "ping", headers, 1500)?
+    status = response_status(report)?
+    body = response_body(report)?
+    request_id = response_header(report, "x-request-id")?
+    assert(status == 202, "expected accepted response")
+    assert(body == "accepted", "expected echoed response body")
+    return Result.Ok(status + len(body) + len(request_id))

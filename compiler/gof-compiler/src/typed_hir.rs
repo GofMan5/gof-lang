@@ -609,6 +609,7 @@ enum CallKind {
     BuiltinCsvParse,
     BuiltinCsvStringify,
     BuiltinTemplateRender,
+    BuiltinHttpRequest,
     BuiltinHttpGet,
     BuiltinHttpPost,
     Function,
@@ -2294,6 +2295,7 @@ fn lower_expr(
                     | CallKind::BuiltinCsvParse
                     | CallKind::BuiltinCsvStringify
                     | CallKind::BuiltinTemplateRender
+                    | CallKind::BuiltinHttpRequest
                     | CallKind::BuiltinHttpGet
                     | CallKind::BuiltinHttpPost
                     | CallKind::Enum
@@ -3063,6 +3065,9 @@ fn validate_call(
         CallKind::BuiltinTemplateRender => {
             validate_template_render_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinHttpRequest => {
+            validate_http_request_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinHttpGet => {
             validate_single_string_argument_call("http_get", args, span, diagnostics, source_path);
         }
@@ -3666,6 +3671,8 @@ fn resolve_call_kind(
         CallKind::BuiltinCsvStringify
     } else if callee == "template_render" {
         CallKind::BuiltinTemplateRender
+    } else if callee == "http_request" {
+        CallKind::BuiltinHttpRequest
     } else if callee == "http_get" {
         CallKind::BuiltinHttpGet
     } else if callee == "http_post" {
@@ -3808,6 +3815,9 @@ fn call_return_type(
         }
         CallKind::BuiltinTemplateRender => {
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinHttpRequest => {
+            Type::result(Type::Json, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinHttpGet => {
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
@@ -6651,6 +6661,97 @@ fn validate_http_post_call(
     }
 }
 
+fn validate_http_request_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !(2..=5).contains(&args.len()) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `http_request`",
+                format!("expected 2 to 5 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(
+                "call `http_request(method, url)` or `http_request(method, url, body, headers, timeout_ms)`",
+            )
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    for (index, arg) in args.iter().take(3).enumerate() {
+        if !matches!(arg.ty, Type::String | Type::Unknown) {
+            let position = match index {
+                0 => "first",
+                1 => "second",
+                _ => "third",
+            };
+            let label = match index {
+                0 => "method",
+                1 => "url",
+                _ => "body",
+            };
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3106",
+                    format!("`http_request` requires a string {label} as its {position} argument"),
+                    format!("this argument resolves to `{}`", arg.ty.display_name()),
+                    arg.span,
+                )
+                .with_fix_it("pass string values for the request method, URL, and optional body")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+
+    if args.len() >= 4 {
+        match &args[3].ty {
+            Type::Dict(inner) if matches!(inner.as_ref(), Type::String | Type::Unknown) => {}
+            Type::Unknown => {}
+            other => diagnostics.push(
+                Diagnostic::error(
+                    "GOF3106",
+                    "`http_request` requires `dict[string]` headers as its fourth argument",
+                    format!("this argument resolves to `{}`", other.display_name()),
+                    args[3].span,
+                )
+                .with_fix_it(
+                    "pass a dict of string header values like `{\"Accept\": \"application/json\"}`",
+                )
+                .with_source_path(source_path.to_path_buf()),
+            ),
+        }
+    }
+
+    if args.len() == 5 {
+        if !matches!(args[4].ty, Type::Int | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3107",
+                    "`http_request` requires an integer timeout in milliseconds as its fifth argument",
+                    format!("this argument resolves to `{}`", args[4].ty.display_name()),
+                    args[4].span,
+                )
+                .with_fix_it("pass a non-negative millisecond timeout like `1500`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            return;
+        }
+
+        validate_non_negative_duration_argument(
+            "http_request",
+            "GOF3107",
+            &args[4],
+            diagnostics,
+            source_path,
+        );
+    }
+}
+
 fn validate_read_file_call(
     args: &[TypedExpr],
     span: Span,
@@ -7798,6 +7899,24 @@ mod tests {
     }
 
     #[test]
+    fn supports_http_request_builtin() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    headers: dict[string] = {\"Accept\": \"application/json\"}\n    report = http_request(\"GET\", \"https://example.invalid/api\", \"\", headers, 1500)?\n    status = json_int(json_get(report, \"status\")?)?\n    return Result.Ok(status)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+                assert!(
+                    matches!(&value.kind, TypedExprKind::Propagate { value: inner } if matches!(&inner.kind, TypedExprKind::Call { callee, .. } if callee == "http_request"))
+                );
+            }
+            other => panic!("expected propagated http_request bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_timeout_token_and_cancel_after_builtins() {
         let module = lower_source(
             "fn main() -> bool:\n    token = timeout_token(25)\n    cancel_after(token, 0)\n    return is_cancelled(token)\n",
@@ -8445,6 +8564,26 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3094"]);
+    }
+
+    #[test]
+    fn rejects_invalid_http_request_headers() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[json, RuntimeError]:\n    return http_request(\"GET\", \"https://example.invalid\", \"\", {\"Accept\": 1}, 1500)\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3106"]);
+    }
+
+    #[test]
+    fn rejects_negative_http_request_timeouts() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[json, RuntimeError]:\n    return http_request(\"GET\", \"https://example.invalid\", \"\", {\"Accept\": \"application/json\"}, -1)\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3107"]);
     }
 
     #[test]
