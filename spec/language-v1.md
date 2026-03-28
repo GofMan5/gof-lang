@@ -42,6 +42,7 @@ The bootstrap compiler in this repository currently supports:
 
 - local imports through `import name`, including same-directory modules, package-root modules, and manifest-resolved local path packages
 - shipped stdlib imports through reserved module names `bytes`, `io`, `time`, `net`, and `http`
+- shipped stdlib foundation through `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, and `NetDeadline`
 - deterministic local package lockfiles through `gof.lock` and `gof mod resolve`
 - top-level `struct`
 - top-level `enum` with unit and payload variants
@@ -127,6 +128,11 @@ The bootstrap compiler in this repository currently supports:
 - `import name` currently resolves in deterministic order: `name.gof` next to the importing source file, then `src/name.gof` inside the nearest package root with `gof.mod`, then `src/lib.gof` from a local path dependency declared under `[dependencies]` in `gof.mod`
 - reserved stdlib import names `bytes`, `io`, `time`, `net`, and `http` currently resolve to shipped modules under `stdlib/` instead of local files or dependency aliases
 - local files, package-root modules, and dependency aliases that try to use reserved stdlib names are currently rejected with an explicit diagnostic instead of shadowing the shipped stdlib
+- the shipped `bytes` module currently exposes `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, and `bytes_concat`
+- the shipped `io` module currently exposes `ReadStream`, `WriteStream`, `open_read_stream`, and `open_write_stream`
+- the shipped `time` module currently exposes `NetDeadline`, `deadline_after`, and `deadline_at_unix_millis`
+- the shipped `net` module currently exposes `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, and `listen_tcp`
+- `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, and `NetDeadline` are currently opaque shipped-stdlib types rather than user-declarable language types
 - package directories currently use `src/main.gof` as the executable entrypoint and `src/lib.gof` as the dependency entrypoint
 - manifest-backed `gof run`, `gof build`, and package-aware `gof test` require a fresh `gof.lock`
 - manifest-backed `gof test` currently executes `src/main.gof` package targets as compile plus execute smoke
@@ -151,7 +157,7 @@ The bootstrap compiler in this repository currently supports:
 - payload enum construction currently requires payload values compatible with the declared payload field types
 - `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
 - `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
-- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `Time(message: string)`, `Yaml(message: string)`, `Base64(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
+- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `Time(message: string)`, `Utf8(message: string)`, `Yaml(message: string)`, `Base64(message: string)`, `NetDns(message: string)`, `NetConnect(message: string)`, `NetTimeout(message: string)`, `NetTls(message: string)`, `NetProxy(message: string)`, `NetProtocol(message: string)`, `NetReset(message: string)`, `NetClosed`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
 - `match value:` currently requires `value` to resolve to a known enum or `Result`
 - each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
 - `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
@@ -230,6 +236,40 @@ The bootstrap compiler in this repository currently supports:
 - `range` currently rejects a zero step
 - `sleep` currently accepts exactly one `int` duration in milliseconds and returns `unit`
 - `sleep` currently reports a runtime diagnostic when the duration resolves to a negative value
+- `bytes_from_string(text)` currently accepts exactly one string and returns `Bytes`
+- `bytes_to_string(bytes)` currently accepts exactly one `Bytes` value and returns `Result[string, RuntimeError]`
+- `bytes_len(bytes)` currently accepts exactly one `Bytes` value and returns `int`
+- `bytes_slice(bytes, start, end)` currently accepts `Bytes` plus two `int` indices and returns `Result[Bytes, RuntimeError]`
+- `bytes_concat(left, right)` currently accepts two `Bytes` values and returns `Bytes`
+- `Bytes.len()`, `Bytes.slice(start, end)`, and `Bytes.to_string()` currently mirror those `bytes` module helpers
+- `open_read_stream(path)` currently accepts exactly one string path and returns `Result[ReadStream, RuntimeError]`
+- `open_write_stream(path)` currently accepts exactly one string path and returns `Result[WriteStream, RuntimeError]`
+- `ReadStream.read(max_bytes)` currently returns `Result[Bytes, RuntimeError]`
+- `ReadStream.read_exact(bytes)` currently returns `Result[Bytes, RuntimeError]`
+- `ReadStream.read_all()` currently returns `Result[Bytes, RuntimeError]`
+- `ReadStream.close()` currently returns `Result[unit, RuntimeError]`
+- `ReadStream.with_deadline(deadline)` and `ReadStream.with_cancel(token)` currently return a new `ReadStream` wrapper with explicit blocking control
+- `WriteStream.write(bytes)` and `WriteStream.write_all(bytes)` currently return `Result[int, RuntimeError]`
+- `WriteStream.flush()` and `WriteStream.close()` currently return `Result[unit, RuntimeError]`
+- `WriteStream.with_deadline(deadline)` and `WriteStream.with_cancel(token)` currently return a new `WriteStream` wrapper with explicit blocking control
+- `deadline_after(milliseconds)` currently accepts a non-negative `int` and returns `Result[NetDeadline, RuntimeError]`
+- `deadline_at_unix_millis(unix_millis)` currently accepts exactly one `int` and returns `Result[NetDeadline, RuntimeError]`
+- `NetDeadline.unix_millis()` currently returns `int`
+- `NetDeadline.remaining_millis()` currently returns `int`
+- `connect_tcp(address)` currently accepts exactly one string address and returns `Result[DuplexStream, RuntimeError]`
+- `connect_tcp_with_control(address, deadline, token)` currently accepts `(string, NetDeadline, cancel_token)` and returns `Result[DuplexStream, RuntimeError]`
+- `listen_tcp(address)` currently accepts exactly one string address and returns `Result[TcpListener, RuntimeError]`
+- `DuplexStream.read(max_bytes)`, `DuplexStream.read_exact(bytes)`, and `DuplexStream.read_all()` currently return `Result[Bytes, RuntimeError]`
+- `DuplexStream.write(bytes)` and `DuplexStream.write_all(bytes)` currently return `Result[int, RuntimeError]`
+- `DuplexStream.flush()` and `DuplexStream.close()` currently return `Result[unit, RuntimeError]`
+- `DuplexStream.with_deadline(deadline)` and `DuplexStream.with_cancel(token)` currently return a new `DuplexStream` wrapper with explicit blocking control
+- `DuplexStream.peer_addr()` and `DuplexStream.local_addr()` currently return `Result[SocketAddr, RuntimeError]`
+- `TcpListener.accept()` currently returns `Result[DuplexStream, RuntimeError]`
+- `TcpListener.close()` currently returns `Result[unit, RuntimeError]`
+- `TcpListener.with_deadline(deadline)` and `TcpListener.with_cancel(token)` currently return a new `TcpListener` wrapper with explicit blocking control
+- `TcpListener.local_addr()` currently returns `Result[SocketAddr, RuntimeError]`
+- `SocketAddr.text()` currently returns `string`
+- `SocketAddr.port()` currently returns `int`
 - `argv` currently accepts no arguments and returns `list[string]`
 - `unix_seconds` currently accepts no arguments and returns `Result[int, RuntimeError]`
 - `unix_millis` currently accepts no arguments and returns `Result[int, RuntimeError]`

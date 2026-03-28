@@ -16,6 +16,7 @@ pub enum Type {
     Bool,
     Json,
     CancelToken,
+    Opaque(String),
     Struct(String),
     Enum(String),
     List(Box<Type>),
@@ -44,6 +45,10 @@ impl Type {
         Self::Channel(Box::new(inner))
     }
 
+    fn opaque(name: impl Into<String>) -> Self {
+        Self::Opaque(name.into())
+    }
+
     fn result(ok: Type, err: Type) -> Self {
         Self::Result(Box::new(ok), Box::new(err))
     }
@@ -59,6 +64,7 @@ impl Type {
             Self::Bool => "bool".to_string(),
             Self::Json => "json".to_string(),
             Self::CancelToken => "cancel_token".to_string(),
+            Self::Opaque(name) => name.clone(),
             Self::Struct(name) => name.clone(),
             Self::Enum(name) => name.clone(),
             Self::List(inner) => format!("list[{}]", inner.display_name()),
@@ -71,6 +77,49 @@ impl Type {
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
         }
+    }
+}
+
+const BUILTIN_OPAQUE_TYPE_NAMES: &[&str] = &[
+    "Bytes",
+    "ReadStream",
+    "WriteStream",
+    "DuplexStream",
+    "TcpListener",
+    "SocketAddr",
+    "NetDeadline",
+];
+
+const STDLIB_BRIDGE_PREFIX: &str = "__gof_internal_";
+
+fn is_builtin_opaque_type_name(name: &str) -> bool {
+    BUILTIN_OPAQUE_TYPE_NAMES.contains(&name)
+}
+
+fn builtin_opaque_type(name: &str) -> Option<Type> {
+    is_builtin_opaque_type_name(name).then(|| Type::opaque(name))
+}
+
+fn is_opaque_type_or_unknown(ty: &Type, expected: &str) -> bool {
+    matches!(ty, Type::Unknown) || matches!(ty, Type::Opaque(actual) if actual == expected)
+}
+
+fn is_stdlib_bridge_builtin(name: &str) -> bool {
+    name.starts_with(STDLIB_BRIDGE_PREFIX)
+}
+
+fn runtime_error_type() -> Type {
+    Type::Enum("RuntimeError".to_string())
+}
+
+fn runtime_result(ok: Type) -> Type {
+    Type::result(ok, runtime_error_type())
+}
+
+fn type_method_receiver_name(ty: &Type) -> Option<String> {
+    match ty {
+        Type::Struct(name) | Type::Opaque(name) => Some(name.clone()),
+        _ => None,
     }
 }
 
@@ -361,6 +410,66 @@ fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
                     }],
                 },
                 EnumVariantSignature {
+                    name: "Utf8".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetDns".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetConnect".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetTimeout".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetTls".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetProxy".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetProtocol".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetReset".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
+                    name: "NetClosed".to_string(),
+                    fields: Vec::new(),
+                },
+                EnumVariantSignature {
                     name: "Yaml".to_string(),
                     fields: vec![EnumVariantFieldSignature {
                         name: "message".to_string(),
@@ -612,6 +721,7 @@ enum CallKind {
     BuiltinHttpRequest,
     BuiltinHttpGet,
     BuiltinHttpPost,
+    BuiltinStdlibBridge,
     Function,
     Struct,
     Enum,
@@ -737,7 +847,11 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
 
         let mut changed = false;
         for function in &typed_functions {
-            let signature = if let Some(Type::Struct(receiver_type)) = &function.receiver_type {
+            let signature = if let Some(receiver_type) = function
+                .receiver_type
+                .as_ref()
+                .and_then(type_method_receiver_name)
+            {
                 method_signatures
                     .get_mut(&(receiver_type.clone(), function.name.clone()))
                     .expect("all lowered methods must have a matching signature entry")
@@ -809,21 +923,25 @@ fn validate_method_contract(
     known_structs: &HashSet<String>,
     diagnostics: &mut Diagnostics,
 ) {
-    if !known_structs.contains(&receiver_type.name) {
+    if !(known_structs.contains(&receiver_type.name)
+        || is_builtin_opaque_type_name(&receiver_type.name))
+    {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3035",
                 format!(
-                    "method `{}` must target a known struct receiver",
+                    "method `{}` must target a known receiver type",
                     function_symbol_from_hir(function)
                 ),
                 format!(
-                    "`{}` is not a declared struct in this module graph",
+                    "`{}` is not a declared struct or shipped opaque runtime type in this module graph",
                     receiver_type.name
                 ),
                 receiver_type.span,
             )
-            .with_fix_it("declare the struct first or move this method onto a known struct type")
+            .with_fix_it(
+                "declare the struct first or move this method onto a known struct or shipped opaque type",
+            )
             .with_source_path(function.source_path.clone()),
         );
         return;
@@ -850,7 +968,9 @@ fn validate_method_contract(
     };
 
     let actual_receiver_type = param_types.first().cloned().unwrap_or(Type::Unknown);
-    if actual_receiver_type != Type::Struct(receiver_type.name.clone()) {
+    let expected_receiver_type = builtin_opaque_type(&receiver_type.name)
+        .unwrap_or_else(|| Type::Struct(receiver_type.name.clone()));
+    if actual_receiver_type != expected_receiver_type {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3035",
@@ -950,10 +1070,10 @@ fn lower_function(
     TypedFunction {
         id: function.id,
         symbol_name: signature.symbol_name.clone(),
-        receiver_type: signature
-            .receiver_type
-            .as_ref()
-            .map(|receiver_type| Type::Struct(receiver_type.clone())),
+        receiver_type: signature.receiver_type.as_ref().map(|receiver_type| {
+            builtin_opaque_type(receiver_type)
+                .unwrap_or_else(|| Type::Struct(receiver_type.clone()))
+        }),
         name: function.name.clone(),
         params,
         return_type,
@@ -2298,6 +2418,7 @@ fn lower_expr(
                     | CallKind::BuiltinHttpRequest
                     | CallKind::BuiltinHttpGet
                     | CallKind::BuiltinHttpPost
+                    | CallKind::BuiltinStdlibBridge
                     | CallKind::Enum
                     | CallKind::Unknown => TypedExprKind::Call {
                         callee: callee.clone(),
@@ -3074,6 +3195,9 @@ fn validate_call(
         CallKind::BuiltinHttpPost => {
             validate_http_post_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinStdlibBridge => {
+            validate_stdlib_bridge_call(callee, args, span, diagnostics, source_path);
+        }
         CallKind::Function => match signatures.get(callee) {
             Some(signature) if signature.arity == args.len() => {
                 for (index, (expected, actual)) in
@@ -3180,17 +3304,17 @@ fn resolve_method_call(
     source_path: &Path,
 ) -> (String, Type) {
     let receiver_name = match &target.ty {
-        Type::Struct(name) => Some(name.clone()),
+        Type::Struct(name) | Type::Opaque(name) => Some(name.clone()),
         Type::Unknown => None,
         other => {
             diagnostics.push(
                 Diagnostic::error(
                     "GOF3037",
-                    format!("method call `{method}` requires a struct receiver"),
+                    format!("method call `{method}` requires a method-capable receiver"),
                     format!("this target resolves to `{}`", other.display_name()),
                     target.span,
                 )
-                .with_fix_it("call methods only on struct values")
+                .with_fix_it("call methods only on struct or shipped opaque runtime values")
                 .with_source_path(source_path.to_path_buf()),
             );
             None
@@ -3366,6 +3490,14 @@ fn resolve_type_annotation(
             diagnostics,
             ty.span,
         ),
+        name if is_builtin_opaque_type_name(name) => resolve_named_type_without_args(
+            name,
+            &ty.args,
+            Type::opaque(name),
+            ty.span,
+            diagnostics,
+            source_path,
+        ),
         name if known_structs.contains(name) => resolve_named_type_without_args(
             name,
             &ty.args,
@@ -3533,6 +3665,8 @@ fn resolve_call_kind(
 ) -> CallKind {
     if signatures.contains_key(callee) {
         CallKind::Function
+    } else if is_stdlib_bridge_builtin(callee) {
+        CallKind::BuiltinStdlibBridge
     } else if callee == "len" {
         CallKind::BuiltinLen
     } else if callee == "print" {
@@ -3825,6 +3959,7 @@ fn call_return_type(
         CallKind::BuiltinHttpPost => {
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
         }
+        CallKind::BuiltinStdlibBridge => stdlib_bridge_return_type(callee),
         CallKind::Function => signatures
             .get(callee)
             .map(|signature| signature.return_type.clone())
@@ -4106,6 +4241,7 @@ fn type_supports_self_equality_inner(
             }
         }
         Type::CancelToken => false,
+        Type::Opaque(name) => matches!(name.as_str(), "Bytes" | "SocketAddr" | "NetDeadline"),
         Type::Struct(name) => {
             if !active_structs.insert(name.clone()) {
                 return true;
@@ -7523,6 +7659,661 @@ fn validate_select_operation(
     }
 }
 
+fn validate_stdlib_bridge_call(
+    callee: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    match callee {
+        "__gof_internal_bytes_from_string" => {
+            validate_single_string_argument_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_bytes_to_string" | "__gof_internal_bytes_len" => {
+            validate_single_builtin_opaque_argument_call(
+                callee,
+                "GOF3109",
+                "Bytes",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_bytes_slice" => {
+            validate_builtin_opaque_and_two_int_arguments_call(
+                callee,
+                "GOF3109",
+                "Bytes",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `Bytes.slice(start, end)` or `bytes_slice(data, start, end)`",
+            );
+        }
+        "__gof_internal_bytes_concat" => {
+            validate_two_builtin_opaque_arguments_call(
+                callee,
+                "GOF3109",
+                "Bytes",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `bytes_concat(left, right)`",
+            );
+        }
+        "__gof_internal_deadline_after" => {
+            validate_single_int_argument_call(
+                callee,
+                "GOF3112",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+            if args.len() == 1 {
+                validate_non_negative_duration_argument(
+                    callee,
+                    "GOF3112",
+                    &args[0],
+                    diagnostics,
+                    source_path,
+                );
+            }
+        }
+        "__gof_internal_deadline_at_unix_millis" => {
+            validate_single_int_argument_call(
+                callee,
+                "GOF3112",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_deadline_unix_millis" | "__gof_internal_deadline_remaining_millis" => {
+            validate_single_builtin_opaque_argument_call(
+                callee,
+                "GOF3112",
+                "NetDeadline",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_open_read_stream" | "__gof_internal_open_write_stream" => {
+            validate_single_string_argument_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_read_stream_read" | "__gof_internal_read_stream_read_exact" => {
+            validate_builtin_opaque_and_int_arguments_call(
+                callee,
+                "GOF3110",
+                "ReadStream",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `stream.read(max_bytes)` or `stream.read_exact(bytes)`",
+            );
+            if args.len() == 2 {
+                validate_non_negative_duration_argument(
+                    callee,
+                    "GOF3110",
+                    &args[1],
+                    diagnostics,
+                    source_path,
+                );
+            }
+        }
+        "__gof_internal_read_stream_read_all"
+        | "__gof_internal_read_stream_close"
+        | "__gof_internal_write_stream_flush"
+        | "__gof_internal_write_stream_close"
+        | "__gof_internal_duplex_stream_read_all"
+        | "__gof_internal_duplex_stream_close"
+        | "__gof_internal_duplex_stream_peer_addr"
+        | "__gof_internal_duplex_stream_local_addr"
+        | "__gof_internal_tcp_listener_accept"
+        | "__gof_internal_tcp_listener_close"
+        | "__gof_internal_tcp_listener_local_addr"
+        | "__gof_internal_socket_addr_text"
+        | "__gof_internal_socket_addr_port" => {
+            let receiver = match callee {
+                "__gof_internal_read_stream_read_all" | "__gof_internal_read_stream_close" => {
+                    "ReadStream"
+                }
+                "__gof_internal_write_stream_flush" | "__gof_internal_write_stream_close" => {
+                    "WriteStream"
+                }
+                "__gof_internal_duplex_stream_read_all"
+                | "__gof_internal_duplex_stream_close"
+                | "__gof_internal_duplex_stream_peer_addr"
+                | "__gof_internal_duplex_stream_local_addr" => "DuplexStream",
+                "__gof_internal_tcp_listener_accept"
+                | "__gof_internal_tcp_listener_close"
+                | "__gof_internal_tcp_listener_local_addr" => "TcpListener",
+                "__gof_internal_socket_addr_text" | "__gof_internal_socket_addr_port" => {
+                    "SocketAddr"
+                }
+                _ => unreachable!(),
+            };
+            validate_single_builtin_opaque_argument_call(
+                callee,
+                "GOF3110",
+                receiver,
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_read_stream_with_deadline" => {
+            validate_builtin_opaque_pair_call(
+                callee,
+                "GOF3110",
+                "ReadStream",
+                "NetDeadline",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `stream.with_deadline(deadline)`",
+            );
+        }
+        "__gof_internal_read_stream_with_cancel" => {
+            validate_builtin_opaque_and_cancel_arguments_call(
+                callee,
+                "GOF3110",
+                "ReadStream",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_write_stream_write" | "__gof_internal_write_stream_write_all" => {
+            validate_builtin_opaque_pair_call(
+                callee,
+                "GOF3110",
+                "WriteStream",
+                "Bytes",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `stream.write(bytes)` or `stream.write_all(bytes)`",
+            );
+        }
+        "__gof_internal_write_stream_with_deadline" => {
+            validate_builtin_opaque_pair_call(
+                callee,
+                "GOF3110",
+                "WriteStream",
+                "NetDeadline",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `stream.with_deadline(deadline)`",
+            );
+        }
+        "__gof_internal_write_stream_with_cancel" => {
+            validate_builtin_opaque_and_cancel_arguments_call(
+                callee,
+                "GOF3110",
+                "WriteStream",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_connect_tcp" | "__gof_internal_listen_tcp" => {
+            validate_single_string_argument_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_connect_tcp_with_control" => {
+            if args.len() != 3 {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3005",
+                        format!("wrong number of arguments for `{callee}`"),
+                        format!("expected 3 arguments, got {}", args.len()),
+                        span,
+                    )
+                    .with_fix_it("call `connect_tcp_with_control(address, deadline, cancel_token)`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return;
+            }
+            if !matches!(args[0].ty, Type::String | Type::Unknown) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3111",
+                        "`connect_tcp_with_control` requires a string address as its first argument",
+                        format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                        args[0].span,
+                    )
+                    .with_fix_it("pass a string address like `\"127.0.0.1:9000\"`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            if !is_opaque_type_or_unknown(&args[1].ty, "NetDeadline") {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3111",
+                        "`connect_tcp_with_control` requires a `NetDeadline` as its second argument",
+                        format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                        args[1].span,
+                    )
+                    .with_fix_it("create a deadline with `deadline_after(...)` or `deadline_at_unix_millis(...)`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            if !matches!(args[2].ty, Type::CancelToken | Type::Unknown) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3111",
+                        "`connect_tcp_with_control` requires a cancellation token as its third argument",
+                        format!("this argument resolves to `{}`", args[2].ty.display_name()),
+                        args[2].span,
+                    )
+                    .with_fix_it("pass a value created by `cancel_token()` or `timeout_token(...)`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+        }
+        "__gof_internal_duplex_stream_read" | "__gof_internal_duplex_stream_read_exact" => {
+            validate_builtin_opaque_and_int_arguments_call(
+                callee,
+                "GOF3111",
+                "DuplexStream",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `stream.read(max_bytes)` or `stream.read_exact(bytes)`",
+            );
+            if args.len() == 2 {
+                validate_non_negative_duration_argument(
+                    callee,
+                    "GOF3111",
+                    &args[1],
+                    diagnostics,
+                    source_path,
+                );
+            }
+        }
+        "__gof_internal_duplex_stream_write" | "__gof_internal_duplex_stream_write_all" => {
+            validate_builtin_opaque_pair_call(
+                callee,
+                "GOF3111",
+                "DuplexStream",
+                "Bytes",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `stream.write(bytes)` or `stream.write_all(bytes)`",
+            );
+        }
+        "__gof_internal_duplex_stream_flush" => {
+            validate_single_builtin_opaque_argument_call(
+                callee,
+                "GOF3111",
+                "DuplexStream",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_duplex_stream_with_deadline" => {
+            validate_builtin_opaque_pair_call(
+                callee,
+                "GOF3111",
+                "DuplexStream",
+                "NetDeadline",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `stream.with_deadline(deadline)`",
+            );
+        }
+        "__gof_internal_duplex_stream_with_cancel" => {
+            validate_builtin_opaque_and_cancel_arguments_call(
+                callee,
+                "GOF3111",
+                "DuplexStream",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_tcp_listener_with_deadline" => {
+            validate_builtin_opaque_pair_call(
+                callee,
+                "GOF3111",
+                "TcpListener",
+                "NetDeadline",
+                args,
+                span,
+                diagnostics,
+                source_path,
+                "call `listener.with_deadline(deadline)`",
+            );
+        }
+        "__gof_internal_tcp_listener_with_cancel" => {
+            validate_builtin_opaque_and_cancel_arguments_call(
+                callee,
+                "GOF3111",
+                "TcpListener",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        _ => diagnostics.push(
+            Diagnostic::error(
+                "GOF3109",
+                format!("unknown internal stdlib bridge `{callee}`"),
+                "the shipped stdlib called an unsupported internal bridge builtin",
+                span,
+            )
+            .with_fix_it(
+                "update the shipped stdlib wrapper or add the corresponding bridge implementation",
+            )
+            .with_source_path(source_path.to_path_buf()),
+        ),
+    }
+}
+
+fn validate_single_builtin_opaque_argument_call(
+    name: &str,
+    code: &'static str,
+    expected: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(value)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(expected, &args[0], code, name, diagnostics, source_path);
+}
+
+fn validate_two_builtin_opaque_arguments_call(
+    name: &str,
+    code: &'static str,
+    expected: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+    fix_it: &str,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(fix_it)
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(expected, &args[0], code, name, diagnostics, source_path);
+    validate_builtin_opaque_argument(expected, &args[1], code, name, diagnostics, source_path);
+}
+
+fn validate_builtin_opaque_pair_call(
+    name: &str,
+    code: &'static str,
+    left: &str,
+    right: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+    fix_it: &str,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(fix_it)
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(left, &args[0], code, name, diagnostics, source_path);
+    validate_builtin_opaque_argument(right, &args[1], code, name, diagnostics, source_path);
+}
+
+fn validate_builtin_opaque_and_cancel_arguments_call(
+    name: &str,
+    code: &'static str,
+    receiver: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(value, token)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(receiver, &args[0], code, name, diagnostics, source_path);
+    if !matches!(args[1].ty, Type::CancelToken | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                code,
+                format!("`{name}` requires a cancellation token as its second argument"),
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a value created by `cancel_token()` or `timeout_token(...)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_builtin_opaque_and_int_arguments_call(
+    name: &str,
+    code: &'static str,
+    receiver: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+    fix_it: &str,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(fix_it)
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(receiver, &args[0], code, name, diagnostics, source_path);
+    if !matches!(args[1].ty, Type::Int | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                code,
+                format!("`{name}` requires an integer size argument"),
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a non-negative integer size")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_builtin_opaque_and_two_int_arguments_call(
+    name: &str,
+    code: &'static str,
+    receiver: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+    fix_it: &str,
+) {
+    if args.len() != 3 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(fix_it)
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(receiver, &args[0], code, name, diagnostics, source_path);
+    for arg in &args[1..] {
+        if !matches!(arg.ty, Type::Int | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    code,
+                    format!("`{name}` requires integer slice bounds"),
+                    format!("this argument resolves to `{}`", arg.ty.display_name()),
+                    arg.span,
+                )
+                .with_fix_it("pass integer slice bounds")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+}
+
+fn validate_builtin_opaque_argument(
+    expected: &str,
+    arg: &TypedExpr,
+    code: &'static str,
+    name: &str,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if !is_opaque_type_or_unknown(&arg.ty, expected) {
+        diagnostics.push(
+            Diagnostic::error(
+                code,
+                format!("`{name}` requires `{expected}`"),
+                format!("this argument resolves to `{}`", arg.ty.display_name()),
+                arg.span,
+            )
+            .with_fix_it(format!("pass a `{expected}` value"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn stdlib_bridge_return_type(callee: &str) -> Type {
+    match callee {
+        "__gof_internal_bytes_from_string" => Type::opaque("Bytes"),
+        "__gof_internal_bytes_to_string" => runtime_result(Type::String),
+        "__gof_internal_bytes_len" => Type::Int,
+        "__gof_internal_bytes_slice" => runtime_result(Type::opaque("Bytes")),
+        "__gof_internal_bytes_concat" => Type::opaque("Bytes"),
+        "__gof_internal_deadline_after" | "__gof_internal_deadline_at_unix_millis" => {
+            runtime_result(Type::opaque("NetDeadline"))
+        }
+        "__gof_internal_deadline_unix_millis" | "__gof_internal_deadline_remaining_millis" => {
+            Type::Int
+        }
+        "__gof_internal_open_read_stream" => runtime_result(Type::opaque("ReadStream")),
+        "__gof_internal_open_write_stream" => runtime_result(Type::opaque("WriteStream")),
+        "__gof_internal_read_stream_read"
+        | "__gof_internal_read_stream_read_exact"
+        | "__gof_internal_read_stream_read_all" => runtime_result(Type::opaque("Bytes")),
+        "__gof_internal_read_stream_close" => runtime_result(Type::Unit),
+        "__gof_internal_read_stream_with_deadline" | "__gof_internal_read_stream_with_cancel" => {
+            Type::opaque("ReadStream")
+        }
+        "__gof_internal_write_stream_write" => runtime_result(Type::Int),
+        "__gof_internal_write_stream_write_all"
+        | "__gof_internal_write_stream_flush"
+        | "__gof_internal_write_stream_close" => runtime_result(Type::Unit),
+        "__gof_internal_write_stream_with_deadline" | "__gof_internal_write_stream_with_cancel" => {
+            Type::opaque("WriteStream")
+        }
+        "__gof_internal_connect_tcp" | "__gof_internal_connect_tcp_with_control" => {
+            runtime_result(Type::opaque("DuplexStream"))
+        }
+        "__gof_internal_listen_tcp" => runtime_result(Type::opaque("TcpListener")),
+        "__gof_internal_duplex_stream_read"
+        | "__gof_internal_duplex_stream_read_exact"
+        | "__gof_internal_duplex_stream_read_all" => runtime_result(Type::opaque("Bytes")),
+        "__gof_internal_duplex_stream_write" => runtime_result(Type::Int),
+        "__gof_internal_duplex_stream_write_all"
+        | "__gof_internal_duplex_stream_flush"
+        | "__gof_internal_duplex_stream_close" => runtime_result(Type::Unit),
+        "__gof_internal_duplex_stream_with_deadline"
+        | "__gof_internal_duplex_stream_with_cancel" => Type::opaque("DuplexStream"),
+        "__gof_internal_duplex_stream_peer_addr" | "__gof_internal_duplex_stream_local_addr" => {
+            runtime_result(Type::opaque("SocketAddr"))
+        }
+        "__gof_internal_tcp_listener_accept" => runtime_result(Type::opaque("DuplexStream")),
+        "__gof_internal_tcp_listener_close" => runtime_result(Type::Unit),
+        "__gof_internal_tcp_listener_with_deadline" | "__gof_internal_tcp_listener_with_cancel" => {
+            Type::opaque("TcpListener")
+        }
+        "__gof_internal_tcp_listener_local_addr" => runtime_result(Type::opaque("SocketAddr")),
+        "__gof_internal_socket_addr_text" => Type::String,
+        "__gof_internal_socket_addr_port" => Type::Int,
+        _ => Type::Unknown,
+    }
+}
+
 fn is_printable_type(ty: &Type) -> bool {
     match ty {
         Type::Int
@@ -7532,9 +8323,10 @@ fn is_printable_type(ty: &Type) -> bool {
         | Type::Struct(_)
         | Type::Enum(_)
         | Type::Unknown => true,
+        Type::Opaque(_) => false,
         Type::List(inner) | Type::Dict(inner) => !matches!(
             inner.as_ref(),
-            Type::Task(_) | Type::Unit | Type::Channel(_) | Type::CancelToken
+            Type::Task(_) | Type::Unit | Type::Channel(_) | Type::CancelToken | Type::Opaque(_)
         ),
         Type::Result(ok, err) => is_printable_type(ok) && is_printable_type(err),
         Type::Channel(_) | Type::Task(_) | Type::CancelToken | Type::Unit => false,

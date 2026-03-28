@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.8
+
+- Added syntax coverage for shipped `bytes`, `io`, `time`, and `net` stdlib foundation names
+- Added snippet coverage for `Bytes`, deadline-aware stream roundtrips, and explicit TCP loopback workflows
+- Kept the editor surface aligned with the new shipped stdlib bytes/stream/deadline/TCP baseline
+
 ## 0.2.7
 
 - Added builtin syntax coverage for `http_request(...)`

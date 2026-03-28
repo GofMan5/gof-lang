@@ -1,1 +1,62 @@
+fn connect_tcp(address: string) -> Result[DuplexStream, RuntimeError]:
+    return __gof_internal_connect_tcp(address)
 
+fn connect_tcp_with_control(address: string, deadline: NetDeadline, token: cancel_token) -> Result[DuplexStream, RuntimeError]:
+    return __gof_internal_connect_tcp_with_control(address, deadline, token)
+
+fn listen_tcp(address: string) -> Result[TcpListener, RuntimeError]:
+    return __gof_internal_listen_tcp(address)
+
+fn DuplexStream.read(self: DuplexStream, max_bytes: int) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_duplex_stream_read(self, max_bytes)
+
+fn DuplexStream.read_exact(self: DuplexStream, byte_count: int) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_duplex_stream_read_exact(self, byte_count)
+
+fn DuplexStream.read_all(self: DuplexStream) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_duplex_stream_read_all(self)
+
+fn DuplexStream.write(self: DuplexStream, bytes: Bytes) -> Result[int, RuntimeError]:
+    return __gof_internal_duplex_stream_write(self, bytes)
+
+fn DuplexStream.write_all(self: DuplexStream, bytes: Bytes) -> Result[unit, RuntimeError]:
+    return __gof_internal_duplex_stream_write_all(self, bytes)
+
+fn DuplexStream.flush(self: DuplexStream) -> Result[unit, RuntimeError]:
+    return __gof_internal_duplex_stream_flush(self)
+
+fn DuplexStream.close(self: DuplexStream) -> Result[unit, RuntimeError]:
+    return __gof_internal_duplex_stream_close(self)
+
+fn DuplexStream.with_deadline(self: DuplexStream, deadline: NetDeadline) -> DuplexStream:
+    return __gof_internal_duplex_stream_with_deadline(self, deadline)
+
+fn DuplexStream.with_cancel(self: DuplexStream, token: cancel_token) -> DuplexStream:
+    return __gof_internal_duplex_stream_with_cancel(self, token)
+
+fn DuplexStream.peer_addr(self: DuplexStream) -> Result[SocketAddr, RuntimeError]:
+    return __gof_internal_duplex_stream_peer_addr(self)
+
+fn DuplexStream.local_addr(self: DuplexStream) -> Result[SocketAddr, RuntimeError]:
+    return __gof_internal_duplex_stream_local_addr(self)
+
+fn TcpListener.accept(self: TcpListener) -> Result[DuplexStream, RuntimeError]:
+    return __gof_internal_tcp_listener_accept(self)
+
+fn TcpListener.close(self: TcpListener) -> Result[unit, RuntimeError]:
+    return __gof_internal_tcp_listener_close(self)
+
+fn TcpListener.with_deadline(self: TcpListener, deadline: NetDeadline) -> TcpListener:
+    return __gof_internal_tcp_listener_with_deadline(self, deadline)
+
+fn TcpListener.with_cancel(self: TcpListener, token: cancel_token) -> TcpListener:
+    return __gof_internal_tcp_listener_with_cancel(self, token)
+
+fn TcpListener.local_addr(self: TcpListener) -> Result[SocketAddr, RuntimeError]:
+    return __gof_internal_tcp_listener_local_addr(self)
+
+fn SocketAddr.text(self: SocketAddr) -> string:
+    return __gof_internal_socket_addr_text(self)
+
+fn SocketAddr.port(self: SocketAddr) -> int:
+    return __gof_internal_socket_addr_port(self)

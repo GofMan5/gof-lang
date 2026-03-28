@@ -1,5 +1,9 @@
 module sample
 import worker
+import bytes
+import io
+import time
+import net
 
 enum JobState:
     Ready
@@ -68,3 +72,19 @@ fn sample_http_request() -> Result[int, RuntimeError]:
     report = http_request("GET", "https://example.invalid/health", "", headers, 1500)?
     status = json_int(json_get(report, "status")?)?
     return Result.Ok(status)
+
+fn sample_bytes_stream_net(path: string) -> Result[int, RuntimeError]:
+    deadline: NetDeadline = deadline_after(1000)?
+    payload: Bytes = bytes_from_string("hello")
+    mut writer: WriteStream = open_write_stream(path)?
+    writer = writer.with_deadline(deadline)
+    writer.write_all(payload)?
+    writer.flush()?
+    writer.close()?
+    mut reader: ReadStream = open_read_stream(path)?
+    reader = reader.with_deadline(deadline)
+    copy = reader.read_all()?
+    listener: TcpListener = listen_tcp("127.0.0.1:0")?
+    address: SocketAddr = listener.local_addr()?
+    client: DuplexStream = connect_tcp(address.text())?
+    return Result.Ok(bytes_len(copy) + address.port())

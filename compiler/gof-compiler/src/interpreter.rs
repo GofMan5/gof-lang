@@ -13,7 +13,11 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::fs;
-use std::io::Read;
+use std::io::{ErrorKind, Read, Write};
+use std::net::{
+    Shutdown, SocketAddr as StdSocketAddr, TcpListener as StdTcpListener,
+    TcpStream as StdTcpStream, ToSocketAddrs,
+};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -31,6 +35,8 @@ thread_local! {
     static NEXT_SELECT_ARM_START: Cell<usize> = const { Cell::new(0) };
 }
 
+const STDLIB_BRIDGE_PREFIX: &str = "__gof_internal_";
+
 fn reset_select_arm_rotation() {
     NEXT_SELECT_ARM_START.with(|counter| counter.set(0));
 }
@@ -41,6 +47,10 @@ fn next_select_arm_start(arm_count: usize) -> usize {
         counter.set(current.wrapping_add(1));
         current % arm_count
     })
+}
+
+fn is_stdlib_bridge_builtin(name: &str) -> bool {
+    name.starts_with(STDLIB_BRIDGE_PREFIX)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +65,7 @@ pub enum Value {
     String(String),
     Bool(bool),
     Json(JsonValue),
+    Opaque(OpaqueValue),
     Struct(StructValue),
     Enum(EnumValue),
     List(Vec<Value>),
@@ -72,6 +83,7 @@ impl Debug for Value {
             Self::String(value) => f.debug_tuple("String").field(value).finish(),
             Self::Bool(value) => f.debug_tuple("Bool").field(value).finish(),
             Self::Json(value) => f.debug_tuple("Json").field(value).finish(),
+            Self::Opaque(value) => f.debug_tuple("Opaque").field(value).finish(),
             Self::Struct(value) => f.debug_tuple("Struct").field(value).finish(),
             Self::Enum(value) => f.debug_tuple("Enum").field(value).finish(),
             Self::List(values) => f.debug_tuple("List").field(values).finish(),
@@ -91,6 +103,7 @@ impl PartialEq for Value {
             (Self::String(lhs), Self::String(rhs)) => lhs == rhs,
             (Self::Bool(lhs), Self::Bool(rhs)) => lhs == rhs,
             (Self::Json(lhs), Self::Json(rhs)) => lhs == rhs,
+            (Self::Opaque(lhs), Self::Opaque(rhs)) => lhs == rhs,
             (Self::Struct(lhs), Self::Struct(rhs)) => lhs == rhs,
             (Self::Enum(lhs), Self::Enum(rhs)) => lhs == rhs,
             (Self::List(lhs), Self::List(rhs)) => lhs == rhs,
@@ -113,6 +126,7 @@ impl Value {
             Self::String(value) => Some(value.clone()),
             Self::Bool(value) => Some(value.to_string()),
             Self::Json(value) => Some(value.cli_text()),
+            Self::Opaque(value) => Some(value.cli_text()),
             Self::Struct(value) => Some(value.cli_text()),
             Self::Enum(value) => Some(value.cli_text()),
             Self::List(values) => Some(format!(
@@ -133,8 +147,247 @@ impl Value {
 
     fn printable_text(&self) -> Option<String> {
         match self {
-            Self::Channel(_) | Self::CancelToken(_) | Self::Task(_) | Self::Unit => None,
+            Self::Opaque(_)
+            | Self::Channel(_)
+            | Self::CancelToken(_)
+            | Self::Task(_)
+            | Self::Unit => None,
             _ => self.cli_text(),
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct BytesValue(Arc<[u8]>);
+
+impl BytesValue {
+    fn from_vec(bytes: Vec<u8>) -> Self {
+        Self(Arc::<[u8]>::from(bytes))
+    }
+
+    fn from_string(text: &str) -> Self {
+        Self::from_vec(text.as_bytes().to_vec())
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn slice(&self, start: i64, end: i64) -> Result<Self, String> {
+        if start < 0 || end < 0 {
+            return Err("bytes slice indices must be non-negative".to_string());
+        }
+        if start > end {
+            return Err("bytes slice start must be less than or equal to end".to_string());
+        }
+        let start = start as usize;
+        let end = end as usize;
+        if end > self.len() {
+            return Err(format!(
+                "bytes slice end {} is out of range for length {}",
+                end,
+                self.len()
+            ));
+        }
+        Ok(Self::from_vec(self.as_slice()[start..end].to_vec()))
+    }
+
+    fn concat(&self, other: &Self) -> Self {
+        let mut combined = Vec::with_capacity(self.len() + other.len());
+        combined.extend_from_slice(self.as_slice());
+        combined.extend_from_slice(other.as_slice());
+        Self::from_vec(combined)
+    }
+
+    fn decode_utf8(&self) -> Result<String, std::string::FromUtf8Error> {
+        String::from_utf8(self.as_slice().to_vec())
+    }
+}
+
+impl Debug for BytesValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BytesValue")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NetDeadlineValue {
+    unix_millis: i64,
+}
+
+impl NetDeadlineValue {
+    fn from_unix_millis(unix_millis: i64) -> Self {
+        Self { unix_millis }
+    }
+
+    fn unix_millis(&self) -> i64 {
+        self.unix_millis
+    }
+
+    fn remaining_millis(&self) -> i64 {
+        current_unix_millis().map_or(0, |now| (self.unix_millis - now).max(0))
+    }
+
+    fn checked_after(millis: i64) -> Result<Self, String> {
+        let now = current_unix_millis()?;
+        now.checked_add(millis)
+            .map(Self::from_unix_millis)
+            .ok_or_else(|| "deadline exceeds bootstrap int range".to_string())
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct StreamControl {
+    deadline: Option<NetDeadlineValue>,
+    cancel: Option<CancelTokenValue>,
+}
+
+impl StreamControl {
+    fn with_deadline(&self, deadline: NetDeadlineValue) -> Self {
+        let mut next = self.clone();
+        next.deadline = Some(deadline);
+        next
+    }
+
+    fn with_cancel(&self, cancel: CancelTokenValue) -> Self {
+        let mut next = self.clone();
+        next.cancel = Some(cancel);
+        next
+    }
+}
+
+#[derive(Clone)]
+pub struct ReadStreamValue {
+    file: Arc<Mutex<Option<fs::File>>>,
+    control: StreamControl,
+}
+
+impl Debug for ReadStreamValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ReadStreamValue(<file>)")
+    }
+}
+
+impl PartialEq for ReadStreamValue {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.file, &other.file)
+    }
+}
+
+impl Eq for ReadStreamValue {}
+
+#[derive(Clone)]
+pub struct WriteStreamValue {
+    file: Arc<Mutex<Option<fs::File>>>,
+    control: StreamControl,
+}
+
+impl Debug for WriteStreamValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WriteStreamValue(<file>)")
+    }
+}
+
+impl PartialEq for WriteStreamValue {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.file, &other.file)
+    }
+}
+
+impl Eq for WriteStreamValue {}
+
+#[derive(Clone)]
+pub struct DuplexStreamValue {
+    stream: Arc<Mutex<Option<StdTcpStream>>>,
+    control: StreamControl,
+}
+
+impl Debug for DuplexStreamValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DuplexStreamValue(<tcp>)")
+    }
+}
+
+impl PartialEq for DuplexStreamValue {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.stream, &other.stream)
+    }
+}
+
+impl Eq for DuplexStreamValue {}
+
+#[derive(Clone)]
+pub struct TcpListenerValue {
+    listener: Arc<Mutex<Option<StdTcpListener>>>,
+    control: StreamControl,
+}
+
+impl Debug for TcpListenerValue {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TcpListenerValue(<tcp-listener>)")
+    }
+}
+
+impl PartialEq for TcpListenerValue {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.listener, &other.listener)
+    }
+}
+
+impl Eq for TcpListenerValue {}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SocketAddrValue(StdSocketAddr);
+
+impl SocketAddrValue {
+    fn text(&self) -> String {
+        self.0.to_string()
+    }
+
+    fn port(&self) -> i64 {
+        i64::from(self.0.port())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpaqueValue {
+    Bytes(BytesValue),
+    ReadStream(ReadStreamValue),
+    WriteStream(WriteStreamValue),
+    DuplexStream(DuplexStreamValue),
+    TcpListener(TcpListenerValue),
+    SocketAddr(SocketAddrValue),
+    NetDeadline(NetDeadlineValue),
+}
+
+impl OpaqueValue {
+    fn receiver_name(&self) -> &'static str {
+        match self {
+            Self::Bytes(_) => "Bytes",
+            Self::ReadStream(_) => "ReadStream",
+            Self::WriteStream(_) => "WriteStream",
+            Self::DuplexStream(_) => "DuplexStream",
+            Self::TcpListener(_) => "TcpListener",
+            Self::SocketAddr(_) => "SocketAddr",
+            Self::NetDeadline(_) => "NetDeadline",
+        }
+    }
+
+    fn cli_text(&self) -> String {
+        match self {
+            Self::Bytes(value) => format!("<bytes:{}>", value.len()),
+            Self::ReadStream(_) => "<read_stream>".to_string(),
+            Self::WriteStream(_) => "<write_stream>".to_string(),
+            Self::DuplexStream(_) => "<duplex_stream>".to_string(),
+            Self::TcpListener(_) => "<tcp_listener>".to_string(),
+            Self::SocketAddr(value) => value.text(),
+            Self::NetDeadline(value) => format!("<net_deadline:{}>", value.unix_millis()),
         }
     }
 }
@@ -470,6 +723,115 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                         },
                         span: Span::new(0, 0, 0),
                     }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "Utf8".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetDns".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetConnect".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetTimeout".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetTls".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetProxy".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetProtocol".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetReset".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "NetClosed".to_string(),
+                    fields: Vec::new(),
                     span: Span::new(0, 0, 0),
                 },
                 EnumVariant {
@@ -1226,6 +1588,58 @@ fn runtime_time_error(message: impl Into<String>) -> Value {
     )
 }
 
+fn runtime_utf8_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Utf8",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_net_dns_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "NetDns",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_net_connect_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "NetConnect",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_net_timeout_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "NetTimeout",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_net_protocol_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "NetProtocol",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_net_reset_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "NetReset",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_net_closed_error() -> Value {
+    enum_value("RuntimeError", "NetClosed", Vec::new())
+}
+
 fn runtime_env_missing_error(name: &str) -> Value {
     enum_value(
         "RuntimeError",
@@ -1377,6 +1791,10 @@ fn unix_millis_from_duration_since_epoch(duration: Duration) -> Result<i64, Stri
 fn unix_millis_from_system_time(now: SystemTime) -> Result<i64, String> {
     let duration = unix_duration_since_epoch(now)?;
     unix_millis_from_duration_since_epoch(duration)
+}
+
+fn current_unix_millis() -> Result<i64, String> {
+    unix_millis_from_system_time(SystemTime::now())
 }
 
 fn task_failure_message(diagnostics: &Diagnostics) -> String {
@@ -2325,6 +2743,21 @@ fn eval_expr(
                 return Ok(eval_function(
                     &function, &values, functions, methods, structs, enums, output,
                 )?);
+            }
+
+            if is_stdlib_bridge_builtin(callee) {
+                return eval_stdlib_bridge_builtin(
+                    callee,
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
             }
 
             if callee == "len" {
@@ -3359,30 +3792,31 @@ fn eval_expr(
 
             let receiver =
                 eval_expr(target, scopes, functions, methods, structs, enums, output, source_path)?;
-            let struct_name = match &receiver {
+            let receiver_name = match &receiver {
                 Value::Struct(value) => value.name.clone(),
+                Value::Opaque(value) => value.receiver_name().to_string(),
                 other => {
                     return Err(Diagnostics(vec![
                         Diagnostic::error(
                             "GOF3037",
-                            format!("method call `{method}` requires a struct receiver"),
+                            format!("method call `{method}` requires a method-capable receiver"),
                             format!("this target resolves to `{}`", value_name(other)),
                             target.span(),
                         )
-                        .with_fix_it("call methods only on struct values")
+                        .with_fix_it("call methods only on struct or shipped opaque runtime values")
                         .with_source_path(source_path.to_path_buf()),
                     ])
                     .into());
                 }
             };
             let function = methods
-                .get(&(struct_name.clone(), method.clone()))
+                .get(&(receiver_name.clone(), method.clone()))
                 .cloned()
                 .ok_or_else(|| {
                     Diagnostics(vec![
                         Diagnostic::error(
                             "GOF3036",
-                            format!("unknown method `{method}` on `{struct_name}`"),
+                            format!("unknown method `{method}` on `{receiver_name}`"),
                             "method calls currently resolve only to receiver methods declared as `fn TypeName.method(...)`",
                             *span,
                         )
@@ -4051,6 +4485,8 @@ fn eval_binary(
         (Value::Bool(lhs), BinaryOp::Ne, Value::Bool(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Json(lhs), BinaryOp::Eq, Value::Json(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Json(lhs), BinaryOp::Ne, Value::Json(rhs)) => Ok(Value::Bool(lhs != rhs)),
+        (Value::Opaque(lhs), BinaryOp::Eq, Value::Opaque(rhs)) => Ok(Value::Bool(lhs == rhs)),
+        (Value::Opaque(lhs), BinaryOp::Ne, Value::Opaque(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Struct(lhs), BinaryOp::Eq, Value::Struct(rhs)) => Ok(Value::Bool(lhs == rhs)),
         (Value::Struct(lhs), BinaryOp::Ne, Value::Struct(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Enum(lhs), BinaryOp::Eq, Value::Enum(rhs)) => Ok(Value::Bool(lhs == rhs)),
@@ -7664,6 +8100,2053 @@ fn eval_cancel_token_argument(
     Ok(token)
 }
 
+fn eval_opaque_argument(
+    builtin_name: &str,
+    expected: &'static str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<OpaqueValue> {
+    let value = eval_expr(
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::Opaque(opaque) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                diagnostic_code,
+                format!("`{builtin_name}` requires `{expected}`"),
+                format!("this argument resolves to `{}`", value_name(&value)),
+                expr.span(),
+            )
+            .with_fix_it(format!("pass a `{expected}` value"))
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    if opaque.receiver_name() != expected {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                diagnostic_code,
+                format!("`{builtin_name}` requires `{expected}`"),
+                format!("this argument resolves to `{}`", opaque.receiver_name()),
+                expr.span(),
+            )
+            .with_fix_it(format!("pass a `{expected}` value"))
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+    Ok(opaque)
+}
+
+fn eval_bytes_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<BytesValue> {
+    match eval_opaque_argument(
+        builtin_name,
+        "Bytes",
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        diagnostic_code,
+    )? {
+        OpaqueValue::Bytes(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn eval_read_stream_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<ReadStreamValue> {
+    match eval_opaque_argument(
+        builtin_name,
+        "ReadStream",
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        diagnostic_code,
+    )? {
+        OpaqueValue::ReadStream(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn eval_write_stream_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<WriteStreamValue> {
+    match eval_opaque_argument(
+        builtin_name,
+        "WriteStream",
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        diagnostic_code,
+    )? {
+        OpaqueValue::WriteStream(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn eval_duplex_stream_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<DuplexStreamValue> {
+    match eval_opaque_argument(
+        builtin_name,
+        "DuplexStream",
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        diagnostic_code,
+    )? {
+        OpaqueValue::DuplexStream(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn eval_tcp_listener_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<TcpListenerValue> {
+    match eval_opaque_argument(
+        builtin_name,
+        "TcpListener",
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        diagnostic_code,
+    )? {
+        OpaqueValue::TcpListener(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn eval_socket_addr_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<SocketAddrValue> {
+    match eval_opaque_argument(
+        builtin_name,
+        "SocketAddr",
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        diagnostic_code,
+    )? {
+        OpaqueValue::SocketAddr(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn eval_deadline_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<NetDeadlineValue> {
+    match eval_opaque_argument(
+        builtin_name,
+        "NetDeadline",
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        diagnostic_code,
+    )? {
+        OpaqueValue::NetDeadline(value) => Ok(value),
+        _ => unreachable!(),
+    }
+}
+
+fn deadline_remaining_duration(deadline: &NetDeadlineValue) -> Result<Duration, Value> {
+    let remaining = deadline.remaining_millis();
+    if remaining == 0 {
+        return Err(runtime_net_timeout_error(
+            "network deadline expired".to_string(),
+        ));
+    }
+    Ok(Duration::from_millis(remaining as u64))
+}
+
+fn control_wait_slice(control: &StreamControl) -> Result<Option<Duration>, Value> {
+    if control
+        .cancel
+        .as_ref()
+        .is_some_and(CancelTokenValue::is_cancelled)
+    {
+        return Err(runtime_cancelled_error());
+    }
+
+    let mut slice: Option<Duration> = control.cancel.as_ref().map(|_| Duration::from_millis(25));
+    if let Some(deadline) = &control.deadline {
+        let remaining = deadline_remaining_duration(deadline)?;
+        slice = Some(slice.map_or(remaining, |current| current.min(remaining)));
+    }
+    Ok(slice)
+}
+
+fn control_poll_slice(control: &StreamControl) -> Result<Duration, Value> {
+    if control
+        .cancel
+        .as_ref()
+        .is_some_and(CancelTokenValue::is_cancelled)
+    {
+        return Err(runtime_cancelled_error());
+    }
+
+    let mut slice = Duration::from_millis(25);
+    if let Some(deadline) = &control.deadline {
+        let remaining = deadline_remaining_duration(deadline)?;
+        slice = slice.min(remaining);
+    }
+    Ok(slice)
+}
+
+fn control_preflight(control: &StreamControl) -> Result<(), Value> {
+    let _ = control_wait_slice(control)?;
+    Ok(())
+}
+
+fn lock_file_handle(
+    file: &Arc<Mutex<Option<fs::File>>>,
+) -> Result<std::sync::MutexGuard<'_, Option<fs::File>>, Value> {
+    file.lock()
+        .map_err(|_| runtime_io_error("file stream mutex is poisoned"))
+}
+
+fn lock_tcp_stream(
+    stream: &Arc<Mutex<Option<StdTcpStream>>>,
+) -> Result<std::sync::MutexGuard<'_, Option<StdTcpStream>>, Value> {
+    stream
+        .lock()
+        .map_err(|_| runtime_net_protocol_error("tcp stream mutex is poisoned"))
+}
+
+fn lock_tcp_listener(
+    listener: &Arc<Mutex<Option<StdTcpListener>>>,
+) -> Result<std::sync::MutexGuard<'_, Option<StdTcpListener>>, Value> {
+    listener
+        .lock()
+        .map_err(|_| runtime_net_protocol_error("tcp listener mutex is poisoned"))
+}
+
+fn map_tcp_resolve_error(error: std::io::Error) -> Value {
+    runtime_net_dns_error(error.to_string())
+}
+
+fn map_tcp_connect_error(error: std::io::Error) -> Value {
+    match error.kind() {
+        ErrorKind::TimedOut => runtime_net_timeout_error(error.to_string()),
+        ErrorKind::ConnectionRefused
+        | ErrorKind::ConnectionAborted
+        | ErrorKind::NotFound
+        | ErrorKind::AddrInUse
+        | ErrorKind::AddrNotAvailable
+        | ErrorKind::NetworkUnreachable
+        | ErrorKind::HostUnreachable => runtime_net_connect_error(error.to_string()),
+        ErrorKind::InvalidInput | ErrorKind::InvalidData => {
+            runtime_net_protocol_error(error.to_string())
+        }
+        _ => runtime_net_connect_error(error.to_string()),
+    }
+}
+
+fn map_tcp_stream_error(error: std::io::Error) -> Value {
+    match error.kind() {
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => runtime_net_timeout_error(error.to_string()),
+        ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => {
+            runtime_net_reset_error(error.to_string())
+        }
+        ErrorKind::BrokenPipe | ErrorKind::NotConnected | ErrorKind::UnexpectedEof => {
+            runtime_net_closed_error()
+        }
+        ErrorKind::InvalidData | ErrorKind::InvalidInput => {
+            runtime_net_protocol_error(error.to_string())
+        }
+        _ => runtime_net_protocol_error(error.to_string()),
+    }
+}
+
+fn map_listener_error(error: std::io::Error) -> Value {
+    match error.kind() {
+        ErrorKind::TimedOut | ErrorKind::WouldBlock => runtime_net_timeout_error(error.to_string()),
+        ErrorKind::ConnectionReset | ErrorKind::ConnectionAborted => {
+            runtime_net_reset_error(error.to_string())
+        }
+        _ => runtime_net_connect_error(error.to_string()),
+    }
+}
+
+fn result_ok_opaque(opaque: OpaqueValue) -> Value {
+    result_ok(Value::Opaque(opaque))
+}
+
+fn apply_tcp_stream_timeout(
+    stream: &StdTcpStream,
+    control: &StreamControl,
+    read_timeout: bool,
+) -> Result<(), Value> {
+    let slice = control_wait_slice(control)?;
+    let outcome = if read_timeout {
+        stream.set_read_timeout(slice)
+    } else {
+        stream.set_write_timeout(slice)
+    };
+    outcome.map_err(|error| map_tcp_stream_error(error))
+}
+
+fn read_stream_read_value(stream: &ReadStreamValue, max_bytes: i64) -> Value {
+    if max_bytes < 0 {
+        return result_err(runtime_net_protocol_error(
+            "stream read size must be non-negative".to_string(),
+        ));
+    }
+    if let Err(error) = control_preflight(&stream.control) {
+        return result_err(error);
+    }
+    let mut guard = match lock_file_handle(&stream.file) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(file) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    let mut buffer = vec![0_u8; max_bytes as usize];
+    match file.read(&mut buffer) {
+        Ok(read) => {
+            buffer.truncate(read);
+            result_ok_opaque(OpaqueValue::Bytes(BytesValue::from_vec(buffer)))
+        }
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn read_stream_read_exact_value(stream: &ReadStreamValue, byte_count: i64) -> Value {
+    if byte_count < 0 {
+        return result_err(runtime_net_protocol_error(
+            "stream read size must be non-negative".to_string(),
+        ));
+    }
+    if let Err(error) = control_preflight(&stream.control) {
+        return result_err(error);
+    }
+    let mut guard = match lock_file_handle(&stream.file) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(file) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    let mut buffer = vec![0_u8; byte_count as usize];
+    match file.read_exact(&mut buffer) {
+        Ok(()) => result_ok_opaque(OpaqueValue::Bytes(BytesValue::from_vec(buffer))),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn read_stream_read_all_value(stream: &ReadStreamValue) -> Value {
+    if let Err(error) = control_preflight(&stream.control) {
+        return result_err(error);
+    }
+    let mut guard = match lock_file_handle(&stream.file) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(file) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    let mut buffer = Vec::new();
+    match file.read_to_end(&mut buffer) {
+        Ok(_) => result_ok_opaque(OpaqueValue::Bytes(BytesValue::from_vec(buffer))),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn close_file_stream(file: &Arc<Mutex<Option<fs::File>>>) -> Value {
+    let mut guard = match lock_file_handle(file) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    if guard.take().is_some() {
+        result_ok(Value::Unit)
+    } else {
+        result_err(runtime_net_closed_error())
+    }
+}
+
+fn write_stream_write_value(stream: &WriteStreamValue, bytes: &BytesValue) -> Value {
+    if let Err(error) = control_preflight(&stream.control) {
+        return result_err(error);
+    }
+    let mut guard = match lock_file_handle(&stream.file) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(file) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    match file.write(bytes.as_slice()) {
+        Ok(written) => match i64::try_from(written) {
+            Ok(written) => result_ok(Value::Int(written)),
+            Err(_) => result_err(runtime_io_error("write size exceeds bootstrap int range")),
+        },
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn write_stream_write_all_value(stream: &WriteStreamValue, bytes: &BytesValue) -> Value {
+    if let Err(error) = control_preflight(&stream.control) {
+        return result_err(error);
+    }
+    let mut guard = match lock_file_handle(&stream.file) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(file) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    match file.write_all(bytes.as_slice()) {
+        Ok(()) => result_ok(Value::Unit),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn write_stream_flush_value(stream: &WriteStreamValue) -> Value {
+    if let Err(error) = control_preflight(&stream.control) {
+        return result_err(error);
+    }
+    let mut guard = match lock_file_handle(&stream.file) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(file) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    match file.flush() {
+        Ok(()) => result_ok(Value::Unit),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn close_write_stream(file: &Arc<Mutex<Option<fs::File>>>) -> Value {
+    close_file_stream(file)
+}
+
+fn connect_to_socket_addresses(
+    addresses: &[StdSocketAddr],
+    deadline: Option<NetDeadlineValue>,
+) -> Result<StdTcpStream, std::io::Error> {
+    let mut last_error = std::io::Error::new(ErrorKind::AddrNotAvailable, "no addresses resolved");
+    for address in addresses {
+        let attempt = if let Some(deadline) = &deadline {
+            match deadline_remaining_duration(deadline) {
+                Ok(duration) => StdTcpStream::connect_timeout(address, duration),
+                Err(_) => {
+                    return Err(std::io::Error::new(
+                        ErrorKind::TimedOut,
+                        "network deadline expired",
+                    ));
+                }
+            }
+        } else {
+            StdTcpStream::connect(address)
+        };
+        match attempt {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+fn control_cancelled(control: &StreamControl) -> bool {
+    control
+        .cancel
+        .as_ref()
+        .is_some_and(CancelTokenValue::is_cancelled)
+}
+
+fn open_read_stream_value(path: &str) -> Value {
+    match fs::File::open(path) {
+        Ok(file) => result_ok_opaque(OpaqueValue::ReadStream(ReadStreamValue {
+            file: Arc::new(Mutex::new(Some(file))),
+            control: StreamControl::default(),
+        })),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn open_write_stream_value(path: &str) -> Value {
+    match fs::OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(path)
+    {
+        Ok(file) => result_ok_opaque(OpaqueValue::WriteStream(WriteStreamValue {
+            file: Arc::new(Mutex::new(Some(file))),
+            control: StreamControl::default(),
+        })),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    }
+}
+
+fn deadline_after_value(millis: i64) -> Value {
+    match NetDeadlineValue::checked_after(millis) {
+        Ok(deadline) => result_ok_opaque(OpaqueValue::NetDeadline(deadline)),
+        Err(message) => result_err(runtime_time_error(message)),
+    }
+}
+
+fn deadline_at_unix_millis_value(unix_millis: i64) -> Value {
+    result_ok_opaque(OpaqueValue::NetDeadline(
+        NetDeadlineValue::from_unix_millis(unix_millis),
+    ))
+}
+
+fn connect_tcp_value(
+    address: &str,
+    deadline: Option<NetDeadlineValue>,
+    cancel: Option<CancelTokenValue>,
+) -> Value {
+    let control = StreamControl { deadline, cancel };
+    if control_cancelled(&control) {
+        return result_err(runtime_cancelled_error());
+    }
+
+    let addresses = match address.to_socket_addrs() {
+        Ok(addresses) => addresses.collect::<Vec<_>>(),
+        Err(error) => return result_err(map_tcp_resolve_error(error)),
+    };
+    if addresses.is_empty() {
+        return result_err(runtime_net_dns_error(format!(
+            "no socket addresses resolved for `{address}`"
+        )));
+    }
+
+    if control.cancel.is_none() {
+        return match connect_to_socket_addresses(&addresses, control.deadline.clone()) {
+            Ok(stream) => wrap_duplex_stream(stream),
+            Err(error) => result_err(map_tcp_connect_error(error)),
+        };
+    }
+
+    loop {
+        let slice = match control_wait_slice(&control) {
+            Ok(slice) => slice.unwrap_or_else(|| Duration::from_millis(25)),
+            Err(error) => return result_err(error),
+        };
+
+        let mut last_non_timeout: Option<std::io::Error> = None;
+        let mut saw_timeout = false;
+        for address in &addresses {
+            match StdTcpStream::connect_timeout(address, slice) {
+                Ok(stream) => return wrap_duplex_stream(stream),
+                Err(error) if error.kind() == ErrorKind::TimedOut => saw_timeout = true,
+                Err(error) => last_non_timeout = Some(error),
+            }
+        }
+
+        if let Some(error) = last_non_timeout {
+            return result_err(map_tcp_connect_error(error));
+        }
+
+        if !saw_timeout {
+            return result_err(runtime_net_connect_error(format!(
+                "failed to connect to `{address}`"
+            )));
+        }
+    }
+}
+
+fn wrap_duplex_stream(stream: StdTcpStream) -> Value {
+    result_ok_opaque(OpaqueValue::DuplexStream(DuplexStreamValue {
+        stream: Arc::new(Mutex::new(Some(stream))),
+        control: StreamControl::default(),
+    }))
+}
+
+fn duplex_stream_read_value(stream: &DuplexStreamValue, max_bytes: i64) -> Value {
+    if max_bytes < 0 {
+        return result_err(runtime_net_protocol_error(
+            "stream read size must be non-negative".to_string(),
+        ));
+    }
+    let mut guard = match lock_tcp_stream(&stream.stream) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(tcp_stream) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    let mut buffer = vec![0_u8; max_bytes as usize];
+    loop {
+        if let Err(error) = apply_tcp_stream_timeout(tcp_stream, &stream.control, true) {
+            return result_err(error);
+        }
+        match tcp_stream.read(&mut buffer) {
+            Ok(read) => {
+                buffer.truncate(read);
+                return result_ok_opaque(OpaqueValue::Bytes(BytesValue::from_vec(buffer)));
+            }
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if control_cancelled(&stream.control) {
+                    return result_err(runtime_cancelled_error());
+                }
+                if let Some(deadline) = &stream.control.deadline {
+                    if deadline.remaining_millis() == 0 {
+                        return result_err(runtime_net_timeout_error("network deadline expired"));
+                    }
+                }
+            }
+            Err(error) => return result_err(map_tcp_stream_error(error)),
+        }
+    }
+}
+
+fn duplex_stream_read_exact_value(stream: &DuplexStreamValue, byte_count: i64) -> Value {
+    if byte_count < 0 {
+        return result_err(runtime_net_protocol_error(
+            "stream read size must be non-negative".to_string(),
+        ));
+    }
+    let mut collected = Vec::with_capacity(byte_count as usize);
+    while collected.len() < byte_count as usize {
+        let remaining = (byte_count as usize) - collected.len();
+        match duplex_stream_read_value(stream, remaining as i64) {
+            Value::Enum(result) if result.name == "Result" && result.variant == "Ok" => {
+                let Some((_, Value::Opaque(OpaqueValue::Bytes(bytes)))) = result.payloads.first()
+                else {
+                    return result_err(runtime_net_protocol_error(
+                        "read_exact bridge returned a malformed bytes payload".to_string(),
+                    ));
+                };
+                if bytes.len() == 0 {
+                    return result_err(runtime_net_closed_error());
+                }
+                collected.extend_from_slice(bytes.as_slice());
+            }
+            Value::Enum(result) if result.name == "Result" && result.variant == "Err" => {
+                return Value::Enum(result);
+            }
+            other => {
+                return result_err(runtime_net_protocol_error(format!(
+                    "read_exact expected `Result`, got `{}`",
+                    value_name(&other)
+                )));
+            }
+        }
+    }
+    result_ok_opaque(OpaqueValue::Bytes(BytesValue::from_vec(collected)))
+}
+
+fn duplex_stream_read_all_value(stream: &DuplexStreamValue) -> Value {
+    let mut collected = Vec::new();
+    loop {
+        match duplex_stream_read_value(stream, 8192) {
+            Value::Enum(result) if result.name == "Result" && result.variant == "Ok" => {
+                let Some((_, Value::Opaque(OpaqueValue::Bytes(bytes)))) = result.payloads.first()
+                else {
+                    return result_err(runtime_net_protocol_error(
+                        "read_all bridge returned a malformed bytes payload".to_string(),
+                    ));
+                };
+                if bytes.len() == 0 {
+                    break;
+                }
+                collected.extend_from_slice(bytes.as_slice());
+            }
+            Value::Enum(result) if result.name == "Result" && result.variant == "Err" => {
+                return Value::Enum(result);
+            }
+            other => {
+                return result_err(runtime_net_protocol_error(format!(
+                    "read_all expected `Result`, got `{}`",
+                    value_name(&other)
+                )));
+            }
+        }
+    }
+    result_ok_opaque(OpaqueValue::Bytes(BytesValue::from_vec(collected)))
+}
+
+fn duplex_stream_write_value(stream: &DuplexStreamValue, bytes: &BytesValue) -> Value {
+    let mut guard = match lock_tcp_stream(&stream.stream) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(tcp_stream) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    loop {
+        if let Err(error) = apply_tcp_stream_timeout(tcp_stream, &stream.control, false) {
+            return result_err(error);
+        }
+        match tcp_stream.write(bytes.as_slice()) {
+            Ok(written) => match i64::try_from(written) {
+                Ok(written) => return result_ok(Value::Int(written)),
+                Err(_) => {
+                    return result_err(runtime_net_protocol_error(
+                        "write size exceeds bootstrap int range",
+                    ));
+                }
+            },
+            Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if control_cancelled(&stream.control) {
+                    return result_err(runtime_cancelled_error());
+                }
+                if let Some(deadline) = &stream.control.deadline {
+                    if deadline.remaining_millis() == 0 {
+                        return result_err(runtime_net_timeout_error("network deadline expired"));
+                    }
+                }
+            }
+            Err(error) => return result_err(map_tcp_stream_error(error)),
+        }
+    }
+}
+
+fn duplex_stream_write_all_value(stream: &DuplexStreamValue, bytes: &BytesValue) -> Value {
+    let mut written = 0usize;
+    while written < bytes.len() {
+        let chunk = BytesValue::from_vec(bytes.as_slice()[written..].to_vec());
+        match duplex_stream_write_value(stream, &chunk) {
+            Value::Enum(result) if result.name == "Result" && result.variant == "Ok" => {
+                let Some((_, Value::Int(count))) = result.payloads.first() else {
+                    return result_err(runtime_net_protocol_error(
+                        "write_all bridge returned a malformed byte count".to_string(),
+                    ));
+                };
+                if *count < 0 {
+                    return result_err(runtime_net_protocol_error(
+                        "write_all received a negative byte count".to_string(),
+                    ));
+                }
+                written = written.saturating_add(*count as usize);
+            }
+            Value::Enum(result) if result.name == "Result" && result.variant == "Err" => {
+                return Value::Enum(result);
+            }
+            other => {
+                return result_err(runtime_net_protocol_error(format!(
+                    "write_all expected `Result`, got `{}`",
+                    value_name(&other)
+                )));
+            }
+        }
+    }
+    result_ok(Value::Unit)
+}
+
+fn duplex_stream_flush_value(stream: &DuplexStreamValue) -> Value {
+    let mut guard = match lock_tcp_stream(&stream.stream) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(tcp_stream) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    match tcp_stream.flush() {
+        Ok(()) => result_ok(Value::Unit),
+        Err(error) => result_err(map_tcp_stream_error(error)),
+    }
+}
+
+fn close_duplex_stream(stream: &Arc<Mutex<Option<StdTcpStream>>>) -> Value {
+    let mut guard = match lock_tcp_stream(stream) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    match guard.take() {
+        Some(stream) => {
+            let _ = stream.shutdown(Shutdown::Both);
+            result_ok(Value::Unit)
+        }
+        None => result_err(runtime_net_closed_error()),
+    }
+}
+
+fn duplex_stream_address_value(stream: &DuplexStreamValue, peer: bool) -> Value {
+    let mut guard = match lock_tcp_stream(&stream.stream) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(tcp_stream) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    let address = if peer {
+        tcp_stream.peer_addr()
+    } else {
+        tcp_stream.local_addr()
+    };
+    match address {
+        Ok(address) => result_ok_opaque(OpaqueValue::SocketAddr(SocketAddrValue(address))),
+        Err(error) => result_err(map_tcp_stream_error(error)),
+    }
+}
+
+fn listener_accept_value(listener: &TcpListenerValue) -> Value {
+    let mut guard = match lock_tcp_listener(&listener.listener) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(tcp_listener) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    if let Err(error) = tcp_listener.set_nonblocking(true) {
+        return result_err(map_listener_error(error));
+    }
+    loop {
+        if control_cancelled(&listener.control) {
+            return result_err(runtime_cancelled_error());
+        }
+        if let Some(deadline) = &listener.control.deadline {
+            if deadline.remaining_millis() == 0 {
+                return result_err(runtime_net_timeout_error("network deadline expired"));
+            }
+        }
+        match tcp_listener.accept() {
+            Ok((stream, _)) => {
+                let _ = stream.set_nonblocking(false);
+                return wrap_duplex_stream(stream);
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                let sleep_for = match control_poll_slice(&listener.control) {
+                    Ok(slice) => slice,
+                    Err(error) => return result_err(error),
+                };
+                std::thread::sleep(sleep_for);
+            }
+            Err(error) => return result_err(map_listener_error(error)),
+        }
+    }
+}
+
+fn close_tcp_listener(listener: &Arc<Mutex<Option<StdTcpListener>>>) -> Value {
+    let mut guard = match lock_tcp_listener(listener) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    if guard.take().is_some() {
+        result_ok(Value::Unit)
+    } else {
+        result_err(runtime_net_closed_error())
+    }
+}
+
+fn listener_local_addr_value(listener: &TcpListenerValue) -> Value {
+    let mut guard = match lock_tcp_listener(&listener.listener) {
+        Ok(guard) => guard,
+        Err(error) => return result_err(error),
+    };
+    let Some(tcp_listener) = guard.as_mut() else {
+        return result_err(runtime_net_closed_error());
+    };
+    match tcp_listener.local_addr() {
+        Ok(address) => result_ok_opaque(OpaqueValue::SocketAddr(SocketAddrValue(address))),
+        Err(error) => result_err(map_listener_error(error)),
+    }
+}
+
+fn eval_bytes_deadline_bridge_builtin(
+    callee: &str,
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> Option<EvalResult<Value>> {
+    let value = match callee {
+        "__gof_internal_bytes_from_string" => {
+            let text = eval_string_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3109",
+            );
+            Some(text.map(|text| Value::Opaque(OpaqueValue::Bytes(BytesValue::from_string(&text)))))
+        }
+        "__gof_internal_bytes_to_string" => {
+            let bytes = eval_bytes_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3109",
+            );
+            Some(bytes.map(|bytes| match bytes.decode_utf8() {
+                Ok(text) => result_ok(Value::String(text)),
+                Err(error) => result_err(runtime_utf8_error(error.to_string())),
+            }))
+        }
+        "__gof_internal_bytes_len" => {
+            let bytes = eval_bytes_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3109",
+            );
+            Some(bytes.map(|bytes| Value::Int(bytes.len() as i64)))
+        }
+        "__gof_internal_bytes_slice" => Some(
+            eval_bytes_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3109",
+            )
+            .and_then(|bytes| {
+                let start = eval_int_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3109",
+                )?;
+                let end = eval_int_argument(
+                    callee,
+                    &args[2],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3109",
+                )?;
+                Ok(match bytes.slice(start, end) {
+                    Ok(bytes) => result_ok_opaque(OpaqueValue::Bytes(bytes)),
+                    Err(message) => result_err(runtime_slice_error(message)),
+                })
+            }),
+        ),
+        "__gof_internal_bytes_concat" => Some(
+            eval_bytes_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3109",
+            )
+            .and_then(|left| {
+                let right = eval_bytes_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3109",
+                )?;
+                Ok(Value::Opaque(OpaqueValue::Bytes(left.concat(&right))))
+            }),
+        ),
+        "__gof_internal_deadline_after" => Some(
+            eval_int_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3112",
+            )
+            .map(deadline_after_value),
+        ),
+        "__gof_internal_deadline_at_unix_millis" => Some(
+            eval_int_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3112",
+            )
+            .map(deadline_at_unix_millis_value),
+        ),
+        "__gof_internal_deadline_unix_millis" => Some(
+            eval_deadline_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3112",
+            )
+            .map(|deadline| Value::Int(deadline.unix_millis())),
+        ),
+        "__gof_internal_deadline_remaining_millis" => Some(
+            eval_deadline_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3112",
+            )
+            .map(|deadline| Value::Int(deadline.remaining_millis())),
+        ),
+        _ => None,
+    };
+    value
+}
+
+fn eval_file_stream_bridge_builtin(
+    callee: &str,
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> Option<EvalResult<Value>> {
+    let value = match callee {
+        "__gof_internal_open_read_stream" => Some(
+            eval_string_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .map(|path| open_read_stream_value(&path)),
+        ),
+        "__gof_internal_open_write_stream" => Some(
+            eval_string_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .map(|path| open_write_stream_value(&path)),
+        ),
+        "__gof_internal_read_stream_read" => Some(
+            eval_read_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let max_bytes = eval_int_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3110",
+                )?;
+                Ok(read_stream_read_value(&stream, max_bytes))
+            }),
+        ),
+        "__gof_internal_read_stream_read_exact" => Some(
+            eval_read_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let byte_count = eval_int_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3110",
+                )?;
+                Ok(read_stream_read_exact_value(&stream, byte_count))
+            }),
+        ),
+        "__gof_internal_read_stream_read_all" => Some(
+            eval_read_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .map(|stream| read_stream_read_all_value(&stream)),
+        ),
+        "__gof_internal_read_stream_close" => Some(
+            eval_read_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .map(|stream| close_file_stream(&stream.file)),
+        ),
+        "__gof_internal_read_stream_with_deadline" => Some(
+            eval_read_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let deadline = eval_deadline_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3110",
+                )?;
+                Ok(Value::Opaque(OpaqueValue::ReadStream(ReadStreamValue {
+                    file: Arc::clone(&stream.file),
+                    control: stream.control.with_deadline(deadline),
+                })))
+            }),
+        ),
+        "__gof_internal_read_stream_with_cancel" => Some(
+            eval_read_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let token = eval_cancel_token_argument(
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )?;
+                Ok(Value::Opaque(OpaqueValue::ReadStream(ReadStreamValue {
+                    file: Arc::clone(&stream.file),
+                    control: stream.control.with_cancel(token),
+                })))
+            }),
+        ),
+        "__gof_internal_write_stream_write" => Some(
+            eval_write_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let bytes = eval_bytes_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3110",
+                )?;
+                Ok(write_stream_write_value(&stream, &bytes))
+            }),
+        ),
+        "__gof_internal_write_stream_write_all" => Some(
+            eval_write_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let bytes = eval_bytes_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3110",
+                )?;
+                Ok(write_stream_write_all_value(&stream, &bytes))
+            }),
+        ),
+        "__gof_internal_write_stream_flush" => Some(
+            eval_write_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .map(|stream| write_stream_flush_value(&stream)),
+        ),
+        "__gof_internal_write_stream_close" => Some(
+            eval_write_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .map(|stream| close_write_stream(&stream.file)),
+        ),
+        "__gof_internal_write_stream_with_deadline" => Some(
+            eval_write_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let deadline = eval_deadline_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3110",
+                )?;
+                Ok(Value::Opaque(OpaqueValue::WriteStream(WriteStreamValue {
+                    file: Arc::clone(&stream.file),
+                    control: stream.control.with_deadline(deadline),
+                })))
+            }),
+        ),
+        "__gof_internal_write_stream_with_cancel" => Some(
+            eval_write_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3110",
+            )
+            .and_then(|stream| {
+                let token = eval_cancel_token_argument(
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )?;
+                Ok(Value::Opaque(OpaqueValue::WriteStream(WriteStreamValue {
+                    file: Arc::clone(&stream.file),
+                    control: stream.control.with_cancel(token),
+                })))
+            }),
+        ),
+        _ => None,
+    };
+    value
+}
+
+fn eval_net_bridge_builtin(
+    callee: &str,
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> Option<EvalResult<Value>> {
+    let value = match callee {
+        "__gof_internal_connect_tcp" => Some(
+            eval_string_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|address| connect_tcp_value(&address, None, None)),
+        ),
+        "__gof_internal_connect_tcp_with_control" => Some(
+            eval_string_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|address| {
+                let deadline = eval_deadline_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3111",
+                )?;
+                let token = eval_cancel_token_argument(
+                    &args[2],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )?;
+                Ok(connect_tcp_value(&address, Some(deadline), Some(token)))
+            }),
+        ),
+        "__gof_internal_listen_tcp" => Some(
+            eval_string_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|address| match StdTcpListener::bind(&address) {
+                Ok(listener) => result_ok_opaque(OpaqueValue::TcpListener(TcpListenerValue {
+                    listener: Arc::new(Mutex::new(Some(listener))),
+                    control: StreamControl::default(),
+                })),
+                Err(error) => result_err(map_tcp_connect_error(error)),
+            }),
+        ),
+        "__gof_internal_duplex_stream_read" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|stream| {
+                let max_bytes = eval_int_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3111",
+                )?;
+                Ok(duplex_stream_read_value(&stream, max_bytes))
+            }),
+        ),
+        "__gof_internal_duplex_stream_read_exact" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|stream| {
+                let byte_count = eval_int_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3111",
+                )?;
+                Ok(duplex_stream_read_exact_value(&stream, byte_count))
+            }),
+        ),
+        "__gof_internal_duplex_stream_read_all" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|stream| duplex_stream_read_all_value(&stream)),
+        ),
+        "__gof_internal_duplex_stream_write" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|stream| {
+                let bytes = eval_bytes_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3111",
+                )?;
+                Ok(duplex_stream_write_value(&stream, &bytes))
+            }),
+        ),
+        "__gof_internal_duplex_stream_write_all" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|stream| {
+                let bytes = eval_bytes_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3111",
+                )?;
+                Ok(duplex_stream_write_all_value(&stream, &bytes))
+            }),
+        ),
+        "__gof_internal_duplex_stream_flush" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|stream| duplex_stream_flush_value(&stream)),
+        ),
+        "__gof_internal_duplex_stream_close" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|stream| close_duplex_stream(&stream.stream)),
+        ),
+        "__gof_internal_duplex_stream_with_deadline" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|stream| {
+                let deadline = eval_deadline_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3111",
+                )?;
+                Ok(Value::Opaque(OpaqueValue::DuplexStream(
+                    DuplexStreamValue {
+                        stream: Arc::clone(&stream.stream),
+                        control: stream.control.with_deadline(deadline),
+                    },
+                )))
+            }),
+        ),
+        "__gof_internal_duplex_stream_with_cancel" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|stream| {
+                let token = eval_cancel_token_argument(
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )?;
+                Ok(Value::Opaque(OpaqueValue::DuplexStream(
+                    DuplexStreamValue {
+                        stream: Arc::clone(&stream.stream),
+                        control: stream.control.with_cancel(token),
+                    },
+                )))
+            }),
+        ),
+        "__gof_internal_duplex_stream_peer_addr" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|stream| duplex_stream_address_value(&stream, true)),
+        ),
+        "__gof_internal_duplex_stream_local_addr" => Some(
+            eval_duplex_stream_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|stream| duplex_stream_address_value(&stream, false)),
+        ),
+        "__gof_internal_tcp_listener_accept" => Some(
+            eval_tcp_listener_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|listener| listener_accept_value(&listener)),
+        ),
+        "__gof_internal_tcp_listener_close" => Some(
+            eval_tcp_listener_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|listener| close_tcp_listener(&listener.listener)),
+        ),
+        "__gof_internal_tcp_listener_with_deadline" => Some(
+            eval_tcp_listener_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|listener| {
+                let deadline = eval_deadline_argument(
+                    callee,
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    "GOF3111",
+                )?;
+                Ok(Value::Opaque(OpaqueValue::TcpListener(TcpListenerValue {
+                    listener: Arc::clone(&listener.listener),
+                    control: listener.control.with_deadline(deadline),
+                })))
+            }),
+        ),
+        "__gof_internal_tcp_listener_with_cancel" => Some(
+            eval_tcp_listener_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .and_then(|listener| {
+                let token = eval_cancel_token_argument(
+                    &args[1],
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )?;
+                Ok(Value::Opaque(OpaqueValue::TcpListener(TcpListenerValue {
+                    listener: Arc::clone(&listener.listener),
+                    control: listener.control.with_cancel(token),
+                })))
+            }),
+        ),
+        "__gof_internal_tcp_listener_local_addr" => Some(
+            eval_tcp_listener_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|listener| listener_local_addr_value(&listener)),
+        ),
+        "__gof_internal_socket_addr_text" => Some(
+            eval_socket_addr_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|address| Value::String(address.text())),
+        ),
+        "__gof_internal_socket_addr_port" => Some(
+            eval_socket_addr_argument(
+                callee,
+                &args[0],
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                source_path,
+                "GOF3111",
+            )
+            .map(|address| Value::Int(address.port())),
+        ),
+        _ => None,
+    };
+    value
+}
+
+fn eval_stdlib_bridge_builtin(
+    callee: &str,
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if let Some(result) = eval_bytes_deadline_bridge_builtin(
+        callee,
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    ) {
+        return result;
+    }
+    if let Some(result) = eval_file_stream_bridge_builtin(
+        callee,
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    ) {
+        return result;
+    }
+    if let Some(result) = eval_net_bridge_builtin(
+        callee,
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    ) {
+        return result;
+    }
+
+    eval_diagnostics(Diagnostics(vec![
+        Diagnostic::error(
+            "GOF3109",
+            format!("unknown internal stdlib bridge `{callee}`"),
+            "the shipped stdlib called an unsupported internal bridge builtin",
+            span,
+        )
+        .with_fix_it(
+            "update the shipped stdlib wrapper or add the corresponding bridge implementation",
+        )
+        .with_source_path(source_path.to_path_buf()),
+    ]))
+}
+
 fn eval_json_parse_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -8522,7 +11005,11 @@ fn render_template_value(value: &Value, key: &str) -> Result<String, String> {
         Value::Struct(_) | Value::Enum(_) | Value::List(_) | Value::Dict(_) => value
             .cli_text()
             .ok_or_else(|| format!("template key `{key}` cannot be rendered as text")),
-        Value::Channel(_) | Value::CancelToken(_) | Value::Task(_) | Value::Unit => Err(format!(
+        Value::Opaque(_)
+        | Value::Channel(_)
+        | Value::CancelToken(_)
+        | Value::Task(_)
+        | Value::Unit => Err(format!(
             "template key `{key}` resolves to non-printable `{}`",
             value_name(value)
         )),
@@ -9044,6 +11531,7 @@ fn value_name(value: &Value) -> &'static str {
         Value::String(_) => "string",
         Value::Bool(_) => "bool",
         Value::Json(_) => "json",
+        Value::Opaque(value) => value.receiver_name(),
         Value::Struct(_) => "struct",
         Value::Enum(_) => "enum",
         Value::List(_) => "list",

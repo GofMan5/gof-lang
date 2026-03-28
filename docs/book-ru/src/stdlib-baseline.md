@@ -18,6 +18,81 @@ Shipped stdlib теперь также имеет реальный import-delive
 языка теперь есть реальная точка роста для typed networking и stream primitives
 без бесконечного растягивания bootstrap builtins.
 
+## Shipped bytes, stream, deadline и TCP foundation
+
+Текущий shipped stdlib foundation намеренно маленький и явный:
+
+- `bytes`
+  - `Bytes`
+  - `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
+- `io`
+  - `ReadStream`, `WriteStream`
+  - `open_read_stream`, `open_write_stream`
+- `time`
+  - `NetDeadline`
+  - `deadline_after`, `deadline_at_unix_millis`
+- `net`
+  - `DuplexStream`, `TcpListener`, `SocketAddr`
+  - `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+
+Это уже shipped stdlib API, а не еще один permanent global builtin surface.
+Внутри они пока идут через bootstrap bridge hooks, но пользовательский код
+учит их как обычные imports.
+
+```gof
+import bytes
+import io
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    payload = bytes_from_string("hello")
+    deadline = deadline_after(1000)?
+    mut writer = open_write_stream("roundtrip.txt")?
+    writer = writer.with_deadline(deadline)
+    writer.write_all(payload)?
+    writer.flush()?
+    writer.close()?
+
+    mut reader = open_read_stream("roundtrip.txt")?
+    reader = reader.with_deadline(deadline)
+    text = reader.read_all()?.to_string()?
+    reader.close()?
+    return Result.Ok(len(text))
+```
+
+```gof
+import bytes
+import net
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    deadline = deadline_after(1000)?
+    listener = listen_tcp("127.0.0.1:0")?.with_deadline(deadline)
+    address = listener.local_addr()?
+    client = connect_tcp_with_control(address.text(), deadline, timeout_token(1000))?
+    client.write_all(bytes_from_string("ping"))?
+    return Result.Ok(address.port() + bytes_len(bytes_from_string("ping")))
+```
+
+Текущие важные правила:
+
+- blocking I/O возвращает `Result[..., RuntimeError]`, а не прячет ошибку в неявном runtime state
+- deadlines и cancellation задаются явными wrappers над stream/listener values
+- `Bytes`, а также stream/listener/socket/deadline types пока являются opaque значениями bootstrap `gof`; поведение доступно только через документированные API
+- этот slice пока не обещает zero-copy, typed HTTP client/server, TLS policy или observability
+
+Текущая network-oriented error taxonomy теперь также различает:
+
+- `RuntimeError.Utf8(message)`
+- `RuntimeError.NetDns(message)`
+- `RuntimeError.NetConnect(message)`
+- `RuntimeError.NetTimeout(message)`
+- `RuntimeError.NetTls(message)`
+- `RuntimeError.NetProxy(message)`
+- `RuntimeError.NetProtocol(message)`
+- `RuntimeError.NetReset(message)`
+- `RuntimeError.NetClosed`
+
 ## Output и correctness checks
 
 ```gof

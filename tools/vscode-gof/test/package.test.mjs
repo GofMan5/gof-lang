@@ -72,6 +72,9 @@ test("snippet file includes core gof templates", async () => {
     "Time Report",
     "Base64 Roundtrip",
     "HTTP Request Report",
+    "Bytes Roundtrip",
+    "Stream Roundtrip",
+    "TCP Roundtrip",
     "YAML Config"
   ]) {
     assert.ok(snippets[key], `missing snippet "${key}"`);

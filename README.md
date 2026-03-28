@@ -65,7 +65,7 @@ gof test tests/fixtures                # run conformance suite
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `base64_encode(...)`, `base64_decode(...)`, `range`, `sleep(...)`, `unix_seconds()`, `unix_millis()` | stable |
 | JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` / `http_request(...)` | bootstrap |
-| Same-directory imports, reserved shipped stdlib imports (`bytes` / `io` / `time` / `net` / `http`), and manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
+| Same-directory imports, reserved shipped stdlib imports (`bytes` / `io` / `time` / `net` / `http`), initial `Bytes` / stream / deadline / TCP stdlib foundation, and manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | `gof check --json [--stdin]` | stable compiler-backed diagnostics contract |
@@ -89,6 +89,19 @@ Shipped stdlib imports now resolve through reserved module names:
 Those names no longer shadow to same-directory files or local dependency aliases.
 If user code tries to reuse one of those names, the compiler reports an explicit
 reserved-stdlib conflict instead of silently picking the wrong module graph.
+
+The first shipped stdlib networking foundation now lives behind those reserved
+imports instead of behind ever-growing global builtins:
+
+- `bytes`: `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
+- `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
+- `time`: `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
+- `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+
+This is still bootstrap surface, not the final network platform. The current
+focus is explicit `Result`-based bytes/stream/deadline/TCP contracts that keep
+allocation and blocking points visible while the typed HTTP client/server
+layers are still being built.
 
 `gof run --watch` now gives a script-first fast edit-run loop for single-file
 scripts and executable packages. It keeps exactly one run in flight, batches

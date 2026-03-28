@@ -1,1 +1,11 @@
+fn deadline_after(milliseconds: int) -> Result[NetDeadline, RuntimeError]:
+    return __gof_internal_deadline_after(milliseconds)
 
+fn deadline_at_unix_millis(unix_millis: int) -> Result[NetDeadline, RuntimeError]:
+    return __gof_internal_deadline_at_unix_millis(unix_millis)
+
+fn NetDeadline.unix_millis(self: NetDeadline) -> int:
+    return __gof_internal_deadline_unix_millis(self)
+
+fn NetDeadline.remaining_millis(self: NetDeadline) -> int:
+    return __gof_internal_deadline_remaining_millis(self)

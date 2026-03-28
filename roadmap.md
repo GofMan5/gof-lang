@@ -30,7 +30,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[~]` M4: minimal useful standard library for CLI and bot-oriented programs
 - `[~]` M5: concurrency semantics beyond task spawn and await
 - `[~]` M7: bootstrap-native build path on the road to direct codegen
-- `[~]` M10: service/network stdlib delivery and reserved import groundwork
+- `[~]` M10: service/network stdlib delivery, bytes/stream foundations, and reserved import groundwork
 - Immediate mandatory result: keep stdlib side effects small, explicit, and allocation-transparent
 - Immediate semantic result: keep explicit recoverable error flow moving toward `Result`-based operational APIs
 - Second mandatory result: make message-passing concurrency honest and testable
@@ -328,12 +328,13 @@ Hard sequencing rule:
 - `[~]` task panic and error propagation across concurrency boundaries
 - `[~]` stronger scheduling guarantees and fairness rules
 - `[ ]` HTTP server baseline, request routing, and streaming I/O primitives
-- `[ ]` timeouts, deadlines, context propagation, and service shutdown contracts
+- `[~]` timeouts, deadlines, context propagation, and service shutdown contracts
 - `[ ]` logging, metrics, tracing, and pprof-class observability surface
 - Checkpoints:
 - `[ ]` CP-M10-1: concurrency semantics strong enough for real service workers
-- `[ ]` CP-M10-2: network and service stdlib baseline
-- `[~]` CP-M10-2a: shipped stdlib module delivery plus reserved import names for `bytes`, `io`, `time`, `net`, and `http`
+- `[~]` CP-M10-2: network and service stdlib baseline
+- `[x]` CP-M10-2a: shipped stdlib module delivery plus reserved import names for `bytes`, `io`, `time`, `net`, and `http`
+- `[x]` CP-M10-2b: bootstrap `Bytes`, stream, deadline, socket-address, listener, and TCP-duplex foundations through shipped stdlib modules
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

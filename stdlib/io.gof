@@ -1,1 +1,41 @@
+fn open_read_stream(path: string) -> Result[ReadStream, RuntimeError]:
+    return __gof_internal_open_read_stream(path)
 
+fn open_write_stream(path: string) -> Result[WriteStream, RuntimeError]:
+    return __gof_internal_open_write_stream(path)
+
+fn ReadStream.read(self: ReadStream, max_bytes: int) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_read_stream_read(self, max_bytes)
+
+fn ReadStream.read_exact(self: ReadStream, byte_count: int) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_read_stream_read_exact(self, byte_count)
+
+fn ReadStream.read_all(self: ReadStream) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_read_stream_read_all(self)
+
+fn ReadStream.close(self: ReadStream) -> Result[unit, RuntimeError]:
+    return __gof_internal_read_stream_close(self)
+
+fn ReadStream.with_deadline(self: ReadStream, deadline: NetDeadline) -> ReadStream:
+    return __gof_internal_read_stream_with_deadline(self, deadline)
+
+fn ReadStream.with_cancel(self: ReadStream, token: cancel_token) -> ReadStream:
+    return __gof_internal_read_stream_with_cancel(self, token)
+
+fn WriteStream.write(self: WriteStream, bytes: Bytes) -> Result[int, RuntimeError]:
+    return __gof_internal_write_stream_write(self, bytes)
+
+fn WriteStream.write_all(self: WriteStream, bytes: Bytes) -> Result[unit, RuntimeError]:
+    return __gof_internal_write_stream_write_all(self, bytes)
+
+fn WriteStream.flush(self: WriteStream) -> Result[unit, RuntimeError]:
+    return __gof_internal_write_stream_flush(self)
+
+fn WriteStream.close(self: WriteStream) -> Result[unit, RuntimeError]:
+    return __gof_internal_write_stream_close(self)
+
+fn WriteStream.with_deadline(self: WriteStream, deadline: NetDeadline) -> WriteStream:
+    return __gof_internal_write_stream_with_deadline(self, deadline)
+
+fn WriteStream.with_cancel(self: WriteStream, token: cancel_token) -> WriteStream:
+    return __gof_internal_write_stream_with_cancel(self, token)

@@ -117,6 +117,41 @@
     ],
     "description": "Send a structured HTTP request and inspect the bootstrap response report"
   },
+  "Bytes Roundtrip": {
+    "prefix": "gofbytes",
+    "body": [
+      "${1:payload}: Bytes = bytes_from_string(${2:\"hello\"})",
+      "${3:decoded} = bytes_to_string(${1:payload})?",
+      "assert(bytes_len(${1:payload}) == len(${3:decoded}), \"expected byte length to match decoded text length\")"
+    ],
+    "description": "Use the shipped bytes stdlib foundation through explicit Bytes helpers"
+  },
+  "Stream Roundtrip": {
+    "prefix": "gofstream",
+    "body": [
+      "${1:deadline} = deadline_after(${2:1000})?",
+      "mut ${3:writer}: WriteStream = open_write_stream(${4:\"roundtrip.txt\"})?",
+      "${3:writer} = ${3:writer}.with_deadline(${1:deadline})",
+      "${3:writer}.write_all(bytes_from_string(${5:\"hello\"}))?",
+      "${3:writer}.flush()?",
+      "${3:writer}.close()?",
+      "mut ${6:reader}: ReadStream = open_read_stream(${4:\"roundtrip.txt\"})?",
+      "${6:reader} = ${6:reader}.with_deadline(${1:deadline})",
+      "${7:text} = ${6:reader}.read_all()?.to_string()?"
+    ],
+    "description": "Roundtrip bytes through explicit shipped io/time stdlib streams"
+  },
+  "TCP Roundtrip": {
+    "prefix": "goftcp",
+    "body": [
+      "${1:deadline} = deadline_after(${2:1000})?",
+      "${3:listener} = listen_tcp(${4:\"127.0.0.1:0\"})?.with_deadline(${1:deadline})",
+      "${5:address} = ${3:listener}.local_addr()?",
+      "${6:client} = connect_tcp_with_control(${5:address}.text(), ${1:deadline}, timeout_token(${7:1000}))?",
+      "${6:client}.write_all(bytes_from_string(${8:\"ping\"}))?"
+    ],
+    "description": "Create an explicit TCP loopback baseline with deadlines and bytes payloads"
+  },
   "YAML Config": {
     "prefix": "gofyaml",
     "body": [

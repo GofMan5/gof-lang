@@ -1752,6 +1752,34 @@ fn gof_run_executes_shipped_stdlib_import_smoke_example() {
 }
 
 #[test]
+fn gof_run_executes_bytes_stream_roundtrip_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("bytes_stream_roundtrip.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 20)"));
+}
+
+#[test]
+fn gof_run_executes_tcp_roundtrip_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("tcp_roundtrip.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 10)"));
+}
+
+#[test]
 fn gof_build_native_emits_runnable_host_executable() {
     let temp = tempdir().expect("tempdir should exist");
     let source = gof_conformance::workspace_root()

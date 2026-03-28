@@ -964,7 +964,20 @@ mod tests {
                 .expect("stdlib imports should resolve");
 
         assert_eq!(module.imports.len(), 2);
-        assert_eq!(module.functions.len(), 1);
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.name == "main"),
+            "root module should still expose its own entrypoint",
+        );
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.name == "deadline_after"),
+            "stdlib `time` imports should contribute their shipped functions",
+        );
     }
 
     #[test]

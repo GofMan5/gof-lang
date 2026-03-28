@@ -1,1 +1,23 @@
+fn bytes_from_string(text: string) -> Bytes:
+    return __gof_internal_bytes_from_string(text)
 
+fn bytes_to_string(value: Bytes) -> Result[string, RuntimeError]:
+    return __gof_internal_bytes_to_string(value)
+
+fn bytes_len(value: Bytes) -> int:
+    return __gof_internal_bytes_len(value)
+
+fn bytes_slice(value: Bytes, start: int, end: int) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_bytes_slice(value, start, end)
+
+fn bytes_concat(left: Bytes, right: Bytes) -> Bytes:
+    return __gof_internal_bytes_concat(left, right)
+
+fn Bytes.len(self: Bytes) -> int:
+    return __gof_internal_bytes_len(self)
+
+fn Bytes.slice(self: Bytes, start: int, end: int) -> Result[Bytes, RuntimeError]:
+    return __gof_internal_bytes_slice(self, start, end)
+
+fn Bytes.to_string(self: Bytes) -> Result[string, RuntimeError]:
+    return __gof_internal_bytes_to_string(self)

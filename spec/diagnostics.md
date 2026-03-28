@@ -120,3 +120,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3106`: invalid operand for structured bootstrap HTTP request helpers
 - `GOF3107`: invalid timeout for structured bootstrap HTTP request helpers
 - `GOF3108`: reserved stdlib import conflicts with local module or dependency names
+- `GOF3109`: invalid operand for shipped `bytes` stdlib helpers
+- `GOF3110`: invalid operand or contract for shipped `io` stdlib helpers
+- `GOF3111`: invalid operand or contract for shipped `net` stdlib helpers
+- `GOF3112`: invalid operand or negative duration for shipped `time` deadline helpers

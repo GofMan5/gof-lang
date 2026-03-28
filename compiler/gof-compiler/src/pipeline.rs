@@ -1626,6 +1626,100 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_shipped_bytes_io_time_stdlib_surface() {
+        let temp = tempdir().expect("tempdir should exist");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(
+            &main_path,
+            "import bytes\nimport io\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    payload = bytes_from_string(\"gof\")\n    mut writer = open_write_stream(\"out.bin\")?\n    writer = writer.with_deadline(deadline)\n    text = bytes_to_string(payload)?\n    return Result.Ok(bytes_len(payload) + len(text) + deadline.unix_millis() - deadline.unix_millis())\n",
+        )
+        .expect("main module should exist");
+
+        let source = SourceFile::from_path(&main_path).expect("source should load");
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+        let main = compiled
+            .typed_hir
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main function should exist");
+
+        match &main.body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("NetDeadline".to_string()));
+            }
+            other => panic!("expected deadline bind, got {other:?}"),
+        }
+        match &main.body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("Bytes".to_string()));
+            }
+            other => panic!("expected bytes bind, got {other:?}"),
+        }
+        match &main.body[2] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("WriteStream".to_string()));
+            }
+            other => panic!("expected write stream bind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pipeline_supports_shipped_net_stdlib_surface() {
+        let temp = tempdir().expect("tempdir should exist");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(
+            &main_path,
+            "import net\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    token: cancel_token = timeout_token(1000)\n    mut listener = listen_tcp(\"127.0.0.1:0\")?\n    listener = listener.with_deadline(deadline)\n    address = listener.local_addr()?\n    client = connect_tcp_with_control(address.text(), deadline, token)?\n    local = client.local_addr()?\n    return Result.Ok(address.port() + local.port() - local.port())\n",
+        )
+        .expect("main module should exist");
+
+        let source = SourceFile::from_path(&main_path).expect("source should load");
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+        let main = compiled
+            .typed_hir
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main function should exist");
+
+        match &main.body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("NetDeadline".to_string()));
+            }
+            other => panic!("expected deadline bind, got {other:?}"),
+        }
+        match &main.body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::CancelToken);
+            }
+            other => panic!("expected cancel token bind, got {other:?}"),
+        }
+        match &main.body[2] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("TcpListener".to_string()));
+            }
+            other => panic!("expected listener bind, got {other:?}"),
+        }
+        match &main.body[4] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("SocketAddr".to_string()));
+            }
+            other => panic!("expected socket addr bind, got {other:?}"),
+        }
+        match &main.body[5] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("DuplexStream".to_string()));
+            }
+            other => panic!("expected duplex stream bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn embedded_source_bundle_preserves_same_directory_imports() {
         let temp = tempdir().expect("tempdir should exist");
         let main_path = temp.path().join("main.gof");

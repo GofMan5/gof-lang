@@ -1,0 +1,40 @@
+import bytes
+import net
+import time
+
+fn serve(listener: TcpListener, ready: channel[string]) -> Result[int, RuntimeError]:
+    accept_deadline = deadline_after(5000)?
+    armed_listener = listener.with_deadline(accept_deadline)
+    send(ready, armed_listener.local_addr()?.text())?
+
+    conn = armed_listener.accept()?
+    payload = conn.read_exact(5)?
+    conn.write_all(payload)?
+    peer = conn.peer_addr()?
+    conn.close()?
+    armed_listener.close()?
+    return Result.Ok(peer.port() - peer.port() + bytes_len(payload))
+
+fn main() -> Result[int, RuntimeError]:
+    mut listener = listen_tcp("127.0.0.1:0")?
+    ready: channel[string] = channel()
+    server: task[Result[int, RuntimeError]] = go serve(listener, ready)
+
+    address = recv(ready)?
+    deadline = deadline_after(5000)?
+    token: cancel_token = timeout_token(5000)
+    mut client = connect_tcp_with_control(address, deadline, token)?
+    client = client.with_deadline(deadline)
+    payload = bytes_from_string("ping!")
+
+    client.write_all(payload)?
+    echoed = client.read_exact(5)?
+    text = bytes_to_string(echoed)?
+    local = client.local_addr()?
+    client.close()?
+
+    server_outcome = await server
+    served = server_outcome?
+    assert(text == "ping!", "expected tcp echo payload")
+    assert(local.port() > 0, "expected a concrete local client port")
+    return Result.Ok(served + len(text))

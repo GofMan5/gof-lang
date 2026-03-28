@@ -18,6 +18,80 @@ That does not mean their final API surface is finished. It means the language
 now has a real place to grow typed networking and stream primitives without
 stretching bootstrap builtins forever.
 
+## Shipped bytes, stream, deadline, and TCP foundation
+
+The current shipped stdlib foundation is intentionally explicit and small:
+
+- `bytes`
+  - `Bytes`
+  - `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
+- `io`
+  - `ReadStream`, `WriteStream`
+  - `open_read_stream`, `open_write_stream`
+- `time`
+  - `NetDeadline`
+  - `deadline_after`, `deadline_at_unix_millis`
+- `net`
+  - `DuplexStream`, `TcpListener`, `SocketAddr`
+  - `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+
+These are shipped stdlib APIs, not forever-builtins. Internally they still use
+bootstrap bridge hooks, but user code learns them through normal imports.
+
+```gof
+import bytes
+import io
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    payload = bytes_from_string("hello")
+    deadline = deadline_after(1000)?
+    mut writer = open_write_stream("roundtrip.txt")?
+    writer = writer.with_deadline(deadline)
+    writer.write_all(payload)?
+    writer.flush()?
+    writer.close()?
+
+    mut reader = open_read_stream("roundtrip.txt")?
+    reader = reader.with_deadline(deadline)
+    text = reader.read_all()?.to_string()?
+    reader.close()?
+    return Result.Ok(len(text))
+```
+
+```gof
+import bytes
+import net
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    deadline = deadline_after(1000)?
+    listener = listen_tcp("127.0.0.1:0")?.with_deadline(deadline)
+    address = listener.local_addr()?
+    client = connect_tcp_with_control(address.text(), deadline, timeout_token(1000))?
+    client.write_all(bytes_from_string("ping"))?
+    return Result.Ok(address.port() + bytes_len(bytes_from_string("ping")))
+```
+
+Important current rules:
+
+- blocking I/O returns `Result[..., RuntimeError]` instead of hiding failure in ambient runtime state
+- deadlines and cancellation are explicit wrappers on stream and listener values
+- `Bytes` and the stream/listener/socket/deadline types are opaque in bootstrap `gof`; user code gets behavior only through the documented APIs
+- this slice does not promise zero-copy, HTTP client/server, TLS policy, or observability yet
+
+Current network-oriented runtime errors now also distinguish:
+
+- `RuntimeError.Utf8(message)`
+- `RuntimeError.NetDns(message)`
+- `RuntimeError.NetConnect(message)`
+- `RuntimeError.NetTimeout(message)`
+- `RuntimeError.NetTls(message)`
+- `RuntimeError.NetProxy(message)`
+- `RuntimeError.NetProtocol(message)`
+- `RuntimeError.NetReset(message)`
+- `RuntimeError.NetClosed`
+
 ## Output and correctness checks
 
 ```gof

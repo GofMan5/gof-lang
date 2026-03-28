@@ -22,11 +22,13 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `break_continue.gof`: loop control through `break` and `continue`
 - `hello_print.gof`: builtin `print(...)` plus normal return value rendering
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
+- `bytes_stream_roundtrip.gof`: shipped `bytes` / `io` / `time` stdlib foundation with explicit `Bytes`, stream deadlines, and roundtrip file I/O
 - `line_io.gof`: line-oriented file I/O with `write_lines(...)`, `read_lines(...)`, and explicit cleanup
 - `stdin_report.gof`: explicit stdin ingestion through `read_stdin()` and `read_stdin_lines()` for shell-style pipelines
 - `time_report.gof`: explicit Unix wall-clock helpers through `unix_seconds()` and `unix_millis()`
 - `base64_report.gof`: explicit base64 encode/decode helpers for HTTP/CI/script payloads
 - `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names
+- `tcp_roundtrip.gof`: shipped `net` / `time` stdlib foundation with `TcpListener`, `DuplexStream`, explicit deadlines, and loopback roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
 - `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers
@@ -78,11 +80,13 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `break_continue.gof` -> `4`
 - `hello_print.gof` -> prints `gof ready`, `42`, then `7`
 - `io_roundtrip.gof` -> `Result.Ok(value: 6)`
+- `bytes_stream_roundtrip.gof` -> `Result.Ok(value: 20)`
 - `line_io.gof` -> `Result.Ok(value: 19)`
 - `stdin_report.gof` -> `Result.Ok(value: chars=11 first=alpha lines=2)` for stdin `alpha\nbeta\n`
 - `time_report.gof` -> `Result.Ok(value: 1)`
 - `base64_report.gof` -> `Result.Ok(value: 12)`
 - `stdlib_imports.gof` -> `0`
+- `tcp_roundtrip.gof` -> `Result.Ok(value: 10)`
 - `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`

@@ -1,0 +1,24 @@
+import bytes
+import io
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    path = "target/bytes_stream_roundtrip.txt"
+    deadline = deadline_after(1500)?
+    payload = bytes_from_string("gof-stdlib")
+
+    mut writer = open_write_stream(path)?
+    writer = writer.with_deadline(deadline)
+    writer.write_all(payload)?
+    writer.flush()?
+    writer.close()?
+
+    mut reader = open_read_stream(path)?
+    reader = reader.with_deadline(deadline)
+    echoed = reader.read_all()?
+    reader.close()?
+
+    text = bytes_to_string(echoed)?
+    assert(text == "gof-stdlib", "expected bytes roundtrip")
+    assert(deadline.remaining_millis() >= 0, "deadline helper should stay non-negative")
+    return Result.Ok(bytes_len(echoed) + len(text))
