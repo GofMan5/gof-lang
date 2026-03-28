@@ -210,7 +210,7 @@ Hard sequencing rule:
 ### M4. Minimal Useful Standard Library
 
 - `[x]` output primitive (`print` or equivalent)
-- `[x]` basic file I/O baseline through `read_file(...)` and `write_file(...)`
+- `[x]` basic file I/O baseline through `read_file(...)`, `write_file(...)`, `read_lines(...)`, and `write_lines(...)`
 - `[x]` process and filesystem helpers on top of explicit `Result`
 - `[x]` path helpers for CLI tooling and bot-oriented programs
 - `[x]` basic string helpers

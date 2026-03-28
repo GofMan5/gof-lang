@@ -932,6 +932,42 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_line_file_builtins() {
+        let source = SourceFile::new(
+            "line_io.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    write_lines(\"out.txt\", [\"alpha\", \"beta\"])?\n    lines = read_lines(\"out.txt\")?\n    return Result.Ok(len(join(lines, \"-\")))\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+            }
+            other => panic!("expected read_lines bind, got {other:?}"),
+        }
+
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "write_lines"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "read_lines"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_range_builtin() {
         let source = SourceFile::new(
             "range_helpers.gof",

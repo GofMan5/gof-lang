@@ -532,6 +532,8 @@ enum CallKind {
     BuiltinPathExt,
     BuiltinReadFile,
     BuiltinWriteFile,
+    BuiltinReadLines,
+    BuiltinWriteLines,
     BuiltinDict,
     BuiltinInsert,
     BuiltinKeys,
@@ -2203,6 +2205,8 @@ fn lower_expr(
                     | CallKind::BuiltinPathExt
                     | CallKind::BuiltinReadFile
                     | CallKind::BuiltinWriteFile
+                    | CallKind::BuiltinReadLines
+                    | CallKind::BuiltinWriteLines
                     | CallKind::BuiltinDict
                     | CallKind::BuiltinInsert
                     | CallKind::BuiltinKeys
@@ -2882,6 +2886,12 @@ fn validate_call(
         CallKind::BuiltinWriteFile => {
             validate_write_file_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinReadLines => {
+            validate_read_lines_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinWriteLines => {
+            validate_write_lines_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinDict => {
             validate_dict_call(args, span, diagnostics, source_path);
         }
@@ -3484,6 +3494,10 @@ fn resolve_call_kind(
         CallKind::BuiltinReadFile
     } else if callee == "write_file" {
         CallKind::BuiltinWriteFile
+    } else if callee == "read_lines" {
+        CallKind::BuiltinReadLines
+    } else if callee == "write_lines" {
+        CallKind::BuiltinWriteLines
     } else if callee == "dict" {
         CallKind::BuiltinDict
     } else if callee == "insert" {
@@ -3589,6 +3603,13 @@ fn call_return_type(
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinWriteFile => {
+            Type::result(Type::Unit, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinReadLines => Type::result(
+            Type::list(Type::String),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        CallKind::BuiltinWriteLines => {
             Type::result(Type::Unit, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinDict => Type::dict(Type::Unknown),
@@ -6292,6 +6313,93 @@ fn validate_write_file_call(
     }
 }
 
+fn validate_read_lines_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `read_lines`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `read_lines(path)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3043",
+                "`read_lines` requires a string path",
+                format!("this path resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string path like `\"notes.txt\"` to `read_lines`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_write_lines_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `write_lines`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `write_lines(path, lines)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3043",
+                "`write_lines` requires a string path",
+                format!("this path resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string path as the first argument to `write_lines`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+    if !matches!(
+        &args[1].ty,
+        Type::List(inner) if matches!(inner.as_ref(), Type::String | Type::Unknown)
+    ) && !matches!(args[1].ty, Type::Unknown)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3043",
+                "`write_lines` requires `list[string]` contents",
+                format!(
+                    "this contents value resolves to `{}`",
+                    args[1].ty.display_name()
+                ),
+                args[1].span,
+            )
+            .with_fix_it("pass a `list[string]` value as the second argument to `write_lines`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_dict_call(
     args: &[TypedExpr],
     span: Span,
@@ -7470,6 +7578,29 @@ mod tests {
     }
 
     #[test]
+    fn supports_line_file_builtins() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    write_lines(\"out.txt\", [\"alpha\", \"beta\"])?\n    lines = read_lines(\"out.txt\")?\n    assert(lines[0] == \"alpha\", \"expected first line\")\n    return Result.Ok(len(lines))\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+            }
+            other => panic!("expected line bind, got {other:?}"),
+        }
+
+        assert_eq!(
+            module.functions[0].return_type,
+            Type::Result(
+                Box::new(Type::Int),
+                Box::new(Type::Enum("RuntimeError".to_string()))
+            )
+        );
+    }
+
+    #[test]
     fn supports_dict_view_builtins() {
         let module = lower_source(
             "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    return len(names) + counts[0] + counts[1] + counts[2]\n",
@@ -7809,6 +7940,26 @@ mod tests {
             .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3052"]);
+    }
+
+    #[test]
+    fn rejects_invalid_read_lines_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[list[string], RuntimeError]:\n    return read_lines(1)\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3043"]);
+    }
+
+    #[test]
+    fn rejects_invalid_write_lines_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[unit, RuntimeError]:\n    return write_lines(\"out.txt\", [1, 2])\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3043"]);
     }
 
     #[test]

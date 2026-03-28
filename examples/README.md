@@ -22,6 +22,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `break_continue.gof`: loop control through `break` and `continue`
 - `hello_print.gof`: builtin `print(...)` plus normal return value rendering
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
+- `line_io.gof`: line-oriented file I/O with `write_lines(...)`, `read_lines(...)`, and explicit cleanup
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
 - `await_result.gof`: explicit recoverable task joins for plain `task[T]` values
@@ -67,6 +68,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `break_continue.gof` -> `4`
 - `hello_print.gof` -> prints `gof ready`, `42`, then `7`
 - `io_roundtrip.gof` -> `Result.Ok(value: 6)`
+- `line_io.gof` -> `Result.Ok(value: 19)`
 - `concurrent_squares.gof` -> `225`
 - `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``
 - `channel_select.gof` -> `Result.Ok(value: 9)`

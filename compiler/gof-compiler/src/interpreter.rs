@@ -2439,6 +2439,34 @@ fn eval_expr(
                 );
             }
 
+            if callee == "read_lines" {
+                return eval_read_lines_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "write_lines" {
+                return eval_write_lines_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
             if callee == "dict" {
                 return Ok(eval_dict_builtin(args, source_path, *span)?);
             }
@@ -5716,6 +5744,160 @@ fn eval_write_file_builtin(
     })
 }
 
+fn eval_read_lines_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `read_lines`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `read_lines(path)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let path_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::String(path_text) = path_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3043",
+                "`read_lines` requires a string path",
+                format!("this path resolves to `{}`", value_name(&path_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a string path like `\"notes.txt\"` to `read_lines`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    Ok(match fs::read_to_string(&path_text) {
+        Ok(contents) => result_ok(Value::List(
+            contents
+                .lines()
+                .map(|line| Value::String(line.to_string()))
+                .collect(),
+        )),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    })
+}
+
+fn eval_write_lines_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 2 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `write_lines`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `write_lines(path, lines)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let path_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let lines_value = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    let Value::String(path_text) = path_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3043",
+                "`write_lines` requires a string path",
+                format!("this path resolves to `{}`", value_name(&path_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a string path as the first argument to `write_lines`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    let Value::List(lines) = lines_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3043",
+                "`write_lines` requires `list[string]` contents",
+                format!(
+                    "this contents value resolves to `{}`",
+                    value_name(&lines_value)
+                ),
+                args[1].span(),
+            )
+            .with_fix_it("pass a `list[string]` value as the second argument to `write_lines`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    let mut string_lines = Vec::with_capacity(lines.len());
+    for line in lines {
+        let Value::String(text) = line else {
+            return eval_diagnostics(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3043",
+                    "`write_lines` requires `list[string]` contents",
+                    format!("this list contains `{}`", value_name(&line)),
+                    args[1].span(),
+                )
+                .with_fix_it("ensure every element passed to `write_lines` is a string")
+                .with_source_path(source_path.to_path_buf()),
+            ]));
+        };
+        string_lines.push(text);
+    }
+
+    Ok(match fs::write(&path_text, string_lines.join("\n")) {
+        Ok(()) => result_ok(Value::Unit),
+        Err(error) => result_err(runtime_io_error(error.to_string())),
+    })
+}
+
 fn eval_dict_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult<Value> {
     if !args.is_empty() {
         return eval_diagnostics(Diagnostics(vec![
@@ -7913,6 +8095,24 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_line_oriented_file_io() {
+        let temp = tempdir().expect("tempdir should exist");
+        let output_path = temp.path().join("lines.txt");
+        let output = output_path.to_string_lossy().replace('\\', "\\\\");
+
+        let value = run_source(&format!(
+            "fn main() -> Result[int, RuntimeError]:\n    path = \"{output}\"\n    write_lines(path, [\"alpha\", \"beta\", \"gamma\"])?\n    lines = read_lines(path)?\n    assert(lines[1] == \"beta\", \"expected middle line\")\n    return Result.Ok(len(lines) + len(join(lines, \"-\")))\n"
+        ))
+        .expect("program should run");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 19)"));
+        assert_eq!(
+            std::fs::read_to_string(&output_path).expect("output file should exist"),
+            "alpha\nbeta\ngamma"
+        );
+    }
+
+    #[test]
     fn evaluates_dict_view_builtins() {
         let value = run_source(
             "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    mut total = 0\n    for name in names:\n        total = total + len(name)\n    for count in counts:\n        total = total + count\n    return total\n",
@@ -8224,6 +8424,20 @@ mod tests {
         let diagnostics = run_source("fn main() -> string:\n    return join([1, 2], \",\")\n")
             .expect_err("join operand should fail");
         assert_eq!(diagnostics.codes(), vec!["GOF3056"]);
+    }
+
+    #[test]
+    fn write_lines_rejects_non_string_lists_at_runtime() {
+        let temp = tempdir().expect("tempdir should exist");
+        let output_path = temp.path().join("lines.txt");
+        let output = output_path.to_string_lossy().replace('\\', "\\\\");
+
+        let diagnostics = run_source(&format!(
+            "fn persist(path: string, lines: list) -> Result[unit, RuntimeError]:\n    return write_lines(path, lines)\nfn main() -> Result[unit, RuntimeError]:\n    return persist(\"{output}\", [1, 2])\n"
+        ))
+        .expect_err("write_lines should reject non-string line lists at runtime");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3043"]);
     }
 
     #[test]

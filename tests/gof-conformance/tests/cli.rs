@@ -539,6 +539,20 @@ fn gof_run_executes_io_roundtrip_example() {
 }
 
 #[test]
+fn gof_run_executes_line_io_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("line_io.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("19"));
+}
+
+#[test]
 fn gof_run_executes_runtime_ops_example_with_args_env_and_fs_helpers() {
     let temp = tempdir().expect("tempdir should exist");
     let example = gof_conformance::workspace_root()

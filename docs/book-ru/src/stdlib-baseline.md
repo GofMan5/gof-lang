@@ -39,6 +39,7 @@ fn main() -> Result[int, RuntimeError]:
 - `env(name)` читает одну переменную окружения
 - `cwd()` возвращает current working directory
 - `read_file(path)` и `write_file(path, contents)` используют `Result`
+- `read_lines(path)` и `write_lines(path, lines)` дают явный line-oriented I/O через `Result[list[string], RuntimeError]` и `Result[unit, RuntimeError]`
 - `exists(path)`, `read_dir(path)`, `mkdir(path)` и `remove_file(path)` остаются string-based
 - path helpers остаются явными через `path_join`, `path_dir`, `path_base` и `path_ext`
 

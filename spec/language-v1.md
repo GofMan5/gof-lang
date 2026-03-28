@@ -91,7 +91,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `print(...)` for one printable value
 - builtin `assert(...)` for boolean correctness contracts
 - builtin `argv()`, `env(...)`, and `cwd()` for process and environment access
-- builtin `read_file(...)`, `write_file(...)`, `exists(...)`, `read_dir(...)`, `mkdir(...)`, and `remove_file(...)` for bootstrap filesystem work
+- builtin `read_file(...)`, `write_file(...)`, `read_lines(...)`, `write_lines(...)`, `exists(...)`, `read_dir(...)`, `mkdir(...)`, and `remove_file(...)` for bootstrap filesystem work
 - builtin `path_join(...)`, `path_dir(...)`, `path_base(...)`, and `path_ext(...)` for explicit string-based path handling
 - builtin `dict()` and `insert(...)` for bootstrap key/value data
 - builtin `keys(dict)` and `values(dict)` for deterministic dict views
@@ -169,7 +169,7 @@ The bootstrap compiler in this repository currently supports:
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
 - `argv()`, `env(name)`, and `cwd()` are currently builtins recognized by the compiler and evaluator
-- `read_file(path)`, `write_file(path, contents)`, `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` are currently builtins recognized by the compiler and evaluator
+- `read_file(path)`, `write_file(path, contents)`, `read_lines(path)`, `write_lines(path, lines)`, `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` are currently builtins recognized by the compiler and evaluator
 - `path_join(left, right)`, `path_dir(path)`, `path_base(path)`, and `path_ext(path)` are currently builtins recognized by the compiler and evaluator
 - `dict()` and `insert(dict, key, value)` are currently builtins recognized by the compiler and evaluator
 - `keys(dict)` and `values(dict)` are currently builtins recognized by the compiler and evaluator
@@ -215,6 +215,8 @@ The bootstrap compiler in this repository currently supports:
 - `cwd` currently accepts no arguments and returns `Result[string, RuntimeError]`
 - `read_file` currently accepts exactly one string path and returns `Result[string, RuntimeError]`
 - `write_file` currently accepts exactly one string path plus one string contents value and returns `Result[unit, RuntimeError]`
+- `read_lines` currently accepts exactly one string path and returns `Result[list[string], RuntimeError]`
+- `write_lines` currently accepts exactly one string path plus one `list[string]` value and returns `Result[unit, RuntimeError]`
 - `exists` currently accepts exactly one string path and returns `bool`
 - `read_dir` currently accepts exactly one string path and returns `Result[list[string], RuntimeError]`
 - `mkdir` and `remove_file` currently accept exactly one string path and return `Result[unit, RuntimeError]`

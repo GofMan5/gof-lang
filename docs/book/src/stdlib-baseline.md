@@ -39,6 +39,7 @@ Current operational baseline is intentionally explicit:
 - `env(name)` reads one environment variable
 - `cwd()` returns the current working directory
 - `read_file(path)` and `write_file(path, contents)` use `Result`
+- `read_lines(path)` and `write_lines(path, lines)` keep line-oriented file automation explicit through `Result[list[string], RuntimeError]` and `Result[unit, RuntimeError]`
 - `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` stay string-based
 - path helpers stay explicit through `path_join`, `path_dir`, `path_base`, and `path_ext`
 

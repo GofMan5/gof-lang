@@ -1,0 +1,7 @@
+fn main() -> Result[int, RuntimeError]:
+    path = "gof-line-io-demo.txt"
+    write_lines(path, ["alpha", "beta", "gamma"])?
+    lines = read_lines(path)?
+    assert(lines[1] == "beta", "expected middle line")
+    remove_file(path)?
+    return Result.Ok(len(lines) + len(join(lines, "-")))
