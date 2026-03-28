@@ -64,7 +64,7 @@ gof test tests/fixtures                # run conformance suite
 | `print`, `assert`, `argv`, `env`, `cwd`, file I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
 | JSON helpers and bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
-| `go`, `await`, `await_result(task)`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
+| `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | Formatter, conformance tests | stable |
 
@@ -91,8 +91,10 @@ Cancellation now also has a timeout-backed baseline through
 full deadline/context propagation remains future work.
 
 Task joins now also have an explicit recoverable baseline through
-`await_result(task)`, which returns `Result[T, RuntimeError]` for any task
-without changing the existing plain-`await` semantics.
+`await_result(task)` and `await_result(task, token)`, which return
+`Result[T, RuntimeError]` for any task without changing the existing
+plain-`await` semantics. The optional token lets join-sites time out or cancel
+without changing the spawned function contract.
 
 Channels now also have an explicit capacity baseline:
 

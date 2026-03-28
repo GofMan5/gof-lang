@@ -168,6 +168,29 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_cancellable_await_result_builtin() {
+        let source = SourceFile::new(
+            "await_result_token.gof",
+            "fn lucky() -> int:\n    return 7\nfn main() -> Result[int, RuntimeError]:\n    task = go lucky()\n    token = cancel_token()\n    return await_result(task, token)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[1].body[2] {
+            crate::typed_hir::TypedStmt::Return(expr) => {
+                assert_eq!(
+                    expr.ty,
+                    Type::Result(
+                        Box::new(Type::Int),
+                        Box::new(Type::Enum("RuntimeError".to_string())),
+                    )
+                );
+            }
+            other => panic!("expected return statement, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pipeline_preserves_explicit_return_contracts() {
         let source = SourceFile::new(
             "typed.gof",

@@ -93,7 +93,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3075`: postfix `?` used outside a compatible `Result` return contract
 - `GOF3076`: invalid string contract for process, path, JSON, or HTTP helpers
 - `GOF3081`: invalid operand for builtin `close`
-- `GOF3082`: invalid operand for cancellation-token-aware builtins
+- `GOF3082`: invalid operand for cancellation-token-aware builtins such as `cancel`, `is_cancelled`, `cancel_after`, `recv(..., token)`, `send(..., token)`, and `await_result(task, token)`
 - `GOF3083`: invalid operand for JSON helpers
 - `GOF3084`: invalid JSON index type
 - `GOF3085`: invalid operand for builtin `sleep`

@@ -5903,15 +5903,15 @@ fn validate_await_result_call(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
-    if args.len() != 1 {
+    if !(1..=2).contains(&args.len()) {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3005",
                 "wrong number of arguments for `await_result`",
-                format!("expected 1 argument, got {}", args.len()),
+                format!("expected 1 or 2 arguments, got {}", args.len()),
                 span,
             )
-            .with_fix_it("call `await_result(task)`")
+            .with_fix_it("call `await_result(task)` or `await_result(task, token)`")
             .with_source_path(source_path.to_path_buf()),
         );
         return;
@@ -5926,6 +5926,19 @@ fn validate_await_result_call(
                 args[0].span,
             )
             .with_fix_it("pass a value produced by `go`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if args.len() == 2 && !matches!(args[1].ty, Type::CancelToken | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3082",
+                "`await_result` requires a cancellation token as its optional second argument",
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a value created by `cancel_token()` as the second argument")
             .with_source_path(source_path.to_path_buf()),
         );
     }
@@ -6762,7 +6775,7 @@ fn infer_recv_return_type(args: &[TypedExpr]) -> Type {
 }
 
 fn infer_await_result_return_type(args: &[TypedExpr]) -> Type {
-    if args.len() != 1 {
+    if !(1..=2).contains(&args.len()) {
         return Type::Unknown;
     }
 
@@ -7255,6 +7268,27 @@ mod tests {
     }
 
     #[test]
+    fn supports_await_result_builtin_with_optional_cancellation_token() {
+        let module = lower_source(
+            "fn lucky() -> int:\n    return 7\nfn main() -> Result[int, RuntimeError]:\n    task = go lucky()\n    token = cancel_token()\n    return await_result(task, token)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[1].body[2] {
+            TypedStmt::Return(expr) => {
+                assert_eq!(
+                    expr.ty,
+                    Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+                );
+                assert!(
+                    matches!(&expr.kind, TypedExprKind::Call { callee, args } if callee == "await_result" && args.len() == 2)
+                );
+            }
+            other => panic!("expected await_result return with token, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_parameterized_builtin_type_annotations() {
         let module = lower_source(
             "fn first(values: list[int]) -> int:\n    return values[0]\nfn main() -> Result[dict[int], RuntimeError]:\n    ch: channel[int] = channel()\n    send(ch, first([7, 9]))?\n    return Result.Ok({\"ok\": recv(ch)?})\n",
@@ -7661,6 +7695,16 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3009"]);
+    }
+
+    #[test]
+    fn rejects_await_result_with_non_token_optional_argument() {
+        let diagnostics = lower_source(
+            "fn lucky() -> int:\n    return 7\nfn main() -> Result[int, RuntimeError]:\n    task = go lucky()\n    return await_result(task, 1)\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3082"]);
     }
 
     #[test]

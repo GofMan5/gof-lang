@@ -23,6 +23,7 @@ Current rules:
 - the result is a task value
 - `await` waits for that task value
 - `await_result(task)` joins any task as `Result[T, RuntimeError]` without changing the existing plain-`await` contract
+- `await_result(task, token)` lets the join-site return `Result.Err(RuntimeError.Cancelled)` if that token is cancelled before the task completes
 - when the spawned function explicitly declares `-> Result[..., RuntimeError]`,
   task-boundary evaluator failures now come back as
   `Result.Err(RuntimeError.TaskFailed(...))` or
@@ -38,6 +39,16 @@ fn lucky() -> int:
 fn main() -> Result[int, RuntimeError]:
     job: task[int] = go lucky()
     return await_result(job)
+```
+
+```gof
+fn slow() -> int:
+    sleep(25)
+    return 7
+
+fn main() -> Result[int, RuntimeError]:
+    job: task[int] = go slow()
+    return await_result(job, timeout_token(0))
 ```
 
 The mental model is:

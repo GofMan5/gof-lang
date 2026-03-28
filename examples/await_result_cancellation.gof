@@ -1,0 +1,12 @@
+fn slow() -> int:
+    sleep(25)
+    return 7
+
+fn main() -> string:
+    task: task[int] = go slow()
+    outcome = await_result(task, timeout_token(0))
+    match outcome:
+        Result.Ok(value):
+            return to_string(value)
+        Result.Err(error):
+            return to_string(error)

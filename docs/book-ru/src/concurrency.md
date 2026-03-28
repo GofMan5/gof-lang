@@ -22,6 +22,7 @@ fn main() -> int:
 - результат — task value
 - `await` ждет этот task value
 - `await_result(task)` делает recoverable join для любого task как `Result[T, RuntimeError]`, не меняя обычный контракт `await`
+- `await_result(task, token)` позволяет join-site вернуть `Result.Err(RuntimeError.Cancelled)`, если token отменен до завершения task
 - если spawned-функция явно объявлена как `-> Result[..., RuntimeError]`,
   task-boundary evaluator failures теперь возвращаются как
   `Result.Err(RuntimeError.TaskFailed(...))` или
@@ -36,6 +37,16 @@ fn lucky() -> int:
 fn main() -> Result[int, RuntimeError]:
     job: task[int] = go lucky()
     return await_result(job)
+```
+
+```gof
+fn slow() -> int:
+    sleep(25)
+    return 7
+
+fn main() -> Result[int, RuntimeError]:
+    job: task[int] = go slow()
+    return await_result(job, timeout_token(0))
 ```
 
 Ментальная модель такая:

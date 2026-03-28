@@ -552,8 +552,8 @@ impl TaskValue {
         self.0.await_value()
     }
 
-    fn await_result_value(&self) -> Value {
-        self.0.await_result_value()
+    fn await_result_value(&self, token: Option<&CancelTokenValue>) -> Value {
+        self.0.await_result_value(token)
     }
 }
 
@@ -655,23 +655,36 @@ impl TaskHandle {
         self.store(TaskOutcome::Panic(panic));
     }
 
-    fn wait_outcome(&self) -> TaskOutcome {
+    fn wait_outcome(&self, token: Option<&CancelTokenValue>) -> Option<TaskOutcome> {
         let (lock, ready) = &*self.result;
         let mut slot = lock
             .lock()
             .expect("task result mutex should not be poisoned");
-        while slot.is_none() {
-            slot = ready
-                .wait(slot)
-                .expect("task result wait should not be poisoned");
+        loop {
+            if let Some(outcome) = slot.as_ref() {
+                return Some(outcome.clone());
+            }
+            if token.is_some_and(CancelTokenValue::is_cancelled) {
+                return None;
+            }
+            if token.is_some() {
+                let (next_slot, _) = ready
+                    .wait_timeout(slot, Duration::from_millis(5))
+                    .expect("task result wait_timeout should not be poisoned");
+                slot = next_slot;
+            } else {
+                slot = ready
+                    .wait(slot)
+                    .expect("task result wait should not be poisoned");
+            }
         }
-        slot.as_ref()
-            .expect("task result should exist after wait")
-            .clone()
     }
 
     fn await_value(&self) -> Result<Value, Diagnostics> {
-        match self.wait_outcome() {
+        match self
+            .wait_outcome(None)
+            .expect("non-cancellable task waits should always produce an outcome")
+        {
             TaskOutcome::Value(value) => Ok(value),
             TaskOutcome::Diagnostics(diagnostics) => match self.boundary {
                 TaskBoundary::Direct => Err(diagnostics),
@@ -688,13 +701,14 @@ impl TaskHandle {
         }
     }
 
-    fn await_result_value(&self) -> Value {
-        match self.wait_outcome() {
-            TaskOutcome::Value(value) => result_ok(value),
-            TaskOutcome::Diagnostics(diagnostics) => result_err(runtime_task_failed_error(
+    fn await_result_value(&self, token: Option<&CancelTokenValue>) -> Value {
+        match self.wait_outcome(token) {
+            None => result_err(runtime_cancelled_error()),
+            Some(TaskOutcome::Value(value)) => result_ok(value),
+            Some(TaskOutcome::Diagnostics(diagnostics)) => result_err(runtime_task_failed_error(
                 task_failure_message(&diagnostics),
             )),
-            TaskOutcome::Panic(panic) => {
+            Some(TaskOutcome::Panic(panic)) => {
                 result_err(runtime_task_panicked_error(&panic.function_name))
             }
         }
@@ -6596,20 +6610,20 @@ fn eval_await_result_builtin(
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
-    if args.len() != 1 {
+    if !(1..=2).contains(&args.len()) {
         return eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3005",
                 "wrong number of arguments for `await_result`",
-                format!("expected 1 argument, got {}", args.len()),
+                format!("expected 1 or 2 arguments, got {}", args.len()),
                 span,
             )
-            .with_fix_it("call `await_result(task)`")
+            .with_fix_it("call `await_result(task)` or `await_result(task, token)`")
             .with_source_path(source_path.to_path_buf()),
         ]));
     }
 
-    match eval_expr(
+    let task_value = eval_expr(
         &args[0],
         scopes,
         functions,
@@ -6618,8 +6632,24 @@ fn eval_await_result_builtin(
         enums,
         output,
         source_path,
-    )? {
-        Value::Task(task) => Ok(task.await_result_value()),
+    )?;
+    let cancel_token = if args.len() == 2 {
+        Some(eval_cancel_token_argument(
+            &args[1],
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        )?)
+    } else {
+        None
+    };
+
+    match task_value {
+        Value::Task(task) => Ok(task.await_result_value(cancel_token.as_ref())),
         _ => eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3009",
@@ -7400,8 +7430,8 @@ fn condition_span(stmt: &Stmt) -> Span {
 #[cfg(test)]
 mod tests {
     use super::{
-        ChannelHandle, ChannelReceiveState, TaskBoundary, TaskHandle, TaskPanic, Value, run,
-        run_with_output,
+        CancelTokenValue, ChannelHandle, ChannelReceiveState, TaskBoundary, TaskHandle, TaskPanic,
+        Value, result_ok, run, run_with_output,
     };
     use crate::ast::parse;
     use crate::cst::CstModule;
@@ -7536,12 +7566,44 @@ mod tests {
             span: Span::new(1, 1, 1),
         });
 
-        let value = task.await_result_value();
+        let value = task.await_result_value(None);
 
         assert_eq!(
             value.cli_text().as_deref(),
             Some("Result.Err(error: RuntimeError.TaskPanicked(task: worker))")
         );
+    }
+
+    #[test]
+    fn await_result_supports_optional_cancellation_tokens() {
+        let value = run_source(
+            "fn lucky() -> int:\n    return 7\nfn main() -> int:\n    token = cancel_token()\n    outcome = await_result(go lucky(), token)\n    match outcome:\n        Result.Ok(value):\n            return value\n        Result.Err(_):\n            return 0\n",
+        )
+        .expect("await_result with a live token should preserve successful joins");
+
+        assert_eq!(value, Value::Int(7));
+    }
+
+    #[test]
+    fn await_result_returns_cancelled_when_join_token_is_cancelled() {
+        let value = run_source(
+            "fn slow() -> int:\n    sleep(25)\n    return 7\nfn main() -> string:\n    task = go slow()\n    outcome = await_result(task, timeout_token(0))\n    match outcome:\n        Result.Ok(value):\n            return to_string(value)\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("await_result should surface cancellation as a runtime error result");
+
+        assert_eq!(value.cli_text().as_deref(), Some("RuntimeError.Cancelled"));
+    }
+
+    #[test]
+    fn await_result_prefers_ready_task_outcomes_over_cancelled_join_tokens() {
+        let task = TaskHandle::new(TaskBoundary::Direct);
+        task.store_value(Value::Int(9));
+        let token = CancelTokenValue::new();
+        token.cancel();
+
+        let value = task.await_result_value(Some(&token));
+
+        assert_eq!(value, result_ok(Value::Int(9)));
     }
 
     #[test]
@@ -7551,6 +7613,16 @@ mod tests {
                 .expect_err("await_result should reject non-task operands");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3009"]);
+    }
+
+    #[test]
+    fn rejects_await_result_with_non_token_optional_argument() {
+        let diagnostics = run_source(
+            "fn lucky() -> int:\n    return 7\nfn main() -> Result[int, RuntimeError]:\n    task = go lucky()\n    return await_result(task, 1)\n",
+        )
+        .expect_err("await_result should reject non-token optional arguments");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3082"]);
     }
 
     #[test]

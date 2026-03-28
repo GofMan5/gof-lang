@@ -604,6 +604,20 @@ fn gof_run_executes_await_result_example() {
 }
 
 #[test]
+fn gof_run_executes_await_result_cancellation_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("await_result_cancellation.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("RuntimeError.Cancelled"));
+}
+
+#[test]
 fn gof_run_executes_telegram_long_polling_example_against_fake_api() {
     let example = gof_conformance::workspace_root()
         .join("examples")
