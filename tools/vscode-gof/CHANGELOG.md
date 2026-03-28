@@ -1,5 +1,13 @@
 # Change Log
 
+## 0.2.0
+
+- Added compiler-backed VS Code diagnostics via `gof check --json --stdin`
+- Added extension commands for diagnostics output and manual refresh
+- Added settings for debounce, save-only checks, explicit toolchain path, and cargo fallback
+- Extended builtin syntax coverage for `read_lines`, `write_lines`, `toml_parse`, `csv_parse`, and `csv_stringify`
+- Added diagnostics helper tests alongside packaging and grammar coverage
+
 ## 0.1.0
 
 - Initial VS Code syntax baseline for `gof`

@@ -123,7 +123,7 @@ Current sequence-helper rules:
 - `min` and `max` currently support only `list[int]` and `list[string]`
 - sequence helpers are explicit allocation-visible transforms; they do not hide mutation
 
-## JSON, CSV, HTTP, and explicit retry delays
+## JSON, CSV, TOML, HTTP, and explicit retry delays
 
 ```gof
 fn notify(base: string) -> Result[string, RuntimeError]:
@@ -134,7 +134,7 @@ fn notify(base: string) -> Result[string, RuntimeError]:
     return Result.Ok(status)
 ```
 
-Current JSON, CSV, and HTTP rules:
+Current JSON, CSV, TOML, and HTTP rules:
 
 - `json_parse(text)` returns `Result[json, RuntimeError]`
 - `json_get(value, key)` and `json_index(value, index)` keep JSON traversal explicit
@@ -142,6 +142,8 @@ Current JSON, CSV, and HTTP rules:
 - `csv_parse(text)` returns `Result[list[list[string]], RuntimeError]`
 - `csv_stringify(rows)` returns `Result[string, RuntimeError]`
 - malformed CSV text or failed serialization surface as `RuntimeError.Csv(message)`
+- `toml_parse(text)` returns `Result[json, RuntimeError]`
+- unsupported TOML scalars outside the bootstrap `json` bridge surface as `RuntimeError.Toml(message)`
 - `http_get(url)` is the current bootstrap HTTP read path
 - `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
 - `sleep(milliseconds)` makes retry and backoff intent explicit instead of hiding it in framework magic

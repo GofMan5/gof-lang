@@ -5,13 +5,62 @@ This extension provides an installable editor baseline for `gof`:
 - `.gof` file association
 - syntax highlighting
 - starter snippets for the core language surface
+- compiler-backed diagnostics powered by `gof check --json`
 - comment toggling with `#`
 - bracket pairing
 - indentation rules for colon-ended blocks
 - marketplace-ready packaging metadata and icon
 
-This is intentionally an editor baseline, not a full IDE layer yet. It does not
-ship LSP, debugger, profiler, rename support, or semantic analysis.
+This is intentionally an editor-first baseline, not the full IDE/platform layer
+yet. It now does real compiler diagnostics, but it still does not ship LSP,
+debugger, profiler, rename support, or go-to-definition.
+
+## Compiler-backed diagnostics
+
+When a `gof` toolchain is available, the extension runs:
+
+```bash
+gof check /path/to/file.gof --json --stdin
+```
+
+and maps the reported diagnostics back into VS Code. That means:
+
+- syntax and type errors come from the real compiler, not hand-written editor heuristics
+- the active buffer is checked through stdin, so diagnostics track unsaved edits
+- diagnostics stay aligned with the language's stable CLI contract instead of hidden extension-only logic
+
+The extension only publishes diagnostics for the active file it checked. If the
+compiler reports an imported module error, open that `.gof` file directly to see
+its inline diagnostics.
+
+### Toolchain resolution order
+
+The extension resolves the diagnostics toolchain in this order:
+
+1. `gof.toolchain.path`
+2. repo-local cargo fallback inside the `gof` repository
+3. `gof` on `PATH`
+
+The cargo fallback runs:
+
+```bash
+cargo run -q -p gof-cli --bin gof -- check /path/to/file.gof --json --stdin
+```
+
+That keeps the extension useful while working directly inside the `gof` repo,
+even before a standalone CLI is installed globally.
+
+### Settings
+
+- `gof.diagnostics.enabled`
+- `gof.diagnostics.debounceMs`
+- `gof.diagnostics.runOnSaveOnly`
+- `gof.toolchain.path`
+- `gof.toolchain.useCargoFallback`
+
+Use `gof: Recheck Active Document` to force an immediate refresh and
+`gof: Show Diagnostics Output` to inspect toolchain errors or invalid JSON
+payloads.
 
 ## Marketplace readiness
 
@@ -21,10 +70,12 @@ repo surgery:
 - a dedicated extension icon
 - gallery banner metadata for Marketplace/Open VSX listings
 - bundled snippets for common `gof` constructs
-- packaging tests that validate manifest metadata, snippets, and icon shape
+- compiler-backed diagnostics commands and settings
+- packaging tests that validate manifest metadata, snippets, icon shape, and diagnostics plumbing
 
-It still does not claim full language tooling. The package is ready to publish,
-but the language-platform layer is still future M12 work.
+It still does not claim full language tooling. The package is ready to publish
+and useful for real editing, but the deeper M12 platform layer is still future
+work.
 
 ## Local development
 
@@ -37,6 +88,12 @@ npm run package
 ```
 
 That produces a `.vsix` package in this directory.
+
+The test suite covers:
+
+- TextMate grammar scopes
+- manifest/configuration packaging contract
+- diagnostics helper logic and toolchain resolution
 
 ## Local installation in VS Code
 

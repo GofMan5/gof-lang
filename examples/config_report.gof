@@ -1,0 +1,7 @@
+fn main() -> Result[int, RuntimeError]:
+    config = toml_parse("name = \"alpha\"\nport = 7\n[limits]\nworkers = 5")?
+    limits = json_get(config, "limits")?
+    workers = json_int(json_get(limits, "workers")?)?
+    name = json_string(json_get(config, "name")?)?
+    port = json_int(json_get(config, "port")?)?
+    return Result.Ok(len(name) + workers + port)

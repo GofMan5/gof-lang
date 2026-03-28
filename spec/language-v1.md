@@ -106,6 +106,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `cancel_token()`, `cancel(...)`, `is_cancelled(...)`, `timeout_token(...)`, and `cancel_after(...)` for cooperative cancellation and timeout-backed token baselines
 - builtin `json_parse(...)`, `json_stringify(...)`, `json_get(...)`, `json_index(...)`, `json_len(...)`, `json_string(...)`, and `json_int(...)` for explicit JSON handling
 - builtin `csv_parse(...)` and `csv_stringify(...)` for explicit CSV handling
+- builtin `toml_parse(...)` for explicit TOML config handling through the bootstrap `json` bridge
 - builtin `http_get(...)` and `http_post(...)` for bootstrap HTTP work
 
 ## Bootstrap binding rules
@@ -142,7 +143,7 @@ The bootstrap compiler in this repository currently supports:
 - payload enum construction currently requires payload values compatible with the declared payload field types
 - `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
 - `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
-- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
+- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
 - `match value:` currently requires `value` to resolve to a known enum or `Result`
 - each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
 - `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
@@ -232,6 +233,8 @@ The bootstrap compiler in this repository currently supports:
 - `json_int` currently accepts exactly one `json` value and returns `Result[int, RuntimeError]`
 - `csv_parse` currently accepts exactly one CSV text string and returns `Result[list[list[string]], RuntimeError]`
 - `csv_stringify` currently accepts exactly one `list[list[string]]` rows value and returns `Result[string, RuntimeError]`
+- `toml_parse` currently accepts exactly one TOML text string and returns `Result[json, RuntimeError]`
+- `toml_parse` currently rejects TOML values outside the bootstrap `json` bridge such as floats and datetimes with `RuntimeError.Toml(message)`
 - `http_get` currently accepts exactly one string URL and returns `Result[string, RuntimeError]`
 - `http_post` currently accepts `(url, body)` or `(url, body, content_type)` and returns `Result[string, RuntimeError]`
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types

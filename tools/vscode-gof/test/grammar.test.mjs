@@ -122,5 +122,9 @@ test("highlights core gof syntax constructs", async () => {
   expectScope(lines, tokenLines, 22, "and", "keyword.operator.logical.gof");
   expectScope(lines, tokenLines, 22, "not", "keyword.operator.logical.gof");
   expectScope(lines, tokenLines, 22, "false", "constant.language.boolean.gof");
-  expectScope(lines, tokenLines, 27, "# syntax smoke", "comment.line.number-sign.gof");
+  expectScope(lines, tokenLines, 28, "read_lines", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 29, "join", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 30, "toml_parse", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 33, "csv_stringify", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 36, "# syntax smoke", "comment.line.number-sign.gof");
 });

@@ -45,6 +45,7 @@ After installation, open a new shell and use `gof` directly. Rust is not require
 
 ```bash
 gof run examples/geometry.gof          # run a program
+gof check examples/geometry.gof        # compile-only validation
 gof mod resolve --dir examples/package_app
 gof build app.gof --native             # build a native executable
 gof fmt src/main.gof                   # format
@@ -62,10 +63,11 @@ gof test tests/fixtures                # run conformance suite
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `env`, `cwd`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
-| JSON and CSV helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
+| JSON, CSV, and TOML helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
+| `gof check --json [--stdin]` | stable compiler-backed diagnostics contract |
 | Formatter, conformance tests | stable |
 
 See the [language spec](spec/language-v1.md) for the full contract.
@@ -110,7 +112,7 @@ Channels now also have an explicit capacity baseline:
 | **[The gof Book (RU)](https://gofman5.github.io/gof-lang/ru/)** | Russian edition |
 | [Examples](examples/) | Runnable programs |
 | [Telegram bot example](examples/telegram_long_polling.gof) | Long-polling baseline |
-| [VS Code extension](tools/vscode-gof/) | Syntax highlighting, snippets, comments, brackets, and installable packaging for `.gof` files |
+| [VS Code extension](tools/vscode-gof/) | Syntax highlighting, snippets, compiler-backed diagnostics, and installable packaging for `.gof` files |
 | [Language spec](spec/language-v1.md) | Formal contract |
 | [Diagnostics spec](spec/diagnostics.md) | Error behavior |
 | [Roadmap](roadmap.md) | Milestones and current focus |
@@ -146,6 +148,10 @@ npm test
 npm run package
 ```
 
+The extension now uses the real compiler through `gof check --json --stdin`
+when a toolchain is available, so syntax/type diagnostics stay aligned with the
+language contract instead of drifting into extension-only heuristics.
+
 Or package the same `.vsix` through the repo-level release helper:
 
 ```powershell
@@ -168,7 +174,7 @@ compiler/    compiler frontend, typing, IR, evaluator
 runtime/     runtime contracts
 stdlib/      standard library (in progress)
 tools/       CLI toolchain (gof-cli)
-tools/vscode-gof/ VS Code syntax extension and packaging
+tools/vscode-gof/ VS Code extension, diagnostics integration, and packaging
 tests/       conformance fixtures
 benchmarks/  benchmark harness
 spec/        language and diagnostics contracts

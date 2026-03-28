@@ -299,13 +299,13 @@ Hard sequencing rule:
 ### M9. Python and JavaScript-Class Scripting Coverage
 
 - `[ ]` script-first workflow with very fast edit-run loops
-- `[ ]` richer text, collections, time, env, config, and process stdlib
+- `[~]` richer text, collections, time, env, config, and process stdlib
 - `[~]` data wrangling baseline for JSON, CSV, templating, and filesystem automation
 - `[ ]` REPL or equivalent interactive exploration path
 - `[ ]` script packaging and single-command execution ergonomics
 - Checkpoints:
 - `[ ]` CP-M9-1: script runner and module UX that make small automation tasks frictionless
-- `[ ]` CP-M9-2: batteries-included automation stdlib without hidden runtime magic
+- `[~]` CP-M9-2: batteries-included automation stdlib without hidden runtime magic
 - `[~]` CP-M9-3: data transformation baseline suitable for real internal tooling
 - Exit criteria:
 - most tasks that would rationally be written in Python or Node for local automation can be written cleanly in `gof`
@@ -346,7 +346,7 @@ Hard sequencing rule:
 
 ### M12. Java-Class Platform, Compatibility, and Large-Codebase Coverage
 
-- `[x]` installable VS Code editor baseline for `.gof` with syntax highlighting and snippets
+- `[x]` installable VS Code editor baseline for `.gof` with syntax highlighting, snippets, and compiler-backed diagnostics
 - `[x]` rolling snapshot release now ships the installable VS Code extension asset
 - `[ ]` package identity, registry, and deterministic dependency model
 - `[ ]` editions or compatibility policy for long-lived codebases
@@ -355,7 +355,7 @@ Hard sequencing rule:
 - `[ ]` large-workspace build graph and incremental compilation strategy
 - `[ ]` diagnostics and observability suitable for multi-team repos
 - Checkpoints:
-- `[x]` CP-M12-0: installable VS Code editor baseline with syntax-highlighting, snippets, packaging, and snapshot distribution
+- `[x]` CP-M12-0: installable VS Code editor baseline with syntax-highlighting, snippets, compiler-backed diagnostics, packaging, and snapshot distribution
 - `[ ]` CP-M12-1: long-term compatibility and evolution policy
 - `[ ]` CP-M12-2: enterprise-scale tooling surface
 - `[ ]` CP-M12-3: workspace and package ergonomics for large codebases

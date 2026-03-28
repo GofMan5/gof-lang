@@ -10,7 +10,9 @@ use gof_compiler::{
     run_module_with_output,
 };
 use gof_runtime::profile;
+use serde_json::json;
 use std::fs;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,6 +27,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Build(BuildArgs),
+    Check(CheckArgs),
     Run(FileInput),
     Test(TestArgs),
     Fmt(FmtArgs),
@@ -50,6 +53,15 @@ struct BuildArgs {
     output: Option<PathBuf>,
     #[arg(long)]
     native: bool,
+}
+
+#[derive(Args)]
+struct CheckArgs {
+    input: PathBuf,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    stdin: bool,
 }
 
 #[derive(Args)]
@@ -97,6 +109,7 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Build(args) => build(args),
+        Command::Check(args) => check_file(args),
         Command::Run(args) => run_file(args),
         Command::Test(args) => test_fixtures(args),
         Command::Fmt(args) => format_file(args),
@@ -134,6 +147,73 @@ fn build(args: BuildArgs) -> Result<()> {
         println!("wrote {}", output.display());
     }
     Ok(())
+}
+
+fn check_file(args: CheckArgs) -> Result<()> {
+    if args.stdin && args.input.is_dir() {
+        bail!("`gof check --stdin` expects a file path, not a package directory");
+    }
+
+    let resolved_input = resolve_source_input_path(&args.input)?;
+    if let Err(error) = ensure_fresh_lockfile_for_source(&resolved_input) {
+        if args.json {
+            emit_json_check_report(
+                &resolved_input,
+                false,
+                vec![json!({
+                    "code": package_error_code(&error),
+                    "severity": "error",
+                    "message": render_package_error_with_operation(error, "check").to_string(),
+                    "note": "resolve the package error and rerun `gof check`",
+                    "fixIt": serde_json::Value::Null,
+                    "sourcePath": display_path(&resolved_input),
+                    "line": 1,
+                    "column": 1,
+                    "endColumn": 1
+                })],
+            )?;
+            std::process::exit(1);
+        }
+        return Err(render_package_error_with_operation(error, "check"));
+    }
+
+    let source = match load_check_source(&resolved_input, args.stdin) {
+        Ok(source) => source,
+        Err(error) if args.json => {
+            emit_json_check_report(
+                &resolved_input,
+                false,
+                vec![json!({
+                    "code": "GOFIO",
+                    "severity": "error",
+                    "message": format!("failed to read source file: {error}"),
+                    "note": "ensure the file exists and is readable",
+                    "fixIt": serde_json::Value::Null,
+                    "sourcePath": display_path(&resolved_input),
+                    "line": 1,
+                    "column": 1,
+                    "endColumn": 1
+                })],
+            )?;
+            std::process::exit(1);
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    let mode = compile_mode_for_entry_path(&resolved_input);
+    match compile_source(&source, mode) {
+        Ok(_) => {
+            if args.json {
+                emit_json_check_report(&resolved_input, true, Vec::new())?;
+            }
+            Ok(())
+        }
+        Err(error) if args.json => {
+            emit_json_check_report(&resolved_input, false, diagnostics_to_json(&source, &error))?;
+            std::process::exit(1);
+        }
+        Err(error) => Err(render_error(&source, error)),
+    }
 }
 
 fn run_file(args: FileInput) -> Result<()> {
@@ -277,11 +357,7 @@ fn resolve_package_test_input(input: &Path) -> Result<Option<PathBuf>> {
 
 fn run_package_test(entry_path: &Path) -> Result<()> {
     let source = SourceFile::from_path(entry_path)?;
-    let mode = if entry_path.file_name().and_then(|value| value.to_str()) == Some("lib.gof") {
-        CompileMode::Library
-    } else {
-        CompileMode::Executable
-    };
+    let mode = compile_mode_for_entry_path(entry_path);
     compile_source(&source, mode).map_err(|error| render_error(&source, error))?;
     Ok(())
 }
@@ -306,6 +382,68 @@ fn print_docs() -> Result<()> {
 fn print_benchmarks() -> Result<()> {
     println!("benchmark crate: benchmarks/gof-bench");
     println!("run with: cargo bench -p gof-bench");
+    Ok(())
+}
+
+fn compile_mode_for_entry_path(path: &Path) -> CompileMode {
+    if path.file_name().and_then(|value| value.to_str()) == Some("lib.gof") {
+        CompileMode::Library
+    } else {
+        CompileMode::Executable
+    }
+}
+
+fn load_check_source(path: &Path, read_stdin: bool) -> Result<SourceFile> {
+    if read_stdin {
+        let mut text = String::new();
+        io::stdin().read_to_string(&mut text)?;
+        Ok(SourceFile::new(path.to_path_buf(), text))
+    } else {
+        Ok(SourceFile::from_path(path)?)
+    }
+}
+
+fn diagnostics_to_json(source: &SourceFile, diagnostics: &Diagnostics) -> Vec<serde_json::Value> {
+    diagnostics
+        .0
+        .iter()
+        .map(|diagnostic| {
+            let severity = match diagnostic.severity {
+                gof_compiler::Severity::Error => "error",
+                gof_compiler::Severity::Warning => "warning",
+            };
+            let source_path = diagnostic
+                .source_path
+                .as_deref()
+                .unwrap_or_else(|| source.path());
+            json!({
+                "code": diagnostic.code,
+                "severity": severity,
+                "message": diagnostic.message,
+                "note": diagnostic.note,
+                "fixIt": diagnostic.fix_it,
+                "sourcePath": display_path(source_path),
+                "line": diagnostic.span.line,
+                "column": diagnostic.span.column,
+                "endColumn": diagnostic.span.end_column
+            })
+        })
+        .collect()
+}
+
+fn emit_json_check_report(
+    input: &Path,
+    ok: bool,
+    diagnostics: Vec<serde_json::Value>,
+) -> Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "ok": ok,
+            "input": display_path(input),
+            "diagnostics": diagnostics
+        }))?
+    );
     Ok(())
 }
 
@@ -594,6 +732,21 @@ fn render_package_error_with_operation(error: PackageGraphError, operation: &str
             "error: no `gof.mod` manifest was found starting from {}\n  help: run `gof mod init` first or point `--dir` at an existing package root",
             display_path(&start)
         )),
+    }
+}
+
+fn package_error_code(error: &PackageGraphError) -> &'static str {
+    match error {
+        PackageGraphError::Manifest(_) => "GOF3089",
+        PackageGraphError::MissingLockfile { .. } => "GOF3090",
+        PackageGraphError::StaleLockfile { .. }
+        | PackageGraphError::LockfileParse { .. }
+        | PackageGraphError::LockfileRead { .. } => "GOF3091",
+        PackageGraphError::ConflictingModuleIdentity { .. }
+        | PackageGraphError::ConflictingPackageMetadata { .. } => "GOF3092",
+        PackageGraphError::DependencyCycle { .. } => "GOF3089",
+        PackageGraphError::MissingEntrypoint { .. } => "GOF3089",
+        PackageGraphError::MissingRootManifest { .. } => "GOF3089",
     }
 }
 

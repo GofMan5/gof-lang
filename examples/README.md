@@ -24,6 +24,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
 - `line_io.gof`: line-oriented file I/O with `write_lines(...)`, `read_lines(...)`, and explicit cleanup
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
+- `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
 - `await_result.gof`: explicit recoverable task joins for plain `task[T]` values
@@ -71,6 +72,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `io_roundtrip.gof` -> `Result.Ok(value: 6)`
 - `line_io.gof` -> `Result.Ok(value: 19)`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
+- `config_report.gof` -> `Result.Ok(value: 17)`
 - `concurrent_squares.gof` -> `225`
 - `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``
 - `channel_select.gof` -> `Result.Ok(value: 9)`

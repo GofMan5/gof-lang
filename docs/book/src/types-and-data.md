@@ -192,7 +192,7 @@ Operational helpers now use the same contract:
 - `max(values)` returns `Result[T, RuntimeError]`
 - `read_file(path)` returns `Result[string, RuntimeError]`
 - `recv(channel)` returns `Result[T, RuntimeError]`
-- JSON, CSV, and HTTP helpers also return `Result`
+- JSON, CSV, TOML, and HTTP helpers also return `Result`
 
 That matters because error propagation stays uniform across CLI tools, file work,
 concurrency, and bot-style network code.
@@ -214,6 +214,7 @@ It currently includes:
 - `Slice(message: string)`
 - `Json(message: string)`
 - `Csv(message: string)`
+- `Toml(message: string)`
 - `HttpRequest(message: string)`
 - `HttpStatus(code: int, body: string)`
 

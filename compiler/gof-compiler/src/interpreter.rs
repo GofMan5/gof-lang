@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
+use toml::Value as TomlValue;
 
 type FunctionTable = Arc<HashMap<String, Function>>;
 type MethodTable = Arc<HashMap<(String, String), Function>>;
@@ -240,6 +241,30 @@ fn json_from_serde(value: SerdeJsonValue) -> Result<JsonValue, String> {
             .map(|(key, value)| json_from_serde(value).map(|json| (key, json)))
             .collect::<Result<BTreeMap<_, _>, _>>()
             .map(JsonValue::Object),
+    }
+}
+
+fn json_from_toml(value: TomlValue) -> Result<JsonValue, String> {
+    match value {
+        TomlValue::String(value) => Ok(JsonValue::String(value)),
+        TomlValue::Integer(value) => Ok(JsonValue::Int(value)),
+        TomlValue::Boolean(value) => Ok(JsonValue::Bool(value)),
+        TomlValue::Array(values) => values
+            .into_iter()
+            .map(json_from_toml)
+            .collect::<Result<Vec<_>, _>>()
+            .map(JsonValue::Array),
+        TomlValue::Table(entries) => entries
+            .into_iter()
+            .map(|(key, value)| json_from_toml(value).map(|json| (key, json)))
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map(JsonValue::Object),
+        TomlValue::Float(value) => Err(format!(
+            "TOML float values are not supported in the bootstrap json bridge (`{value}`)"
+        )),
+        TomlValue::Datetime(value) => Err(format!(
+            "TOML datetime values are not supported in the bootstrap json bridge (`{value}`)"
+        )),
     }
 }
 
@@ -474,6 +499,19 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                 },
                 EnumVariant {
                     name: "Csv".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "Toml".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
                         ty: crate::ast::TypeRef {
@@ -1082,6 +1120,14 @@ fn runtime_csv_error(message: impl Into<String>) -> Value {
     enum_value(
         "RuntimeError",
         "Csv",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_toml_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Toml",
         vec![("message".to_string(), Value::String(message.into()))],
     )
 }
@@ -2683,6 +2729,20 @@ fn eval_expr(
 
             if callee == "json_parse" {
                 return eval_json_parse_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "toml_parse" {
+                return eval_toml_parse_builtin(
                     args,
                     scopes,
                     functions,
@@ -6991,6 +7051,51 @@ fn eval_json_parse_builtin(
     })
 }
 
+fn eval_toml_parse_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `toml_parse`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `toml_parse(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let text = eval_string_argument(
+        "toml_parse",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3099",
+    )?;
+    Ok(match toml::from_str::<TomlValue>(&text) {
+        Ok(value) => match json_from_toml(value) {
+            Ok(value) => result_ok(Value::Json(value)),
+            Err(message) => result_err(runtime_toml_error(message)),
+        },
+        Err(error) => result_err(runtime_toml_error(error.to_string())),
+    })
+}
+
 fn eval_json_stringify_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -8340,6 +8445,16 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_toml_parse_builtin() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    config = toml_parse(\"name = \\\"alpha\\\"\\nport = 7\\n[limits]\\nworkers = 5\")?\n    limits = json_get(config, \"limits\")?\n    workers = json_int(json_get(limits, \"workers\")?)?\n    name = json_string(json_get(config, \"name\")?)?\n    port = json_int(json_get(config, \"port\")?)?\n    return Result.Ok(len(name) + workers + port)\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 17)"));
+    }
+
+    #[test]
     fn evaluates_dict_view_builtins() {
         let value = run_source(
             "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    mut total = 0\n    for name in names:\n        total = total + len(name)\n    for count in counts:\n        total = total + count\n    return total\n",
@@ -8689,6 +8804,21 @@ mod tests {
                 .cli_text()
                 .as_deref()
                 .is_some_and(|text| text.contains("RuntimeError.Csv(message:"))
+        );
+    }
+
+    #[test]
+    fn toml_parse_returns_runtime_errors_for_unsupported_scalars() {
+        let value = run_source(
+            "fn main() -> Result[json, RuntimeError]:\n    return toml_parse(\"ratio = 1.5\")\n",
+        )
+        .expect("toml parse should return a runtime error value");
+
+        assert!(
+            value
+                .cli_text()
+                .as_deref()
+                .is_some_and(|text| text.contains("RuntimeError.Toml(message:"))
         );
     }
 

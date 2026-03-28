@@ -24,4 +24,13 @@ fn compute(value: int) -> int:
     else:
         return 0
 
+fn load_config(path: string) -> Result[json, RuntimeError]:
+    lines = read_lines(path)?
+    text = join(lines, "\n")
+    return toml_parse(text)
+
+fn encode_rows(rows: list[list[string]]) -> Result[string, RuntimeError]:
+    csv = csv_stringify(rows)?
+    return Result.Ok(csv)
+
 # syntax smoke

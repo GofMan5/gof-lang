@@ -87,6 +87,78 @@ fn gof_run_executes_bootstrap_main() {
 }
 
 #[test]
+fn gof_check_accepts_valid_example() {
+    let example = gof_conformance::workspace_root()
+        .join("tests")
+        .join("fixtures")
+        .join("pass")
+        .join("hello.gof");
+
+    gof_command().arg("check").arg(example).assert().success();
+}
+
+#[test]
+fn gof_check_json_reports_compile_diagnostics() {
+    let fixture = gof_conformance::workspace_root()
+        .join("tests")
+        .join("fixtures")
+        .join("fail")
+        .join("annotated_type_mismatch.gof");
+
+    let assert = gof_command()
+        .arg("check")
+        .arg(&fixture)
+        .arg("--json")
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("\"ok\": false"),
+        "stdout should report failure: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"code\": \"GOF3013\""),
+        "stdout should include GOF3013: {stdout}"
+    );
+    assert!(
+        stdout.contains("annotated_type_mismatch.gof"),
+        "stdout should contain the reported source file name: {stdout}"
+    );
+}
+
+#[test]
+fn gof_check_json_reads_buffer_contents_from_stdin() {
+    let temp = tempdir().expect("tempdir should exist");
+    let source_path = temp.path().join("stdin-check.gof");
+    fs::write(&source_path, "fn main() -> int:\n    return 42\n")
+        .expect("source file should exist");
+
+    let assert = gof_command()
+        .arg("check")
+        .arg(&source_path)
+        .arg("--json")
+        .arg("--stdin")
+        .write_stdin("fn main() -> int:\n    return \"boom\"\n")
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+    assert!(
+        stdout.contains("\"ok\": false"),
+        "stdout should report failure: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"code\": \"GOF3013\""),
+        "stdout should include the type mismatch from stdin content: {stdout}"
+    );
+    assert!(
+        stdout.contains("stdin-check.gof"),
+        "stdout should keep the original source path for editor mapping: {stdout}"
+    );
+}
+
+#[test]
 fn gof_run_executes_calculator_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")
@@ -564,6 +636,20 @@ fn gof_run_executes_csv_inventory_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Result.Ok(value: 8)"));
+}
+
+#[test]
+fn gof_run_executes_config_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("config_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 17)"));
 }
 
 #[test]

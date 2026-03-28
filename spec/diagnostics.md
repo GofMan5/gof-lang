@@ -110,3 +110,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3096`: invalid operand for explicit channel capacity
 - `GOF3097`: invalid negative channel capacity
 - `GOF3098`: invalid operand for bootstrap CSV helpers
+- `GOF3099`: invalid operand for bootstrap TOML helpers

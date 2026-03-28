@@ -26,6 +26,7 @@ function readPngDimensions(buffer) {
 test("package metadata is marketplace-ready", async () => {
   const manifest = await readPackageJson();
 
+  assert.equal(manifest.main, "./extension.cjs");
   assert.equal(manifest.publisher, "gofman5");
   assert.equal(manifest.icon, "media/gof-icon.png");
   assert.deepEqual(manifest.galleryBanner, {
@@ -34,6 +35,23 @@ test("package metadata is marketplace-ready", async () => {
   });
   assert.ok(manifest.categories.includes("Programming Languages"));
   assert.ok(manifest.categories.includes("Snippets"));
+  assert.ok(manifest.activationEvents.includes("onLanguage:gof"));
+  assert.ok(manifest.activationEvents.includes("onCommand:gof.showDiagnosticsOutput"));
+  assert.ok(manifest.activationEvents.includes("onCommand:gof.recheckActiveDocument"));
+  assert.ok(manifest.files.includes("extension.cjs"));
+  assert.ok(manifest.files.includes("lib/**"));
+  assert.ok(
+    manifest.contributes.commands.some((entry) => entry.command === "gof.showDiagnosticsOutput")
+  );
+  assert.ok(
+    manifest.contributes.commands.some((entry) => entry.command === "gof.recheckActiveDocument")
+  );
+  assert.equal(manifest.contributes.configuration.properties["gof.diagnostics.enabled"].default, true);
+  assert.equal(manifest.contributes.configuration.properties["gof.diagnostics.debounceMs"].default, 250);
+  assert.equal(
+    manifest.contributes.configuration.properties["gof.toolchain.useCargoFallback"].default,
+    true
+  );
   assert.ok(manifest.contributes.snippets.some((entry) => entry.path === "./snippets/gof.code-snippets"));
 });
 

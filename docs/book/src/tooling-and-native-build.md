@@ -3,6 +3,7 @@
 `gof` already has a unified CLI:
 
 - `gof run`
+- `gof check`
 - `gof build`
 - `gof test`
 - `gof fmt`
@@ -18,6 +19,25 @@ language easy to operate, not just nice to read.
 ### `gof run`
 
 Runs the source program through the bootstrap execution path.
+
+### `gof check`
+
+With:
+
+```bash
+gof check program.gof
+```
+
+the CLI runs compile-only validation without executing the program.
+
+For editor tooling and automation there is also a machine-readable path:
+
+```bash
+gof check program.gof --json --stdin
+```
+
+That contract is what the VS Code extension uses for compiler-backed
+diagnostics.
 
 ### `gof build`
 
@@ -80,6 +100,7 @@ It currently covers:
 - `.gof` file association
 - syntax highlighting
 - starter snippets for modules, functions, enums, structs, `select`, and task joins
+- compiler-backed diagnostics powered by `gof check --json --stdin`
 - `#` comments
 - bracket pairs
 - indentation for colon-ended blocks
@@ -91,6 +112,15 @@ It does not yet provide:
 - debugger
 - profiler
 - semantic rename or go-to-definition
+
+The extension resolves diagnostics toolchains in this order:
+
+1. `gof.toolchain.path`
+2. repo-local cargo fallback inside the `gof` repository
+3. `gof` on `PATH`
+
+That keeps diagnostics aligned with the actual compiler instead of maintaining a
+second, fake validation layer inside the editor.
 
 For local packaging:
 

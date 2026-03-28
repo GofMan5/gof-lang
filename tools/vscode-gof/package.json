@@ -1,10 +1,11 @@
 {
   "name": "gof-language",
   "displayName": "gof Language Support",
-  "description": "Syntax highlighting, snippets, comments, brackets, and indentation rules for the gof language.",
-  "version": "0.1.0",
+  "description": "Syntax highlighting, snippets, and compiler-backed diagnostics for the gof language.",
+  "version": "0.2.0",
   "publisher": "gofman5",
   "icon": "media/gof-icon.png",
+  "main": "./extension.cjs",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -26,6 +27,7 @@
     "language",
     "syntax",
     "highlighting",
+    "diagnostics",
     "snippets",
     "vscode"
   ],
@@ -34,6 +36,8 @@
     "theme": "dark"
   },
   "files": [
+    "extension.cjs",
+    "lib/**",
     "language-configuration.json",
     "media/**",
     "snippets/**",
@@ -41,6 +45,11 @@
     "README.md",
     "CHANGELOG.md",
     "LICENSE.md"
+  ],
+  "activationEvents": [
+    "onLanguage:gof",
+    "onCommand:gof.showDiagnosticsOutput",
+    "onCommand:gof.recheckActiveDocument"
   ],
   "contributes": {
     "languages": [
@@ -67,7 +76,48 @@
         "language": "gof",
         "path": "./snippets/gof.code-snippets"
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "gof.showDiagnosticsOutput",
+        "title": "gof: Show Diagnostics Output"
+      },
+      {
+        "command": "gof.recheckActiveDocument",
+        "title": "gof: Recheck Active Document"
+      }
+    ],
+    "configuration": {
+      "title": "gof",
+      "properties": {
+        "gof.diagnostics.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable compiler-backed diagnostics for .gof files."
+        },
+        "gof.diagnostics.debounceMs": {
+          "type": "number",
+          "default": 250,
+          "minimum": 0,
+          "description": "Debounce delay in milliseconds before rerunning gof diagnostics after edits."
+        },
+        "gof.diagnostics.runOnSaveOnly": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only rerun gof diagnostics on save or manual refresh."
+        },
+        "gof.toolchain.path": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to the gof executable used for compiler-backed diagnostics."
+        },
+        "gof.toolchain.useCargoFallback": {
+          "type": "boolean",
+          "default": true,
+          "description": "When enabled, use `cargo run -p gof-cli --bin gof -- ...` automatically inside the gof repository when no explicit toolchain path is configured."
+        }
+      }
+    }
   },
   "scripts": {
     "test": "node --test ./test/*.test.mjs",

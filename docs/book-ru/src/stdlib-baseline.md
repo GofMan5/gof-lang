@@ -123,7 +123,7 @@ fn main() -> Result[int, RuntimeError]:
 - `min` и `max` пока поддерживают только `list[int]` и `list[string]`
 - sequence helpers остаются явными allocation-visible преобразованиями и не прячут мутацию
 
-## JSON, CSV, HTTP и явные retry delays
+## JSON, CSV, TOML, HTTP и явные retry delays
 
 ```gof
 fn notify(base: string) -> Result[string, RuntimeError]:
@@ -134,7 +134,7 @@ fn notify(base: string) -> Result[string, RuntimeError]:
     return Result.Ok(status)
 ```
 
-Текущие правила JSON, CSV и HTTP:
+Текущие правила JSON, CSV, TOML и HTTP:
 
 - `json_parse(text)` возвращает `Result[json, RuntimeError]`
 - `json_get(value, key)` и `json_index(value, index)` делают traversal явным
@@ -142,6 +142,8 @@ fn notify(base: string) -> Result[string, RuntimeError]:
 - `csv_parse(text)` возвращает `Result[list[list[string]], RuntimeError]`
 - `csv_stringify(rows)` возвращает `Result[string, RuntimeError]`
 - malformed CSV text и failed serialization поднимаются как `RuntimeError.Csv(message)`
+- `toml_parse(text)` возвращает `Result[json, RuntimeError]`
+- неподдерживаемые TOML scalar values вне bootstrap `json` bridge поднимаются как `RuntimeError.Toml(message)`
 - `http_get(url)` — текущий bootstrap HTTP read path
 - `http_post(url, body[, content_type])` — текущий bootstrap HTTP write path
 - `sleep(milliseconds)` делает retry и backoff намерение явным, а не прячет его в framework magic
