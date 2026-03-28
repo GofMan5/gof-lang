@@ -1146,6 +1146,48 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_unix_time_builtins() {
+        let source = SourceFile::new(
+            "time_report.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    seconds = unix_seconds()?\n    millis = unix_millis()?\n    assert(millis >= seconds * 1000, \"expected unix millis to be at least seconds * 1000\")\n    return Result.Ok(millis - seconds)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+            }
+            other => panic!("expected unix seconds bind, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Int);
+            }
+            other => panic!("expected unix millis bind, got {other:?}"),
+        }
+
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "unix_seconds"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "unix_millis"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_csv_builtins() {
         let source = SourceFile::new(
             "csv_inventory.gof",

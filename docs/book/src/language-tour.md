@@ -95,6 +95,8 @@ Today the bootstrap language surface includes:
 - `argv()`
 - `read_stdin()`
 - `read_stdin_lines()`
+- `unix_seconds()`
+- `unix_millis()`
 - `env(...)`
 - `cwd()`
 - `run_process(...)`

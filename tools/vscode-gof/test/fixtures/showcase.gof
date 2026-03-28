@@ -46,3 +46,9 @@ fn consume_stdin() -> Result[list[string], RuntimeError]:
     lines = read_stdin_lines()?
     assert(len(text) >= len(lines), "stdin text should be at least as long as its line count")
     return Result.Ok(lines)
+
+fn sample_time() -> Result[int, RuntimeError]:
+    seconds = unix_seconds()?
+    millis = unix_millis()?
+    assert(millis >= seconds * 1000, "expected unix millis to be at least seconds * 1000")
+    return Result.Ok(1)

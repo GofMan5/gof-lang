@@ -63,7 +63,7 @@ gof test tests/fixtures                # run conformance suite
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
-| `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
+| `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)`, `unix_seconds()`, `unix_millis()` | stable |
 | JSON, CSV, TOML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
@@ -114,6 +114,10 @@ argv metadata inside a `Result[json, RuntimeError]` report.
 Shell-oriented scripts can now read process input explicitly through
 `read_stdin()` and `read_stdin_lines()`, which cache one stdin snapshot per run
 and keep shell pipeline data flow inside normal `Result` contracts.
+
+Automation scripts can now also read wall-clock time explicitly through
+`unix_seconds()` and `unix_millis()`, which return `Result[int, RuntimeError]`
+instead of hiding host clock failures behind implicit globals.
 
 The script/data-wrangling slice now also has an explicit templating baseline
 through `template_render(template, values)`, which expands `{{key}}`

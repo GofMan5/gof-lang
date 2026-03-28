@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.4
+
+- Added builtin syntax coverage for `unix_seconds()` and `unix_millis()`
+- Added a wall-clock script snippet for explicit Unix time capture inside automation workflows
+- Kept the VS Code editor surface aligned with the new bootstrap time-helper contract
+
 ## 0.2.3
 
 - Added builtin syntax/snippet coverage for `read_stdin()` and `read_stdin_lines()`

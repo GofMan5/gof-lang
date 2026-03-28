@@ -38,6 +38,7 @@ Current operational baseline is intentionally explicit:
 - `argv()` returns CLI arguments
 - `read_stdin()` reads one cached stdin snapshot as text
 - `read_stdin_lines()` exposes the same stdin snapshot through explicit line splitting
+- `unix_seconds()` and `unix_millis()` expose the current Unix wall clock through explicit `Result`
 - `env(name)` reads one environment variable
 - `cwd()` returns the current working directory
 - `run_process(program, args)` executes a program directly without shell interpolation and returns captured `program`, `args`, `status`, `stdout`, and `stderr` inside `Result[json, RuntimeError]`
@@ -72,16 +73,25 @@ fn main() -> Result[string, RuntimeError]:
     text = read_stdin()?
     lines = read_stdin_lines()?
     first_line = first(lines)?
-    return template_render("chars={{chars}} first={{first}} lines={{lines}}", {
-        "chars": len(text),
-        "first": first_line,
-        "lines": len(lines),
-    })
+    return template_render("chars={{chars}} first={{first}} lines={{lines}}", {"chars": to_string(len(text)), "first": first_line, "lines": to_string(len(lines))})
 ```
 
 - `read_stdin()` and `read_stdin_lines()` share one cached stdin snapshot per run
 - both helpers keep stdin access inside explicit `Result` flow
 - `read_stdin_lines()` follows the same line semantics as `read_lines(path)`
+
+Wall-clock time stays equally explicit:
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    seconds = unix_seconds()?
+    millis = unix_millis()?
+    assert(millis >= seconds * 1000, "expected unix millis to be at least seconds * 1000")
+    return Result.Ok(1)
+```
+
+- `unix_seconds()` and `unix_millis()` return `Result[int, RuntimeError]`
+- host clock failures surface as `RuntimeError.Time(message)`
 
 ## Collection helpers
 

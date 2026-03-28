@@ -90,7 +90,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `len(...)` for lists, strings, and dicts
 - builtin `print(...)` for one printable value
 - builtin `assert(...)` for boolean correctness contracts
-- builtin `argv()`, `read_stdin()`, `read_stdin_lines()`, `env(...)`, `cwd()`, and `run_process(...)` for process and environment access
+- builtin `argv()`, `read_stdin()`, `read_stdin_lines()`, `unix_seconds()`, `unix_millis()`, `env(...)`, `cwd()`, and `run_process(...)` for process, time, and environment access
 - builtin `read_file(...)`, `write_file(...)`, `read_lines(...)`, `write_lines(...)`, `exists(...)`, `read_dir(...)`, `mkdir(...)`, and `remove_file(...)` for bootstrap filesystem work
 - builtin `path_join(...)`, `path_dir(...)`, `path_base(...)`, and `path_ext(...)` for explicit string-based path handling
 - builtin `dict()` and `insert(...)` for bootstrap key/value data
@@ -146,7 +146,7 @@ The bootstrap compiler in this repository currently supports:
 - payload enum construction currently requires payload values compatible with the declared payload field types
 - `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
 - `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
-- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
+- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `Time(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
 - `match value:` currently requires `value` to resolve to a known enum or `Result`
 - each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
 - `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
@@ -173,7 +173,7 @@ The bootstrap compiler in this repository currently supports:
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
-- `argv()`, `read_stdin()`, `read_stdin_lines()`, `env(name)`, `cwd()`, and `run_process(program, args)` are currently builtins recognized by the compiler and evaluator
+- `argv()`, `read_stdin()`, `read_stdin_lines()`, `unix_seconds()`, `unix_millis()`, `env(name)`, `cwd()`, and `run_process(program, args)` are currently builtins recognized by the compiler and evaluator
 - `read_file(path)`, `write_file(path, contents)`, `read_lines(path)`, `write_lines(path, lines)`, `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` are currently builtins recognized by the compiler and evaluator
 - `path_join(left, right)`, `path_dir(path)`, `path_base(path)`, and `path_ext(path)` are currently builtins recognized by the compiler and evaluator
 - `dict()` and `insert(dict, key, value)` are currently builtins recognized by the compiler and evaluator
@@ -223,6 +223,9 @@ The bootstrap compiler in this repository currently supports:
 - `sleep` currently accepts exactly one `int` duration in milliseconds and returns `unit`
 - `sleep` currently reports a runtime diagnostic when the duration resolves to a negative value
 - `argv` currently accepts no arguments and returns `list[string]`
+- `unix_seconds` currently accepts no arguments and returns `Result[int, RuntimeError]`
+- `unix_millis` currently accepts no arguments and returns `Result[int, RuntimeError]`
+- `unix_seconds` and `unix_millis` currently use the host wall clock and surface pre-epoch or out-of-range timestamps as `RuntimeError.Time(message)`
 - `env` currently accepts exactly one string name and returns `Result[string, RuntimeError]`
 - `cwd` currently accepts no arguments and returns `Result[string, RuntimeError]`
 - `read_file` currently accepts exactly one string path and returns `Result[string, RuntimeError]`

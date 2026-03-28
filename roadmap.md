@@ -311,6 +311,7 @@ Hard sequencing rule:
 - `[~]` CP-M9-2: batteries-included automation stdlib without hidden runtime magic
 - `[x]` CP-M9-2a: explicit no-shell process orchestration baseline through `run_process(program, args)` with captured status and output
 - `[x]` CP-M9-2b: explicit stdin and line-oriented stdin helpers for shell pipeline automation
+- `[x]` CP-M9-2c: explicit Unix wall-clock helpers for automation scripts through `unix_seconds()` and `unix_millis()`
 - `[~]` CP-M9-3: data transformation baseline suitable for real internal tooling
 - `[x]` CP-M9-3a: explicit `template_render(template, values)` baseline for dict/json-driven text generation in scripts
 - Exit criteria:

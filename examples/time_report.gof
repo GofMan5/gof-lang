@@ -1,0 +1,7 @@
+fn main() -> Result[int, RuntimeError]:
+    seconds = unix_seconds()?
+    millis = unix_millis()?
+    assert(seconds > 0, "expected unix seconds to be positive")
+    assert(millis >= seconds * 1000, "expected unix millis to be at least seconds * 1000")
+    assert(millis < (seconds + 2) * 1000, "expected unix millis to stay close to unix seconds")
+    return Result.Ok(1)

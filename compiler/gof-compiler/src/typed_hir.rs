@@ -354,6 +354,13 @@ fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
                     }],
                 },
                 EnumVariantSignature {
+                    name: "Time".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
                     name: "ChannelClosed".to_string(),
                     fields: Vec::new(),
                 },
@@ -543,6 +550,8 @@ enum CallKind {
     BuiltinArgv,
     BuiltinReadStdin,
     BuiltinReadStdinLines,
+    BuiltinUnixSeconds,
+    BuiltinUnixMillis,
     BuiltinEnv,
     BuiltinCwd,
     BuiltinRunProcess,
@@ -2223,6 +2232,8 @@ fn lower_expr(
                     | CallKind::BuiltinArgv
                     | CallKind::BuiltinReadStdin
                     | CallKind::BuiltinReadStdinLines
+                    | CallKind::BuiltinUnixSeconds
+                    | CallKind::BuiltinUnixMillis
                     | CallKind::BuiltinEnv
                     | CallKind::BuiltinCwd
                     | CallKind::BuiltinRunProcess
@@ -2879,6 +2890,12 @@ fn validate_call(
         CallKind::BuiltinReadStdinLines => {
             validate_no_argument_call("read_stdin_lines", args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinUnixSeconds => {
+            validate_no_argument_call("unix_seconds", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinUnixMillis => {
+            validate_no_argument_call("unix_millis", args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinEnv => {
             validate_env_call(args, span, diagnostics, source_path);
         }
@@ -3530,6 +3547,10 @@ fn resolve_call_kind(
         CallKind::BuiltinReadStdin
     } else if callee == "read_stdin_lines" {
         CallKind::BuiltinReadStdinLines
+    } else if callee == "unix_seconds" {
+        CallKind::BuiltinUnixSeconds
+    } else if callee == "unix_millis" {
+        CallKind::BuiltinUnixMillis
     } else if callee == "env" {
         CallKind::BuiltinEnv
     } else if callee == "cwd" {
@@ -3662,6 +3683,12 @@ fn call_return_type(
             Type::list(Type::String),
             Type::Enum("RuntimeError".to_string()),
         ),
+        CallKind::BuiltinUnixSeconds => {
+            Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinUnixMillis => {
+            Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+        }
         CallKind::BuiltinEnv => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
         CallKind::BuiltinCwd => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
         CallKind::BuiltinRunProcess => {
@@ -7926,6 +7953,23 @@ mod tests {
     }
 
     #[test]
+    fn supports_unix_time_builtins() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    seconds = unix_seconds()?\n    millis = unix_millis()?\n    assert(millis >= seconds * 1000, \"expected unix millis to be at least seconds * 1000\")\n    return Result.Ok(millis - seconds)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::Int),
+            other => panic!("expected unix seconds bind, got {other:?}"),
+        }
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::Int),
+            other => panic!("expected unix millis bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_run_process_builtin() {
         let module = lower_source(
             "fn main() -> Result[int, RuntimeError]:\n    report = run_process(\"gof\", [\"--help\"])?\n    args = json_get(report, \"args\")?\n    status = json_int(json_get(report, \"status\")?)?\n    first = json_string(json_index(args, 0)?)?\n    return Result.Ok(status + json_len(args)? + len(first))\n",
@@ -8184,6 +8228,24 @@ mod tests {
             .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3085"]);
+    }
+
+    #[test]
+    fn rejects_invalid_unix_seconds_operands() {
+        let diagnostics =
+            lower_source("fn main() -> Result[int, RuntimeError]:\n    return unix_seconds(1)\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3005"]);
+    }
+
+    #[test]
+    fn rejects_invalid_unix_millis_operands() {
+        let diagnostics =
+            lower_source("fn main() -> Result[int, RuntimeError]:\n    return unix_millis(1)\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3005"]);
     }
 
     #[test]

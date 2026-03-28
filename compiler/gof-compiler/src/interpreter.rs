@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
 
 type FunctionTable = Arc<HashMap<String, Function>>;
@@ -400,6 +400,19 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                 },
                 EnumVariant {
                     name: "Io".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "Time".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
                         ty: crate::ast::TypeRef {
@@ -1131,6 +1144,14 @@ fn runtime_io_error(message: impl Into<String>) -> Value {
     )
 }
 
+fn runtime_time_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Time",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
 fn runtime_env_missing_error(name: &str) -> Value {
     enum_value(
         "RuntimeError",
@@ -1236,6 +1257,36 @@ fn runtime_http_status_error(code: i64, body: String) -> Value {
             ("body".to_string(), Value::String(body)),
         ],
     )
+}
+
+fn unix_duration_since_epoch(now: SystemTime) -> Result<Duration, String> {
+    now.duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock is before the Unix epoch: {error}"))
+}
+
+fn unix_seconds_from_duration_since_epoch(duration: Duration) -> Result<i64, String> {
+    if duration.as_secs() > i64::MAX as u64 {
+        return Err("unix second timestamp exceeds bootstrap int range".to_string());
+    }
+    Ok(duration.as_secs() as i64)
+}
+
+fn unix_seconds_from_system_time(now: SystemTime) -> Result<i64, String> {
+    let duration = unix_duration_since_epoch(now)?;
+    unix_seconds_from_duration_since_epoch(duration)
+}
+
+fn unix_millis_from_duration_since_epoch(duration: Duration) -> Result<i64, String> {
+    let millis = duration.as_millis();
+    if millis > i64::MAX as u128 {
+        return Err("unix millisecond timestamp exceeds bootstrap int range".to_string());
+    }
+    Ok(millis as i64)
+}
+
+fn unix_millis_from_system_time(now: SystemTime) -> Result<i64, String> {
+    let duration = unix_duration_since_epoch(now)?;
+    unix_millis_from_duration_since_epoch(duration)
 }
 
 fn task_failure_message(diagnostics: &Diagnostics) -> String {
@@ -2476,6 +2527,14 @@ fn eval_expr(
 
             if callee == "read_stdin_lines" {
                 return eval_read_stdin_lines_builtin(args, output, source_path, *span);
+            }
+
+            if callee == "unix_seconds" {
+                return eval_unix_seconds_builtin(args, source_path, *span);
+            }
+
+            if callee == "unix_millis" {
+                return eval_unix_millis_builtin(args, source_path, *span);
             }
 
             if callee == "env" {
@@ -5450,6 +5509,46 @@ fn eval_cwd_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult
     Ok(match std::env::current_dir() {
         Ok(path) => result_ok(Value::String(path.to_string_lossy().into_owned())),
         Err(error) => result_err(runtime_io_error(error.to_string())),
+    })
+}
+
+fn eval_unix_seconds_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult<Value> {
+    if !args.is_empty() {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `unix_seconds`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `unix_seconds()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    Ok(match unix_seconds_from_system_time(SystemTime::now()) {
+        Ok(seconds) => result_ok(Value::Int(seconds)),
+        Err(message) => result_err(runtime_time_error(message)),
+    })
+}
+
+fn eval_unix_millis_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult<Value> {
+    if !args.is_empty() {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `unix_millis`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `unix_millis()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    Ok(match unix_millis_from_system_time(SystemTime::now()) {
+        Ok(millis) => result_ok(Value::Int(millis)),
+        Err(message) => result_err(runtime_time_error(message)),
     })
 }
 
@@ -8437,6 +8536,7 @@ mod tests {
     use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, UNIX_EPOCH};
     use tempfile::tempdir;
 
     fn run_source(text: &str) -> Result<Value, crate::diagnostics::Diagnostics> {
@@ -8531,6 +8631,33 @@ mod tests {
             result.value.cli_text().as_deref(),
             Some("Result.Ok(value: 0)")
         );
+    }
+
+    #[test]
+    fn unix_time_helpers_report_current_wall_clock_values() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    seconds = unix_seconds()?\n    millis = unix_millis()?\n    assert(seconds > 0, \"expected unix seconds to be positive\")\n    assert(millis >= seconds * 1000, \"expected unix millis to be at least seconds * 1000\")\n    assert(millis < (seconds + 2) * 1000, \"expected unix millis to stay close to unix seconds\")\n    return Result.Ok(1)\n",
+        )
+        .expect("program should run");
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 1)"));
+    }
+
+    #[test]
+    fn unix_time_helpers_reject_pre_epoch_and_overflow_clock_values() {
+        let pre_epoch = super::unix_seconds_from_system_time(UNIX_EPOCH - Duration::from_secs(1))
+            .expect_err("pre-epoch clocks should fail");
+        assert!(pre_epoch.contains("before the Unix epoch"));
+
+        let second_overflow =
+            super::unix_seconds_from_duration_since_epoch(Duration::from_secs(i64::MAX as u64 + 1))
+                .expect_err("out-of-range unix seconds should fail");
+        assert!(second_overflow.contains("exceeds bootstrap int range"));
+
+        let millis_overflow = super::unix_millis_from_duration_since_epoch(Duration::from_millis(
+            i64::MAX as u64 + 1,
+        ))
+        .expect_err("out-of-range unix millis should fail");
+        assert!(millis_overflow.contains("exceeds bootstrap int range"));
     }
 
     #[test]

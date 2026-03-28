@@ -89,5 +89,14 @@
       "${3:first_line} = first(${2:lines})?"
     ],
     "description": "Read one cached stdin snapshot as text and lines"
+  },
+  "Time Report": {
+    "prefix": "goftime",
+    "body": [
+      "${1:seconds} = unix_seconds()?",
+      "${2:millis} = unix_millis()?",
+      "assert(${2:millis} >= ${1:seconds} * 1000, \"expected unix millis to be at least seconds * 1000\")"
+    ],
+    "description": "Capture explicit Unix wall-clock timestamps for automation scripts"
   }
 }

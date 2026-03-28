@@ -996,6 +996,20 @@ fn gof_run_executes_stdin_report_example() {
 }
 
 #[test]
+fn gof_run_executes_time_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("time_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 1)"));
+}
+
+#[test]
 fn gof_run_executes_csv_inventory_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

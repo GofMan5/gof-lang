@@ -38,6 +38,7 @@ fn main() -> Result[int, RuntimeError]:
 - `argv()` возвращает CLI arguments
 - `read_stdin()` читает один кэшированный stdin snapshot как текст
 - `read_stdin_lines()` раскрывает тот же stdin snapshot через явное разбиение на строки
+- `unix_seconds()` и `unix_millis()` дают явный доступ к текущему Unix wall clock через `Result[int, RuntimeError]`
 - `env(name)` читает одну переменную окружения
 - `cwd()` возвращает current working directory
 - `run_process(program, args)` запускает процесс напрямую без shell-интерполяции и возвращает `program`, `args`, `status`, `stdout` и `stderr` внутри `Result[json, RuntimeError]`
@@ -72,16 +73,25 @@ fn main() -> Result[string, RuntimeError]:
     text = read_stdin()?
     lines = read_stdin_lines()?
     first_line = first(lines)?
-    return template_render("chars={{chars}} first={{first}} lines={{lines}}", {
-        "chars": len(text),
-        "first": first_line,
-        "lines": len(lines),
-    })
+    return template_render("chars={{chars}} first={{first}} lines={{lines}}", {"chars": to_string(len(text)), "first": first_line, "lines": to_string(len(lines))})
 ```
 
 - `read_stdin()` и `read_stdin_lines()` делят один кэшированный stdin snapshot на запуск
 - обе функции держат stdin внутри явного `Result`-контракта
 - `read_stdin_lines()` использует ту же line semantics, что и `read_lines(path)`
+
+Явные wall-clock helpers тоже остаются узкими:
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    seconds = unix_seconds()?
+    millis = unix_millis()?
+    assert(millis >= seconds * 1000, "expected unix millis to be at least seconds * 1000")
+    return Result.Ok(1)
+```
+
+- `unix_seconds()` и `unix_millis()` возвращают `Result[int, RuntimeError]`
+- ошибки host clock поднимаются как `RuntimeError.Time(message)`
 
 ## Helpers для коллекций
 
