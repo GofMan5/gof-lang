@@ -98,6 +98,8 @@ Today the bootstrap language surface includes:
 - `unix_seconds()`
 - `unix_millis()`
 - `yaml_parse(...)`
+- `base64_encode(...)`
+- `base64_decode(...)`
 - `env(...)`
 - `cwd()`
 - `run_process(...)`

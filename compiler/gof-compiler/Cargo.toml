@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+base64.workspace = true
 csv.workspace = true
 pathdiff.workspace = true
 serde.workspace = true

@@ -134,4 +134,6 @@ test("highlights core gof syntax constructs", async () => {
   expectScope(lines, tokenLines, 51, "unix_seconds", "support.function.builtin.gof");
   expectScope(lines, tokenLines, 52, "unix_millis", "support.function.builtin.gof");
   expectScope(lines, tokenLines, 57, "yaml_parse", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 62, "base64_encode", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 63, "base64_decode", "support.function.builtin.gof");
 });

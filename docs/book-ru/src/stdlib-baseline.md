@@ -170,7 +170,7 @@ fn main() -> Result[int, RuntimeError]:
 - `min` и `max` пока поддерживают только `list[int]` и `list[string]`
 - sequence helpers остаются явными allocation-visible преобразованиями и не прячут мутацию
 
-## JSON, CSV, TOML, YAML, HTTP и явные retry delays
+## JSON, CSV, TOML, YAML, base64, HTTP и явные retry delays
 
 ```gof
 fn notify(base: string) -> Result[string, RuntimeError]:
@@ -181,7 +181,7 @@ fn notify(base: string) -> Result[string, RuntimeError]:
     return Result.Ok(status)
 ```
 
-Текущие правила JSON, CSV, TOML, YAML, templating и HTTP:
+Текущие правила JSON, CSV, TOML, YAML, base64, templating и HTTP:
 
 - `json_parse(text)` возвращает `Result[json, RuntimeError]`
 - `json_get(value, key)` и `json_index(value, index)` делают traversal явным
@@ -193,6 +193,9 @@ fn notify(base: string) -> Result[string, RuntimeError]:
 - неподдерживаемые TOML scalar values вне bootstrap `json` bridge поднимаются как `RuntimeError.Toml(message)`
 - `yaml_parse(text)` возвращает `Result[json, RuntimeError]`
 - нецелые YAML numbers, mapping keys не-строки и tagged YAML values поднимаются как `RuntimeError.Yaml(message)`
+- `base64_encode(text)` возвращает encoded `string`
+- `base64_decode(text)` возвращает `Result[string, RuntimeError]`
+- невалидный base64 text и decoded bytes вне UTF-8 поднимаются как `RuntimeError.Base64(message)`
 - `template_render(template, values)` возвращает `Result[string, RuntimeError]`
 - `template_render(...)` принимает либо `dict[...]`, либо top-level `json` object
 - `template_render(...)` рендерит явные `{{key}}` placeholders и поднимает malformed placeholders или missing keys как `RuntimeError.Template(message)`
@@ -215,6 +218,13 @@ fn main() -> Result[int, RuntimeError]:
     name = json_string(json_get(config, "service")?)?
     port = json_int(json_get(config, "port")?)?
     return Result.Ok(len(name) + workers + port)
+```
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    encoded = base64_encode("gof!")
+    decoded = base64_decode(encoded)?
+    return Result.Ok(len(encoded) + len(decoded))
 ```
 
 `template_render(...)` специально остается узким:

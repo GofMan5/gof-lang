@@ -1285,6 +1285,41 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_base64_builtins() {
+        let source = SourceFile::new(
+            "base64_report.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    encoded = base64_encode(\"gof!\")\n    decoded = base64_decode(encoded)?\n    return Result.Ok(len(encoded) + len(decoded))\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected base64_encode bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "base64_encode"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "base64_decode"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_template_render_builtin() {
         let source = SourceFile::new(
             "template_report.gof",

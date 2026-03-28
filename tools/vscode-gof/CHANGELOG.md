@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.6
+
+- Added builtin syntax coverage for `base64_encode()` and `base64_decode()`
+- Added a base64 roundtrip snippet for HTTP, CI, and script-first text payload workflows
+- Kept the VS Code editor surface aligned with the new bootstrap base64 helper contract
+
 ## 0.2.5
 
 - Added builtin syntax coverage for `yaml_parse()`

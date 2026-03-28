@@ -99,6 +99,15 @@
     ],
     "description": "Capture explicit Unix wall-clock timestamps for automation scripts"
   },
+  "Base64 Roundtrip": {
+    "prefix": "gofb64",
+    "body": [
+      "${1:encoded} = base64_encode(${2:\"gof!\"})",
+      "${3:decoded} = base64_decode(${1:encoded})?",
+      "assert(${3:decoded} == ${2:\"gof!\"}, \"expected base64 roundtrip to preserve text\")"
+    ],
+    "description": "Encode and decode explicit base64 text payloads"
+  },
   "YAML Config": {
     "prefix": "gofyaml",
     "body": [

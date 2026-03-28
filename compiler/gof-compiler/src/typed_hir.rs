@@ -368,6 +368,13 @@ fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
                     }],
                 },
                 EnumVariantSignature {
+                    name: "Base64".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
                     name: "ChannelClosed".to_string(),
                     fields: Vec::new(),
                 },
@@ -597,6 +604,8 @@ enum CallKind {
     BuiltinJsonInt,
     BuiltinTomlParse,
     BuiltinYamlParse,
+    BuiltinBase64Encode,
+    BuiltinBase64Decode,
     BuiltinCsvParse,
     BuiltinCsvStringify,
     BuiltinTemplateRender,
@@ -2280,6 +2289,8 @@ fn lower_expr(
                     | CallKind::BuiltinJsonInt
                     | CallKind::BuiltinTomlParse
                     | CallKind::BuiltinYamlParse
+                    | CallKind::BuiltinBase64Encode
+                    | CallKind::BuiltinBase64Decode
                     | CallKind::BuiltinCsvParse
                     | CallKind::BuiltinCsvStringify
                     | CallKind::BuiltinTemplateRender
@@ -3037,6 +3048,12 @@ fn validate_call(
         CallKind::BuiltinYamlParse => {
             validate_yaml_parse_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinBase64Encode => {
+            validate_base64_encode_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinBase64Decode => {
+            validate_base64_decode_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinCsvParse => {
             validate_csv_parse_call(args, span, diagnostics, source_path);
         }
@@ -3639,6 +3656,10 @@ fn resolve_call_kind(
         CallKind::BuiltinTomlParse
     } else if callee == "yaml_parse" {
         CallKind::BuiltinYamlParse
+    } else if callee == "base64_encode" {
+        CallKind::BuiltinBase64Encode
+    } else if callee == "base64_decode" {
+        CallKind::BuiltinBase64Decode
     } else if callee == "csv_parse" {
         CallKind::BuiltinCsvParse
     } else if callee == "csv_stringify" {
@@ -3773,6 +3794,10 @@ fn call_return_type(
         }
         CallKind::BuiltinYamlParse => {
             Type::result(Type::Json, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinBase64Encode => Type::String,
+        CallKind::BuiltinBase64Decode => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinCsvParse => Type::result(
             Type::list(Type::list(Type::String)),
@@ -6395,6 +6420,74 @@ fn validate_yaml_parse_call(
     }
 }
 
+fn validate_base64_encode_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `base64_encode`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `base64_encode(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3105",
+                "`base64_encode` requires a string argument",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a UTF-8 text string")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_base64_decode_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `base64_decode`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `base64_decode(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3105",
+                "`base64_decode` requires a string argument",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a base64 text string")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_csv_parse_call(
     args: &[TypedExpr],
     span: Span,
@@ -8094,6 +8187,30 @@ mod tests {
     }
 
     #[test]
+    fn supports_base64_builtins() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    encoded = base64_encode(\"gof!\")\n    decoded_result = base64_decode(encoded)\n    decoded = decoded_result?\n    return Result.Ok(len(encoded) + len(decoded))\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::String),
+            other => panic!("expected base64_encode bind, got {other:?}"),
+        }
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => assert_eq!(
+                value.ty,
+                Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+            ),
+            other => panic!("expected base64_decode result bind, got {other:?}"),
+        }
+        match &module.functions[0].body[2] {
+            TypedStmt::Bind { value, .. } => assert_eq!(value.ty, Type::String),
+            other => panic!("expected unwrapped base64_decode bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_dict_view_builtins() {
         let module = lower_source(
             "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    return len(names) + counts[0] + counts[1] + counts[2]\n",
@@ -8519,6 +8636,14 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3104"]);
+    }
+
+    #[test]
+    fn rejects_invalid_base64_helper_operands() {
+        let diagnostics = lower_source("fn main() -> string:\n    return base64_encode(1)\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3105"]);
     }
 
     #[test]

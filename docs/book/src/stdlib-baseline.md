@@ -170,7 +170,7 @@ Current sequence-helper rules:
 - `min` and `max` currently support only `list[int]` and `list[string]`
 - sequence helpers are explicit allocation-visible transforms; they do not hide mutation
 
-## JSON, CSV, TOML, YAML, HTTP, and explicit retry delays
+## JSON, CSV, TOML, YAML, base64, HTTP, and explicit retry delays
 
 ```gof
 fn notify(base: string) -> Result[string, RuntimeError]:
@@ -181,7 +181,7 @@ fn notify(base: string) -> Result[string, RuntimeError]:
     return Result.Ok(status)
 ```
 
-Current JSON, CSV, TOML, templating, and HTTP rules:
+Current JSON, CSV, TOML, YAML, base64, templating, and HTTP rules:
 
 - `json_parse(text)` returns `Result[json, RuntimeError]`
 - `json_get(value, key)` and `json_index(value, index)` keep JSON traversal explicit
@@ -193,6 +193,9 @@ Current JSON, CSV, TOML, templating, and HTTP rules:
 - unsupported TOML scalars outside the bootstrap `json` bridge surface as `RuntimeError.Toml(message)`
 - `yaml_parse(text)` returns `Result[json, RuntimeError]`
 - non-integer YAML numbers, non-string mapping keys, and tagged YAML values surface as `RuntimeError.Yaml(message)`
+- `base64_encode(text)` returns an encoded `string`
+- `base64_decode(text)` returns `Result[string, RuntimeError]`
+- invalid base64 text or decoded bytes outside UTF-8 surface as `RuntimeError.Base64(message)`
 - `template_render(template, values)` returns `Result[string, RuntimeError]`
 - `template_render(...)` accepts either `dict[...]` values or a top-level `json` object
 - `template_render(...)` renders explicit `{{key}}` placeholders and reports malformed placeholders or missing keys as `RuntimeError.Template(message)`
@@ -215,6 +218,13 @@ fn main() -> Result[int, RuntimeError]:
     name = json_string(json_get(config, "service")?)?
     port = json_int(json_get(config, "port")?)?
     return Result.Ok(len(name) + workers + port)
+```
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    encoded = base64_encode("gof!")
+    decoded = base64_decode(encoded)?
+    return Result.Ok(len(encoded) + len(decoded))
 ```
 
 `template_render(...)` is intentionally narrow:

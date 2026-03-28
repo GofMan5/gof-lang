@@ -4,6 +4,8 @@ use crate::ast::{
 };
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use csv::{ReaderBuilder, WriterBuilder};
 use serde_json::Value as SerdeJsonValue;
 use serde_yaml::Value as YamlValue;
@@ -472,6 +474,19 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                 },
                 EnumVariant {
                     name: "Yaml".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "Base64".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
                         ty: crate::ast::TypeRef {
@@ -1295,6 +1310,14 @@ fn runtime_yaml_error(message: impl Into<String>) -> Value {
     enum_value(
         "RuntimeError",
         "Yaml",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_base64_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Base64",
         vec![("message".to_string(), Value::String(message.into()))],
     )
 }
@@ -3010,6 +3033,34 @@ fn eval_expr(
 
             if callee == "yaml_parse" {
                 return eval_yaml_parse_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "base64_encode" {
+                return eval_base64_encode_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "base64_decode" {
+                return eval_base64_decode_builtin(
                     args,
                     scopes,
                     functions,
@@ -7670,6 +7721,92 @@ fn eval_yaml_parse_builtin(
     })
 }
 
+fn eval_base64_encode_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `base64_encode`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `base64_encode(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let text = eval_string_argument(
+        "base64_encode",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3105",
+    )?;
+    Ok(Value::String(BASE64_STANDARD.encode(text.as_bytes())))
+}
+
+fn eval_base64_decode_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `base64_decode`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `base64_decode(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let text = eval_string_argument(
+        "base64_decode",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3105",
+    )?;
+    Ok(match BASE64_STANDARD.decode(text.as_bytes()) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(value) => result_ok(Value::String(value)),
+            Err(error) => result_err(runtime_base64_error(format!(
+                "decoded base64 bytes are not valid UTF-8: {error}"
+            ))),
+        },
+        Err(error) => result_err(runtime_base64_error(error.to_string())),
+    })
+}
+
 fn eval_json_stringify_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -9716,6 +9853,31 @@ mod tests {
                 .cli_text()
                 .as_deref()
                 .is_some_and(|text| text.contains("RuntimeError.Yaml(message:"))
+        );
+    }
+
+    #[test]
+    fn evaluates_base64_builtins() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    encoded = base64_encode(\"gof!\")\n    decoded = base64_decode(encoded)?\n    return Result.Ok(len(encoded) + len(decoded))\n",
+        )
+        .expect("base64 helpers should succeed");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 12)"));
+    }
+
+    #[test]
+    fn base64_decode_returns_runtime_errors_for_invalid_input() {
+        let value = run_source(
+            "fn main() -> Result[string, RuntimeError]:\n    return base64_decode(\"%%%\")\n",
+        )
+        .expect("base64 decode should return a runtime error value");
+
+        assert!(
+            value
+                .cli_text()
+                .as_deref()
+                .is_some_and(|text| text.contains("RuntimeError.Base64(message:"))
         );
     }
 

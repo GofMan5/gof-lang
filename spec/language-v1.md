@@ -100,6 +100,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `contains(haystack, needle)` for list membership and string substring checks
 - builtin `trim(...)`, `split(...)`, `join(...)`, `starts_with(...)`, and `ends_with(...)` for explicit string work
 - builtin `parse_int(...)` and `to_string(...)` for explicit numeric and text conversion
+- builtin `base64_encode(...)` and `base64_decode(...)` for explicit text payload encoding
 - builtin `range(...)` for explicit integer sequence construction
 - builtin `sleep(...)` for explicit delay and retry/backoff control
 - builtin `channel()`, `channel(capacity)`, `close(...)`, `send(...)`, and `recv(...)` for bootstrap message passing
@@ -147,7 +148,7 @@ The bootstrap compiler in this repository currently supports:
 - payload enum construction currently requires payload values compatible with the declared payload field types
 - `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
 - `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
-- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `Time(message: string)`, `Yaml(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
+- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `Time(message: string)`, `Yaml(message: string)`, `Base64(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
 - `match value:` currently requires `value` to resolve to a known enum or `Result`
 - each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
 - `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
@@ -218,6 +219,9 @@ The bootstrap compiler in this repository currently supports:
 - `parse_int` currently accepts exactly one string and returns `Result[int, RuntimeError]`
 - invalid `parse_int` text currently becomes `RuntimeError.ParseInt(message)` instead of a runtime diagnostic
 - `to_string` currently accepts exactly one printable value and returns `string`
+- `base64_encode` currently accepts exactly one string and returns a base64-encoded `string`
+- `base64_decode` currently accepts exactly one base64 text string and returns `Result[string, RuntimeError]`
+- `base64_decode` currently reports invalid base64 text or decoded bytes outside UTF-8 as `RuntimeError.Base64(message)`
 - `range` currently accepts `(stop)`, `(start, stop)`, or `(start, stop, step)` and returns `list[int]`
 - `range` currently requires every argument to resolve to `int`
 - `range` currently rejects a zero step

@@ -1010,6 +1010,20 @@ fn gof_run_executes_time_report_example() {
 }
 
 #[test]
+fn gof_run_executes_base64_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("base64_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 12)"));
+}
+
+#[test]
 fn gof_run_executes_yaml_report_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")

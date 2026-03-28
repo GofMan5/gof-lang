@@ -57,3 +57,8 @@ fn sample_yaml() -> Result[int, RuntimeError]:
     config = yaml_parse("service: alpha\nport: 7")?
     port = json_int(json_get(config, "port")?)?
     return Result.Ok(port)
+
+fn sample_base64() -> Result[int, RuntimeError]:
+    encoded = base64_encode("gof!")
+    decoded = base64_decode(encoded)?
+    return Result.Ok(len(encoded) + len(decoded))

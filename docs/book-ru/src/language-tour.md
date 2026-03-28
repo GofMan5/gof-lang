@@ -98,6 +98,8 @@ Mutation в `gof` разрешена, но она не является silent d
 - `unix_seconds()`
 - `unix_millis()`
 - `yaml_parse(...)`
+- `base64_encode(...)`
+- `base64_decode(...)`
 - `env(...)`
 - `cwd()`
 - `run_process(...)`

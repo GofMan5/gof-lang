@@ -1,0 +1,5 @@
+fn main() -> Result[int, RuntimeError]:
+    encoded = base64_encode("gof!")
+    decoded = base64_decode(encoded)?
+    assert(decoded == "gof!", "expected base64 roundtrip to preserve UTF-8 text")
+    return Result.Ok(len(encoded) + len(decoded))

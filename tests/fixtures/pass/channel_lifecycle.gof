@@ -36,6 +36,8 @@ fn main() -> int:
                     return len(message) - len(message)
                 RuntimeError.Yaml(message):
                     return len(message) - len(message)
+                RuntimeError.Base64(message):
+                    return len(message) - len(message)
                 RuntimeError.Time(message):
                     return len(message) - len(message)
                 RuntimeError.HttpRequest(message):
