@@ -300,13 +300,13 @@ Hard sequencing rule:
 
 - `[ ]` script-first workflow with very fast edit-run loops
 - `[ ]` richer text, collections, time, env, config, and process stdlib
-- `[ ]` data wrangling baseline for JSON, CSV, templating, and filesystem automation
+- `[~]` data wrangling baseline for JSON, CSV, templating, and filesystem automation
 - `[ ]` REPL or equivalent interactive exploration path
 - `[ ]` script packaging and single-command execution ergonomics
 - Checkpoints:
 - `[ ]` CP-M9-1: script runner and module UX that make small automation tasks frictionless
 - `[ ]` CP-M9-2: batteries-included automation stdlib without hidden runtime magic
-- `[ ]` CP-M9-3: data transformation baseline suitable for real internal tooling
+- `[~]` CP-M9-3: data transformation baseline suitable for real internal tooling
 - Exit criteria:
 - most tasks that would rationally be written in Python or Node for local automation can be written cleanly in `gof`
 - the language keeps explicit types and predictable costs even in scripting-heavy workflows

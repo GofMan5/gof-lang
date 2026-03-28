@@ -968,6 +968,51 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_csv_builtins() {
+        let source = SourceFile::new(
+            "csv_inventory.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    rows = csv_parse(\"name,count\\nalpha,2\\nbeta,5\")?\n    rendered = csv_stringify(rows)?\n    return Result.Ok(len(rows) + len(rendered))\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(
+                    value.ty,
+                    Type::List(Box::new(Type::List(Box::new(Type::String))))
+                );
+            }
+            other => panic!("expected csv_parse bind, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected csv_stringify bind, got {other:?}"),
+        }
+
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "csv_parse"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "csv_stringify"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_range_builtin() {
         let source = SourceFile::new(
             "range_helpers.gof",

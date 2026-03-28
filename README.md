@@ -62,7 +62,7 @@ gof test tests/fixtures                # run conformance suite
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `env`, `cwd`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
-| JSON helpers and bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
+| JSON and CSV helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |

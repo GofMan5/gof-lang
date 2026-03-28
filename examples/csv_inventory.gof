@@ -1,0 +1,8 @@
+fn main() -> Result[int, RuntimeError]:
+    path = "gof-csv-demo.csv"
+    rows = [["name", "count"], ["alpha", "2"], ["beta", "5"]]
+    write_file(path, csv_stringify(rows)?)?
+    parsed = csv_parse(read_file(path)?)?
+    assert(parsed[1][0] == "alpha", "expected alpha row")
+    remove_file(path)?
+    return Result.Ok(len(parsed) + parse_int(parsed[2][1])?)

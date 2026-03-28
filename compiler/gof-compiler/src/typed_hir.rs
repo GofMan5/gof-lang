@@ -404,6 +404,13 @@ fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
                     }],
                 },
                 EnumVariantSignature {
+                    name: "Csv".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
                     name: "HttpRequest".to_string(),
                     fields: vec![EnumVariantFieldSignature {
                         name: "message".to_string(),
@@ -555,6 +562,8 @@ enum CallKind {
     BuiltinJsonLen,
     BuiltinJsonString,
     BuiltinJsonInt,
+    BuiltinCsvParse,
+    BuiltinCsvStringify,
     BuiltinHttpGet,
     BuiltinHttpPost,
     Function,
@@ -2228,6 +2237,8 @@ fn lower_expr(
                     | CallKind::BuiltinJsonLen
                     | CallKind::BuiltinJsonString
                     | CallKind::BuiltinJsonInt
+                    | CallKind::BuiltinCsvParse
+                    | CallKind::BuiltinCsvStringify
                     | CallKind::BuiltinHttpGet
                     | CallKind::BuiltinHttpPost
                     | CallKind::Enum
@@ -2961,6 +2972,12 @@ fn validate_call(
         CallKind::BuiltinJsonInt => {
             validate_json_int_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinCsvParse => {
+            validate_csv_parse_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinCsvStringify => {
+            validate_csv_stringify_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinHttpGet => {
             validate_single_string_argument_call("http_get", args, span, diagnostics, source_path);
         }
@@ -3540,6 +3557,10 @@ fn resolve_call_kind(
         CallKind::BuiltinJsonString
     } else if callee == "json_int" {
         CallKind::BuiltinJsonInt
+    } else if callee == "csv_parse" {
+        CallKind::BuiltinCsvParse
+    } else if callee == "csv_stringify" {
+        CallKind::BuiltinCsvStringify
     } else if callee == "http_get" {
         CallKind::BuiltinHttpGet
     } else if callee == "http_post" {
@@ -3645,6 +3666,13 @@ fn call_return_type(
             Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinJsonString => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinCsvParse => Type::result(
+            Type::list(Type::list(Type::String)),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        CallKind::BuiltinCsvStringify => {
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinHttpGet => {
@@ -6190,6 +6218,79 @@ fn validate_json_int_call(
     }
 }
 
+fn validate_csv_parse_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `csv_parse`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `csv_parse(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3098",
+                "`csv_parse` requires a string value",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass CSV text as a string to `csv_parse`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_csv_stringify_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `csv_stringify`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `csv_stringify(rows)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(
+        &args[0].ty,
+        Type::List(outer)
+            if matches!(outer.as_ref(), Type::List(inner) if matches!(inner.as_ref(), Type::String | Type::Unknown))
+    ) && !matches!(args[0].ty, Type::Unknown)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3098",
+                "`csv_stringify` requires `list[list[string]]` rows",
+                format!("this argument resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a `list[list[string]]` value to `csv_stringify`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_http_post_call(
     args: &[TypedExpr],
     span: Span,
@@ -7601,6 +7702,30 @@ mod tests {
     }
 
     #[test]
+    fn supports_csv_builtins() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    rows = csv_parse(\"name,count\\nalpha,2\\nbeta,5\")?\n    rendered = csv_stringify(rows)?\n    assert(rows[1][0] == \"alpha\", \"expected first row\")\n    return Result.Ok(len(rows) + len(rendered))\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(
+                    value.ty,
+                    Type::List(Box::new(Type::List(Box::new(Type::String))))
+                );
+            }
+            other => panic!("expected csv rows bind, got {other:?}"),
+        }
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected csv string bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_dict_view_builtins() {
         let module = lower_source(
             "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    return len(names) + counts[0] + counts[1] + counts[2]\n",
@@ -7960,6 +8085,26 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3043"]);
+    }
+
+    #[test]
+    fn rejects_invalid_csv_parse_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[list[list[string]], RuntimeError]:\n    return csv_parse(1)\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3098"]);
+    }
+
+    #[test]
+    fn rejects_invalid_csv_stringify_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[string, RuntimeError]:\n    return csv_stringify([[1], [2]])\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3098"]);
     }
 
     #[test]

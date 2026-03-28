@@ -28,6 +28,8 @@ fn main() -> int:
                     return len(message) - len(message)
                 RuntimeError.Json(message):
                     return len(message) - len(message)
+                RuntimeError.Csv(message):
+                    return len(message) - len(message)
                 RuntimeError.HttpRequest(message):
                     return len(message) - len(message)
                 RuntimeError.HttpStatus(code, body):

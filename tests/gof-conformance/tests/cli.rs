@@ -553,6 +553,20 @@ fn gof_run_executes_line_io_example() {
 }
 
 #[test]
+fn gof_run_executes_csv_inventory_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("csv_inventory.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 8)"));
+}
+
+#[test]
 fn gof_run_executes_runtime_ops_example_with_args_env_and_fs_helpers() {
     let temp = tempdir().expect("tempdir should exist");
     let example = gof_conformance::workspace_root()

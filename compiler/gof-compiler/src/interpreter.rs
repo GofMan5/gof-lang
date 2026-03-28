@@ -4,13 +4,15 @@ use crate::ast::{
 };
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
+use csv::{ReaderBuilder, WriterBuilder};
 use serde_json::Value as SerdeJsonValue;
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::fs;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -19,7 +21,21 @@ type MethodTable = Arc<HashMap<(String, String), Function>>;
 type StructTable = Arc<HashMap<String, StructDecl>>;
 type EnumTable = Arc<HashMap<String, EnumDecl>>;
 
-static NEXT_SELECT_ARM_START: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static NEXT_SELECT_ARM_START: Cell<usize> = const { Cell::new(0) };
+}
+
+fn reset_select_arm_rotation() {
+    NEXT_SELECT_ARM_START.with(|counter| counter.set(0));
+}
+
+fn next_select_arm_start(arm_count: usize) -> usize {
+    NEXT_SELECT_ARM_START.with(|counter| {
+        let current = counter.get();
+        counter.set(current.wrapping_add(1));
+        current % arm_count
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionResult {
@@ -445,6 +461,19 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                 },
                 EnumVariant {
                     name: "Json".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "Csv".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
                         ty: crate::ast::TypeRef {
@@ -1049,6 +1078,14 @@ fn runtime_json_error(message: impl Into<String>) -> Value {
     )
 }
 
+fn runtime_csv_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Csv",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
 fn runtime_http_request_error(message: impl Into<String>) -> Value {
     enum_value(
         "RuntimeError",
@@ -1187,6 +1224,8 @@ pub fn run(module: &Module) -> Result<Value, Diagnostics> {
 }
 
 pub fn run_with_output(module: &Module) -> Result<ExecutionResult, Diagnostics> {
+    reset_select_arm_rotation();
+
     let functions = Arc::new(
         module
             .functions
@@ -1843,8 +1882,7 @@ fn eval_stmt(
                 }
             }
 
-            let mut start_index =
-                NEXT_SELECT_ARM_START.fetch_add(1, Ordering::Relaxed) % prepared_arms.len();
+            let mut start_index = next_select_arm_start(prepared_arms.len());
             loop {
                 for offset in 0..prepared_arms.len() {
                     let (arm, prepared) =
@@ -2729,6 +2767,34 @@ fn eval_expr(
 
             if callee == "json_int" {
                 return eval_json_int_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "csv_parse" {
+                return eval_csv_parse_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "csv_stringify" {
+                return eval_csv_stringify_builtin(
                     args,
                     scopes,
                     functions,
@@ -7297,6 +7363,157 @@ fn eval_json_int_builtin(
     })
 }
 
+fn eval_csv_parse_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `csv_parse`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `csv_parse(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let text = eval_string_argument(
+        "csv_parse",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3098",
+    )?;
+
+    let mut reader = ReaderBuilder::new()
+        .has_headers(false)
+        .from_reader(text.as_bytes());
+    let mut rows = Vec::new();
+    for record in reader.records() {
+        match record {
+            Ok(record) => rows.push(Value::List(
+                record
+                    .iter()
+                    .map(|field| Value::String(field.to_string()))
+                    .collect(),
+            )),
+            Err(error) => return Ok(result_err(runtime_csv_error(error.to_string()))),
+        }
+    }
+
+    Ok(result_ok(Value::List(rows)))
+}
+
+fn eval_csv_stringify_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `csv_stringify`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `csv_stringify(rows)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let rows_value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::List(rows) = rows_value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3098",
+                "`csv_stringify` requires `list[list[string]]` rows",
+                format!("this argument resolves to `{}`", value_name(&rows_value)),
+                args[0].span(),
+            )
+            .with_fix_it("pass a `list[list[string]]` value to `csv_stringify`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    let mut writer = WriterBuilder::new()
+        .has_headers(false)
+        .from_writer(Vec::new());
+    for row in rows {
+        let Value::List(fields) = row else {
+            return eval_diagnostics(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3098",
+                    "`csv_stringify` requires `list[list[string]]` rows",
+                    format!("this rows value contains `{}`", value_name(&row)),
+                    args[0].span(),
+                )
+                .with_fix_it("ensure every row passed to `csv_stringify` is a `list[string]`")
+                .with_source_path(source_path.to_path_buf()),
+            ]));
+        };
+
+        let mut string_fields = Vec::with_capacity(fields.len());
+        for field in fields {
+            let Value::String(field_text) = field else {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3098",
+                        "`csv_stringify` requires `list[list[string]]` rows",
+                        format!("this row contains `{}`", value_name(&field)),
+                        args[0].span(),
+                    )
+                    .with_fix_it("ensure every CSV field passed to `csv_stringify` is a string")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            };
+            string_fields.push(field_text);
+        }
+
+        if let Err(error) = writer.write_record(&string_fields) {
+            return Ok(result_err(runtime_csv_error(error.to_string())));
+        }
+    }
+
+    let bytes = match writer.into_inner() {
+        Ok(bytes) => bytes,
+        Err(error) => return Ok(result_err(runtime_csv_error(error.to_string()))),
+    };
+    let csv_text = String::from_utf8(bytes)
+        .expect("csv writer should always produce valid UTF-8 from string fields");
+    Ok(result_ok(Value::String(csv_text)))
+}
+
 fn eval_http_get_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -8113,6 +8330,16 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_csv_builtins() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    text = csv_stringify([[\"name\", \"count\"], [\"alpha\", \"2\"], [\"beta\", \"5\"]])?\n    rows = csv_parse(text)?\n    assert(rows[1][0] == \"alpha\", \"expected first row\")\n    return Result.Ok(len(rows) + parse_int(rows[2][1])?)\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 8)"));
+    }
+
+    #[test]
     fn evaluates_dict_view_builtins() {
         let value = run_source(
             "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    mut total = 0\n    for name in names:\n        total = total + len(name)\n    for count in counts:\n        total = total + count\n    return total\n",
@@ -8438,6 +8665,31 @@ mod tests {
         .expect_err("write_lines should reject non-string line lists at runtime");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3043"]);
+    }
+
+    #[test]
+    fn csv_stringify_rejects_non_string_rows_at_runtime() {
+        let diagnostics = run_source(
+            "fn encode(rows: list) -> Result[string, RuntimeError]:\n    return csv_stringify(rows)\nfn main() -> Result[string, RuntimeError]:\n    return encode([[1], [2]])\n",
+        )
+        .expect_err("csv_stringify should reject non-string rows at runtime");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3098"]);
+    }
+
+    #[test]
+    fn csv_parse_returns_runtime_errors_for_malformed_csv() {
+        let value = run_source(
+            "fn main() -> Result[list[list[string]], RuntimeError]:\n    return csv_parse(\"name,count\\nalpha,2\\nbeta\")\n",
+        )
+        .expect("csv parse should return a runtime error value");
+
+        assert!(
+            value
+                .cli_text()
+                .as_deref()
+                .is_some_and(|text| text.contains("RuntimeError.Csv(message:"))
+        );
     }
 
     #[test]

@@ -186,7 +186,7 @@ Operational helpers уже используют тот же контракт:
 - `max(values)` возвращает `Result[T, RuntimeError]`
 - `read_file(path)` возвращает `Result[string, RuntimeError]`
 - `recv(channel)` возвращает `Result[T, RuntimeError]`
-- JSON и HTTP helpers тоже возвращают `Result`
+- JSON, CSV и HTTP helpers тоже возвращают `Result`
 
 Это важно, потому что error propagation остается единым для CLI tooling, file I/O,
 concurrency и бот-ориентированного network code.
@@ -207,6 +207,7 @@ concurrency и бот-ориентированного network code.
 - `EmptySequence(message: string)`
 - `Slice(message: string)`
 - `Json(message: string)`
+- `Csv(message: string)`
 - `HttpRequest(message: string)`
 - `HttpStatus(code: int, body: string)`
 
