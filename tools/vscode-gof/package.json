@@ -1,0 +1,81 @@
+{
+  "name": "gof-language",
+  "displayName": "gof Language Support",
+  "description": "Syntax highlighting, comments, brackets, and indentation rules for the gof language.",
+  "version": "0.1.0",
+  "publisher": "gofman5",
+  "icon": "media/gof-icon.png",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/GofMan5/gof-lang.git"
+  },
+  "homepage": "https://github.com/GofMan5/gof-lang/tree/main/tools/vscode-gof",
+  "bugs": {
+    "url": "https://github.com/GofMan5/gof-lang/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Snippets"
+  ],
+  "keywords": [
+    "gof",
+    "language",
+    "syntax",
+    "highlighting",
+    "snippets",
+    "vscode"
+  ],
+  "galleryBanner": {
+    "color": "#0f172a",
+    "theme": "dark"
+  },
+  "files": [
+    "language-configuration.json",
+    "media/**",
+    "snippets/**",
+    "syntaxes/**",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE.md"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "gof",
+        "aliases": [
+          "gof"
+        ],
+        "extensions": [
+          ".gof"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "gof",
+        "scopeName": "source.gof",
+        "path": "./syntaxes/gof.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "gof",
+        "path": "./snippets/gof.code-snippets"
+      }
+    ]
+  },
+  "scripts": {
+    "test": "node --test ./test/*.test.mjs",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.6.2",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.2.1"
+  }
+}

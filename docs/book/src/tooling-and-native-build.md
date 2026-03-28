@@ -70,6 +70,44 @@ That is why this book keeps distinguishing:
 
 Those are different things, and a serious language should teach that difference clearly.
 
+## VS Code editor baseline
+
+The repository now also ships an installable VS Code extension in
+`tools/vscode-gof`.
+
+It currently covers:
+
+- `.gof` file association
+- syntax highlighting
+- starter snippets for modules, functions, enums, structs, `select`, and task joins
+- `#` comments
+- bracket pairs
+- indentation for colon-ended blocks
+- Marketplace-ready packaging metadata and icon
+
+It does not yet provide:
+
+- LSP
+- debugger
+- profiler
+- semantic rename or go-to-definition
+
+For local packaging:
+
+```bash
+cd tools/vscode-gof
+npm install
+npm test
+npm run package
+```
+
+That produces a `.vsix` file that users can install through
+`Extensions: Install from VSIX...`.
+
+If you want one-click installation for other users, publish the same package to
+the VS Code Marketplace. The extension is real editor tooling, but it is still
+an editor baseline rather than the full IDE/platform story from M12.
+
 ## Building the book
 
 The learning docs are built with `mdBook`.

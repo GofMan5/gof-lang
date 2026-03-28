@@ -1,0 +1,27 @@
+module sample
+import worker
+
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
+
+struct Runner:
+    id: int
+
+fn Runner.run(task: task[int]) -> Result[int, RuntimeError]:
+    mut ch: channel[int] = channel(1)
+    message = "ready"
+    select:
+        result = recv(ch, timeout_token(5)):
+            return await_result(go compute(result), cancel_token())
+        default:
+            return Result.Err(RuntimeError.Cancelled)
+
+fn compute(value: int) -> int:
+    if value > 0 and not false:
+        return value
+    else:
+        return 0
+
+# syntax smoke

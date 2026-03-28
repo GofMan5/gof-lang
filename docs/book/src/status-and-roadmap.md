@@ -24,6 +24,7 @@ The current repo already supports:
 - channels, `close`, cancellation tokens, and `select`
 - `go` / `await`
 - a real CLI and a bootstrap-native build path
+- an installable VS Code editor baseline with syntax highlighting and snippets for `.gof` files
 
 That is already enough to teach real semantics and run non-trivial examples.
 It is also enough to express a first long-polling Telegram bot baseline.

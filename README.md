@@ -110,6 +110,7 @@ Channels now also have an explicit capacity baseline:
 | **[The gof Book (RU)](https://gofman5.github.io/gof-lang/ru/)** | Russian edition |
 | [Examples](examples/) | Runnable programs |
 | [Telegram bot example](examples/telegram_long_polling.gof) | Long-polling baseline |
+| [VS Code extension](tools/vscode-gof/) | Syntax highlighting, snippets, comments, brackets, and installable packaging for `.gof` files |
 | [Language spec](spec/language-v1.md) | Formal contract |
 | [Diagnostics spec](spec/diagnostics.md) | Error behavior |
 | [Roadmap](roadmap.md) | Milestones and current focus |
@@ -136,6 +137,15 @@ mdbook build docs/book
 mdbook build docs/book-ru
 ```
 
+Build the VS Code extension locally:
+
+```bash
+cd tools/vscode-gof
+npm install
+npm test
+npm run package
+```
+
 ## Project structure
 
 ```text
@@ -143,6 +153,7 @@ compiler/    compiler frontend, typing, IR, evaluator
 runtime/     runtime contracts
 stdlib/      standard library (in progress)
 tools/       CLI toolchain (gof-cli)
+tools/vscode-gof/ VS Code syntax extension and packaging
 tests/       conformance fixtures
 benchmarks/  benchmark harness
 spec/        language and diagnostics contracts

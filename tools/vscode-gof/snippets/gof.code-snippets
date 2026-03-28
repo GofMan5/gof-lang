@@ -1,0 +1,67 @@
+{
+  "Module Skeleton": {
+    "prefix": "gofmod",
+    "body": [
+      "module ${1:name}",
+      "",
+      "fn main() -> ${2:int}:",
+      "    ${3:return 0}"
+    ],
+    "description": "Create a gof module with a typed main entrypoint"
+  },
+  "Function": {
+    "prefix": "goffn",
+    "body": [
+      "fn ${1:name}(${2}) -> ${3:unit}:",
+      "    ${4:return ()}"
+    ],
+    "description": "Create a gof function with an explicit return contract"
+  },
+  "Struct": {
+    "prefix": "gofstruct",
+    "body": [
+      "struct ${1:Name}:",
+      "    ${2:field}: ${3:int}"
+    ],
+    "description": "Create a gof struct declaration"
+  },
+  "Enum": {
+    "prefix": "gofenum",
+    "body": [
+      "enum ${1:State}:",
+      "    ${2:Ready}",
+      "    ${3:Failed(message: string)}"
+    ],
+    "description": "Create a gof enum with unit and payload variants"
+  },
+  "Match Result": {
+    "prefix": "gofmatch",
+    "body": [
+      "match ${1:value}:",
+      "    Result.Ok(${2:ok}):",
+      "        ${3:return ok}",
+      "    Result.Err(${4:error}):",
+      "        ${5:return Result.Err(error)}"
+    ],
+    "description": "Match over a Result value explicitly"
+  },
+  "Select": {
+    "prefix": "gofselect",
+    "body": [
+      "select:",
+      "    ${1:value} = recv(${2:ch}):",
+      "        ${3:return value}",
+      "    default:",
+      "        ${4:return Result.Err(RuntimeError.Cancelled)}"
+    ],
+    "description": "Create a baseline select block with recv and default arms"
+  },
+  "Task Join": {
+    "prefix": "gofawait",
+    "body": [
+      "${1:task}: task[${2:int}] = go ${3:work}()",
+      "${4:outcome} = await_result(${1:task}, ${5:timeout_token(1000)})"
+    ],
+    "description": "Spawn a task and join it through the recoverable await_result path"
+  }
+}

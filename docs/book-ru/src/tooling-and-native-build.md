@@ -65,6 +65,44 @@ CLI делает runnable host executable.
 - backend artifact build
 - bootstrap-native executable build
 
+## VS Code editor baseline
+
+В репозитории теперь есть и отдельное installable-расширение для VS Code в
+`tools/vscode-gof`.
+
+Сейчас оно покрывает:
+
+- ассоциацию файлов `.gof`
+- syntax highlighting
+- стартовые snippets для модулей, функций, enum, struct, `select` и task join
+- комментарии `#`
+- пары скобок
+- отступы для блоков, заканчивающихся `:`
+- иконку и packaging metadata для публикации
+
+Оно пока не дает:
+
+- LSP
+- debugger
+- profiler
+- semantic rename или go-to-definition
+
+Локальная сборка пакета:
+
+```bash
+cd tools/vscode-gof
+npm install
+npm test
+npm run package
+```
+
+После этого получается `.vsix`, который можно поставить через
+`Extensions: Install from VSIX...`.
+
+Если нужен нормальный one-click install для других пользователей, этот же пакет
+надо публиковать в VS Code Marketplace. Это уже реальный editor tooling, но
+пока только editor baseline, а не финальный IDE/platform слой из M12.
+
 ## Сборка книги
 
 Документация книги собирается через `mdBook`.

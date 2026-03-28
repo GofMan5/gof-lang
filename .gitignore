@@ -5,3 +5,5 @@ AGENTS.md
 /dist-test
 /dist-snapshot
 /docs/book/book
+**/node_modules/
+**/*.vsix
