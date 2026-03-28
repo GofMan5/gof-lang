@@ -165,12 +165,27 @@
       "patterns": [
         {
           "name": "meta.function.gof",
-          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "match": "\\b(?:(test)\\s+)?(?:(fixture)\\s*(\\()\\s*(test|module)\\s*(\\))\\s+)?(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
             "1": {
-              "name": "keyword.declaration.function.gof"
+              "name": "keyword.declaration.test.gof"
             },
             "2": {
+              "name": "keyword.declaration.fixture.gof"
+            },
+            "3": {
+              "name": "punctuation.section.group.begin.gof"
+            },
+            "4": {
+              "name": "keyword.other.fixture-scope.gof"
+            },
+            "5": {
+              "name": "punctuation.section.group.end.gof"
+            },
+            "6": {
+              "name": "keyword.declaration.function.gof"
+            },
+            "7": {
               "name": "entity.name.function.gof"
             }
           }
@@ -227,7 +242,7 @@
       "patterns": [
         {
           "name": "support.type.builtin.gof",
-          "match": "\\b(?:int|string|bool|unit|json|cancel_token|list|dict|channel|task|Result|RuntimeError|Bytes|ReadStream|WriteStream|DuplexStream|TcpListener|SocketAddr|NetDeadline)\\b"
+          "match": "\\b(?:int|string|bool|unit|json|cancel_token|list|dict|channel|task|Result|RuntimeError|Bytes|ReadStream|WriteStream|DuplexStream|TcpListener|SocketAddr|NetDeadline|TestContext|TempDir|TempFile)\\b"
         }
       ]
     },
@@ -243,7 +258,7 @@
       "patterns": [
         {
           "name": "keyword.control.flow.gof",
-          "match": "\\b(?:if|else|while|for|in|match|return|break|continue|module|import)\\b"
+          "match": "\\b(?:if|else|while|for|in|match|return|break|continue|module|import|test)\\b"
         },
         {
           "name": "keyword.control.concurrent.gof",

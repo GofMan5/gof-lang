@@ -9,4 +9,5 @@
 - [Многопоточность](./concurrency.md)
 - [Базовая стандартная библиотека](./stdlib-baseline.md)
 - [Инструменты и native build](./tooling-and-native-build.md)
+- [Тестирование](./testing.md)
 - [Статус и roadmap](./status-and-roadmap.md)

@@ -33,7 +33,7 @@ Install `gof`, put it on `PATH`, and use the normal CLI directly.
 
 Write this:
 
-```gof
+```gof doctest
 fn main() -> int:
     print("hello from gof")
     return 42

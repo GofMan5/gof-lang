@@ -5,6 +5,8 @@ use serde::Serialize;
 pub enum TokenKind {
     Module,
     Import,
+    Test,
+    Fixture,
     Fn,
     If,
     Else,

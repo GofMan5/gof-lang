@@ -21,6 +21,8 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `for_report.gof`: `for ... in ...` over lists, strings, and dict keys
 - `break_continue.gof`: loop control through `break` and `continue`
 - `hello_print.gof`: builtin `print(...)` plus normal return value rendering
+- `testing_baseline/math_test.gof`: language-level `test fn`, `TestContext.case(...)`, and deterministic `gof test` discovery
+- `testing_baseline/fixture_test.gof`: typed `fixture(module)` / `fixture(test)` injection with cached module scope and per-test temp resources
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
 - `bytes_stream_roundtrip.gof`: shipped `bytes` / `io` / `time` stdlib foundation with explicit `Bytes`, stream deadlines, and roundtrip file I/O
 - `line_io.gof`: line-oriented file I/O with `write_lines(...)`, `read_lines(...)`, and explicit cleanup
@@ -79,6 +81,8 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `for_report.gof` -> `19`
 - `break_continue.gof` -> `4`
 - `hello_print.gof` -> prints `gof ready`, `42`, then `7`
+- `testing_baseline/math_test.gof` -> `gof test examples/testing_baseline/math_test.gof` reports `2 passed; 0 failed`
+- `testing_baseline/fixture_test.gof` -> `gof test examples/testing_baseline/fixture_test.gof` reports `2 passed; 0 failed`
 - `io_roundtrip.gof` -> `Result.Ok(value: 6)`
 - `bytes_stream_roundtrip.gof` -> `Result.Ok(value: 20)`
 - `line_io.gof` -> `Result.Ok(value: 19)`
@@ -157,3 +161,23 @@ move local dependency paths, refresh `package_app/gof.lock` with:
 ```text
 gof mod resolve --dir examples/package_app
 ```
+
+## Testing note
+
+The testing baseline now supports language-level tests through `test fn` and
+the shipped `testing` stdlib:
+
+```text
+gof test examples/testing_baseline
+gof test --list examples/testing_baseline
+gof test examples/testing_baseline/fixture_test.gof
+```
+
+Snapshots live under `tests/snapshots/` relative to the nearest project root
+and update only when you pass `--update-snapshots`.
+
+Typed fixtures resolve explicitly by parameter name and compatible type:
+
+- `fixture(module) fn name(...)` caches one value per test file
+- `fixture(test) fn name(...)` recreates one value per test case
+- only `fixture(test)` may request `t: TestContext`

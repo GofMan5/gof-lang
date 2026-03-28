@@ -1,6 +1,7 @@
 use crate::ast::{
-    BinaryOp, EnumDecl, EnumVariant, EnumVariantField, Expr, MatchPattern, Module, Param,
-    SelectArm, SelectArmKind, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
+    BinaryOp, EnumDecl, EnumVariant, EnumVariantField, Expr, FixtureScopeRef, FunctionKind,
+    MatchPattern, Module, Param, SelectArm, SelectArmKind, Stmt, StructDecl, StructField, TypeRef,
+    UnaryOp,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -16,6 +17,8 @@ pub struct HirModule {
 #[derive(Debug, Clone, Serialize)]
 pub struct HirFunction {
     pub id: usize,
+    pub kind: FunctionKind,
+    pub fixture_scope: Option<FixtureScopeRef>,
     pub receiver_type: Option<HirTypeRef>,
     pub name: String,
     pub params: Vec<HirParam>,
@@ -226,6 +229,8 @@ pub fn lower(module: &Module) -> HirModule {
             .enumerate()
             .map(|(id, function)| HirFunction {
                 id,
+                kind: function.kind,
+                fixture_scope: function.fixture_scope.clone(),
                 receiver_type: function.receiver_type.as_ref().map(lower_type_ref),
                 name: function.name.clone(),
                 params: function.params.iter().map(lower_param).collect(),

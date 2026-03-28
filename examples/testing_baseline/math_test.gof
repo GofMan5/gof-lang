@@ -1,0 +1,9 @@
+import testing
+
+test fn sums_are_stable(t: TestContext):
+    case = t.case("small-sum")
+    case.equal(2 + 3, 5, "expected deterministic integer addition")
+
+test fn result_paths_stay_explicit(t: TestContext) -> Result[unit, RuntimeError]:
+    parsed = parse_int("7")?
+    return Result.Ok(t.equal(parsed, 7, "expected parse_int to preserve value"))

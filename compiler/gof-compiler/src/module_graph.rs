@@ -652,7 +652,7 @@ fn reserved_stdlib_conflict_diagnostic(
         span,
     )
     .with_fix_it(
-        "rename the local module or dependency alias; shipped stdlib imports `bytes`, `io`, `time`, `net`, and `http` are reserved",
+                        "rename the local module or dependency alias; shipped stdlib imports `bytes`, `io`, `time`, `net`, `http`, and `testing` are reserved",
     )
     .with_source_path(source_path.to_path_buf())
 }

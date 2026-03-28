@@ -9,4 +9,5 @@
 - [Concurrency](./concurrency.md)
 - [Standard Library Baseline](./stdlib-baseline.md)
 - [Tooling and Native Build](./tooling-and-native-build.md)
+- [Testing](./testing.md)
 - [Status and Roadmap](./status-and-roadmap.md)

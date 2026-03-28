@@ -1,0 +1,14 @@
+import testing
+
+fixture(module) fn shared_total() -> int:
+    return 41
+
+fixture(test) fn scratch_dir(t: TestContext) -> TempDir:
+    return t.temp_dir()
+
+test fn reuses_module_fixture(shared_total: int, t: TestContext):
+    t.equal(shared_total, 41, "expected cached module fixture value")
+
+test fn injects_test_fixture(shared_total: int, scratch_dir: TempDir, t: TestContext):
+    t.equal(shared_total, 41, "expected cached module fixture value")
+    t.true(exists(scratch_dir.path()), "expected injected temp dir fixture")

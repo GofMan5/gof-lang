@@ -16,7 +16,10 @@ pub mod token;
 pub mod typed_hir;
 
 pub use diagnostics::{Diagnostic, Diagnostics, Severity};
-pub use interpreter::ExecutionResult;
+pub use interpreter::{
+    ExecutionResult, TestExecutionOutcome, TestExecutionResult, TestModuleState,
+    TestRuntimeOptions, run_test_function_with_output,
+};
 pub use pipeline::{
     CompileMode, CompiledModule, build_embedded_source_bundle, compile_source,
     compile_source_with_provider, format_source, run_embedded_bundle_with_output,

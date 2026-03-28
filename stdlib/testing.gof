@@ -1,0 +1,47 @@
+fn TestContext.fail(self: TestContext, message: string):
+    __gof_internal_test_fail(self, message)
+
+fn TestContext.equal(self: TestContext, actual, expected, message: string):
+    __gof_internal_test_equal(self, actual, expected, message)
+
+fn TestContext.not_equal(self: TestContext, actual, expected, message: string):
+    __gof_internal_test_not_equal(self, actual, expected, message)
+
+fn TestContext.true(self: TestContext, condition: bool, message: string):
+    __gof_internal_test_true(self, condition, message)
+
+fn TestContext.false(self: TestContext, condition: bool, message: string):
+    __gof_internal_test_false(self, condition, message)
+
+fn TestContext.ok(self: TestContext, result, message: string):
+    __gof_internal_test_ok(self, result, message)
+
+fn TestContext.err(self: TestContext, result, message: string):
+    __gof_internal_test_err(self, result, message)
+
+fn TestContext.match_snapshot(self: TestContext, name: string, value):
+    __gof_internal_test_match_snapshot(self, name, value)
+
+fn TestContext.case(self: TestContext, name: string) -> TestContext:
+    return __gof_internal_test_case(self, name)
+
+fn TestContext.temp_dir(self: TestContext) -> TempDir:
+    return __gof_internal_test_temp_dir(self)
+
+fn TestContext.temp_file(self: TestContext, prefix: string) -> TempFile:
+    return __gof_internal_test_temp_file(self, prefix)
+
+fn TestContext.env(self: TestContext, name: string, value: string):
+    __gof_internal_test_env(self, name, value)
+
+fn TestContext.skip(self: TestContext, message: string):
+    __gof_internal_test_skip(self, message)
+
+fn TestContext.todo(self: TestContext, message: string):
+    __gof_internal_test_todo(self, message)
+
+fn TempDir.path(self: TempDir) -> string:
+    return __gof_internal_temp_dir_path(self)
+
+fn TempFile.path(self: TempFile) -> string:
+    return __gof_internal_temp_file_path(self)

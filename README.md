@@ -2,7 +2,7 @@
 
 A programming language with Python-like readability, Go-like concurrency, and Rust-grade engineering discipline.
 
-```gof
+```gof doctest
 enum JobState:
     Ready
     Running(pid: int)
@@ -47,10 +47,13 @@ After installation, open a new shell and use `gof` directly. Rust is not require
 gof run examples/geometry.gof          # run a program
 gof run --watch examples/geometry.gof  # rerun on edits
 gof check examples/geometry.gof        # compile-only validation
+gof test examples/testing_baseline     # run language-level tests
+gof test --list examples/testing_baseline
+gof test --docs                        # run opt-in markdown doctests
 gof mod resolve --dir examples/package_app
 gof build app.gof --native             # build a native executable
 gof fmt src/main.gof                   # format
-gof test tests/fixtures                # run conformance suite
+gof test tests/fixtures                # run diagnostics/runtime fixtures
 ```
 
 ## What works today
@@ -65,8 +68,9 @@ gof test tests/fixtures                # run conformance suite
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `base64_encode(...)`, `base64_decode(...)`, `range`, `sleep(...)`, `unix_seconds()`, `unix_millis()` | stable |
 | JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` / `http_request(...)` | bootstrap |
-| Same-directory imports, reserved shipped stdlib imports (`bytes` / `io` / `time` / `net` / `http`), initial `Bytes` / stream / deadline / TCP stdlib foundation, and manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
+| Same-directory imports, reserved shipped stdlib imports (`bytes` / `io` / `time` / `net` / `http` / `testing`), initial `Bytes` / stream / deadline / TCP stdlib foundation, and manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
+| `test fn`, `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test`, opt-in markdown doctests, and hybrid discovery across `*_test.gof`, `tests/**/*.gof`, and legacy repo fixtures | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | `gof check --json [--stdin]` | stable compiler-backed diagnostics contract |
 | `gof run --watch [--debounce-ms] <target> [-- ...args]` | bootstrap serial edit-run loop for scripts and executable packages |
@@ -85,10 +89,49 @@ Shipped stdlib imports now resolve through reserved module names:
 - `import time`
 - `import net`
 - `import http`
+- `import testing`
 
 Those names no longer shadow to same-directory files or local dependency aliases.
 If user code tries to reuse one of those names, the compiler reports an explicit
 reserved-stdlib conflict instead of silently picking the wrong module graph.
+
+The shipped `testing` module now provides a real typed language-level test
+surface:
+
+- `test fn name(...)` at top level
+- `fixture(test) fn name(...)` and `fixture(module) fn name(...)`
+- typed `TestContext` helpers such as `t.equal(...)`, `t.match_snapshot(...)`,
+  `t.case(...)`, `t.temp_dir()`, `t.temp_file(...)`, `t.env(...)`, `t.skip(...)`,
+  and `t.todo(...)`
+- deterministic snapshot storage under `tests/snapshots/`
+- discovery through `*_test.gof` and `tests/**/*.gof`
+- opt-in markdown doctests through fenced `gof doctest ...` blocks plus
+  `gof test --docs`
+
+The current shipped testing contract is still explicit and intentionally narrow:
+
+- `test fn` may take zero or more typed fixture parameters plus at most one
+  `t: TestContext`
+- fixture dependencies resolve by parameter name and compatible type
+- fixtures must declare a scope plus an explicit return type of either `Type`
+  or `Result[Type, RuntimeError]`
+- `fixture(module)` values are cached once per language test file, while
+  `fixture(test)` values are recreated once per test case
+- tests currently return either `unit` or `Result[unit, RuntimeError]`
+- `gof test` currently ships list/filter/fail-fast/nocapture/snapshot-update/docs
+  flow plus legacy diagnostics/runtime fixtures
+- explicit fixture cleanup hooks, unified `tests/ui` + `tests/runtime`
+  product harnesses, property/fuzz/stress, JSON/JUnit reporters, and benchmark
+  integration stay on the roadmap rather than being implied as done
+
+Useful commands:
+
+```text
+gof test examples/testing_baseline
+gof test --list examples/testing_baseline
+gof test --docs
+gof test --update-snapshots path/to/project
+```
 
 The first shipped stdlib networking foundation now lives behind those reserved
 imports instead of behind ever-growing global builtins:
@@ -190,6 +233,7 @@ Channels now also have an explicit capacity baseline:
 | **[The gof Book](https://gofman5.github.io/gof-lang/)** | Learning path - start here |
 | **[The gof Book (RU)](https://gofman5.github.io/gof-lang/ru/)** | Russian edition |
 | [Examples](examples/) | Runnable programs |
+| [Detailed plans](plans/roadmap/00-index.md) | Ordered implementation plans by area |
 | [Telegram bot example](examples/telegram_long_polling.gof) | Long-polling baseline |
 | [VS Code extension](tools/vscode-gof/) | Syntax highlighting, snippets, compiler-backed diagnostics, and installable packaging for `.gof` files |
 | [Language spec](spec/language-v1.md) | Formal contract |

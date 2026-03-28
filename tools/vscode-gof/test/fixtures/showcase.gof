@@ -88,3 +88,15 @@ fn sample_bytes_stream_net(path: string) -> Result[int, RuntimeError]:
     address: SocketAddr = listener.local_addr()?
     client: DuplexStream = connect_tcp(address.text())?
     return Result.Ok(bytes_len(copy) + address.port())
+
+import testing
+
+test fn smoke_test(t: TestContext):
+    case = t.case("sum")
+    case.equal(1 + 1, 2, "expected deterministic sum")
+
+fixture(module) fn shared_total() -> int:
+    return 41
+
+fixture(test) fn scratch_dir(t: TestContext) -> TempDir:
+    return t.temp_dir()

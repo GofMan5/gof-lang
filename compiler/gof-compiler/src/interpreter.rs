@@ -1,9 +1,10 @@
 use crate::ast::{
-    BinaryOp, EnumDecl, EnumVariant, Expr, Function, MatchPattern, Module, Param, SelectArm,
-    SelectArmKind, Stmt, StructDecl, UnaryOp,
+    BinaryOp, EnumDecl, EnumVariant, Expr, FixtureScope, Function, MatchPattern, Module, Param,
+    SelectArm, SelectArmKind, Stmt, StructDecl, UnaryOp,
 };
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
+use crate::typed_hir::{Type, TypedFunction, TypedModule};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use csv::{ReaderBuilder, WriterBuilder};
@@ -21,7 +22,7 @@ use std::net::{
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
@@ -34,6 +35,8 @@ type EnumTable = Arc<HashMap<String, EnumDecl>>;
 thread_local! {
     static NEXT_SELECT_ARM_START: Cell<usize> = const { Cell::new(0) };
 }
+
+static NEXT_TEST_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 const STDLIB_BRIDGE_PREFIX: &str = "__gof_internal_";
 
@@ -57,6 +60,48 @@ fn is_stdlib_bridge_builtin(name: &str) -> bool {
 pub struct ExecutionResult {
     pub value: Value,
     pub stdout: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestRuntimeOptions {
+    pub snapshot_root: PathBuf,
+    pub snapshot_group: PathBuf,
+    pub update_snapshots: bool,
+    pub program_args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TestExecutionResult {
+    pub outcome: TestExecutionOutcome,
+    pub stdout: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum TestExecutionOutcome {
+    Passed,
+    Failed(String),
+    FailedDiagnostics(Diagnostics),
+    Skipped(String),
+    Todo(String),
+}
+
+#[derive(Debug, Default)]
+pub struct TestModuleState {
+    module_fixtures: HashMap<String, Value>,
+}
+
+#[derive(Debug, Clone)]
+enum FixtureParamBinding {
+    TestContext,
+    Dependency(String),
+}
+
+#[derive(Debug, Clone)]
+struct FixtureRuntimeSpec {
+    name: String,
+    scope: FixtureScope,
+    return_type: Type,
+    param_bindings: Vec<FixtureParamBinding>,
 }
 
 #[derive(Clone)]
@@ -355,6 +400,307 @@ impl SocketAddrValue {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct TestContextValue {
+    shared: Arc<TestRuntimeShared>,
+    case_path: Vec<String>,
+}
+
+impl PartialEq for TestContextValue {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared) && self.case_path == other.case_path
+    }
+}
+
+impl Eq for TestContextValue {}
+
+#[derive(Debug)]
+struct TestRuntimeShared {
+    snapshot_root: PathBuf,
+    snapshot_group: PathBuf,
+    test_name: String,
+    update_snapshots: bool,
+    cleaned: AtomicBool,
+    resources: Mutex<TestRuntimeResources>,
+}
+
+#[derive(Debug, Default)]
+struct TestRuntimeResources {
+    env_restores: Vec<TestEnvRestore>,
+    temp_paths: Vec<PathBuf>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TestEnvRestore {
+    Set { name: String, value: String },
+    Remove { name: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TempDirValue {
+    path: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TempFileValue {
+    path: PathBuf,
+}
+
+impl TestContextValue {
+    fn new(
+        snapshot_root: PathBuf,
+        snapshot_group: PathBuf,
+        test_name: impl Into<String>,
+        update_snapshots: bool,
+    ) -> Self {
+        Self {
+            shared: Arc::new(TestRuntimeShared {
+                snapshot_root,
+                snapshot_group,
+                test_name: test_name.into(),
+                update_snapshots,
+                cleaned: AtomicBool::new(false),
+                resources: Mutex::new(TestRuntimeResources::default()),
+            }),
+            case_path: Vec::new(),
+        }
+    }
+
+    fn case(&self, name: impl Into<String>) -> Self {
+        let mut case_path = self.case_path.clone();
+        case_path.push(name.into());
+        Self {
+            shared: self.shared.clone(),
+            case_path,
+        }
+    }
+
+    fn display_name(&self) -> String {
+        let mut parts = vec![self.shared.test_name.clone()];
+        parts.extend(self.case_path.clone());
+        parts.join("::")
+    }
+
+    fn create_temp_dir(&self) -> Result<TempDirValue, String> {
+        let path = unique_test_temp_path("dir", None);
+        fs::create_dir_all(&path).map_err(|error| {
+            format!(
+                "failed to create temp dir for test `{}`: {error}",
+                self.display_name()
+            )
+        })?;
+        self.register_temp_path(path.clone());
+        Ok(TempDirValue { path })
+    }
+
+    fn create_temp_file(&self, prefix: &str) -> Result<TempFileValue, String> {
+        let path = unique_test_temp_path("file", Some(prefix));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to prepare temp file directory for test `{}`: {error}",
+                    self.display_name()
+                )
+            })?;
+        }
+        fs::File::create(&path).map_err(|error| {
+            format!(
+                "failed to create temp file for test `{}`: {error}",
+                self.display_name()
+            )
+        })?;
+        self.register_temp_path(path.clone());
+        Ok(TempFileValue { path })
+    }
+
+    fn set_env(&self, name: String, value: String) {
+        let previous = std::env::var(&name).ok();
+        let restore = match previous {
+            Some(previous) => TestEnvRestore::Set {
+                name: name.clone(),
+                value: previous,
+            },
+            None => TestEnvRestore::Remove { name: name.clone() },
+        };
+        self.shared
+            .resources
+            .lock()
+            .expect("test runtime resources mutex should not be poisoned")
+            .env_restores
+            .push(restore);
+        unsafe {
+            std::env::set_var(name, value);
+        }
+    }
+
+    fn match_snapshot(&self, name: &str, rendered: &str) -> Result<(), String> {
+        let path = self.snapshot_path(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!(
+                    "failed to create snapshot directory for test `{}`: {error}",
+                    self.display_name()
+                )
+            })?;
+        }
+
+        match fs::read_to_string(&path) {
+            Ok(existing) => {
+                if existing == rendered {
+                    return Ok(());
+                }
+                if self.shared.update_snapshots {
+                    fs::write(&path, rendered).map_err(|error| {
+                        format!(
+                            "failed to update snapshot `{}` for test `{}`: {error}",
+                            path.display(),
+                            self.display_name()
+                        )
+                    })?;
+                    return Ok(());
+                }
+                Err(format!(
+                    "snapshot mismatch for `{}` at `{}`\nexpected:\n{}\nactual:\n{}",
+                    self.display_name(),
+                    path.display(),
+                    existing,
+                    rendered
+                ))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                if self.shared.update_snapshots {
+                    fs::write(&path, rendered).map_err(|write_error| {
+                        format!(
+                            "failed to create snapshot `{}` for test `{}`: {write_error}",
+                            path.display(),
+                            self.display_name()
+                        )
+                    })?;
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "snapshot `{}` is missing for test `{}`; rerun with `gof test --update-snapshots`",
+                        path.display(),
+                        self.display_name()
+                    ))
+                }
+            }
+            Err(error) => Err(format!(
+                "failed to read snapshot `{}` for test `{}`: {error}",
+                path.display(),
+                self.display_name()
+            )),
+        }
+    }
+
+    fn cleanup(&self) -> Result<(), String> {
+        if self.shared.cleaned.swap(true, Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        let resources = std::mem::take(
+            &mut *self
+                .shared
+                .resources
+                .lock()
+                .expect("test runtime resources mutex should not be poisoned"),
+        );
+        for restore in resources.env_restores.into_iter().rev() {
+            match restore {
+                TestEnvRestore::Set { name, value } => unsafe {
+                    std::env::set_var(name, value);
+                },
+                TestEnvRestore::Remove { name } => unsafe {
+                    std::env::remove_var(name);
+                },
+            }
+        }
+        let mut cleanup_errors = Vec::new();
+        for path in resources.temp_paths.into_iter().rev() {
+            let result = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+            if let Err(error) = result {
+                if error.kind() != ErrorKind::NotFound {
+                    cleanup_errors.push(format!("{}: {error}", path.display()));
+                }
+            }
+        }
+        if cleanup_errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "failed to clean up test resources for `{}`: {}",
+                self.display_name(),
+                cleanup_errors.join(" | ")
+            ))
+        }
+    }
+
+    fn snapshot_path(&self, name: &str) -> PathBuf {
+        self.shared
+            .snapshot_root
+            .join(&self.shared.snapshot_group)
+            .join(format!(
+                "{}.snap",
+                sanitize_snapshot_name(&format!("{}__{}", self.display_name(), name))
+            ))
+    }
+
+    fn register_temp_path(&self, path: PathBuf) {
+        self.shared
+            .resources
+            .lock()
+            .expect("test runtime resources mutex should not be poisoned")
+            .temp_paths
+            .push(path);
+    }
+}
+
+impl TempDirValue {
+    fn path(&self) -> String {
+        self.path.to_string_lossy().to_string()
+    }
+}
+
+impl TempFileValue {
+    fn path(&self) -> String {
+        self.path.to_string_lossy().to_string()
+    }
+}
+
+fn unique_test_temp_path(kind: &str, prefix: Option<&str>) -> PathBuf {
+    let id = NEXT_TEST_TEMP_ID.fetch_add(1, Ordering::SeqCst);
+    let sanitized_prefix = prefix
+        .map(sanitize_snapshot_name)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| kind.to_string());
+    std::env::temp_dir()
+        .join("gof-tests")
+        .join(format!("{sanitized_prefix}-{id}"))
+}
+
+fn sanitize_snapshot_name(value: &str) -> String {
+    let sanitized = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect::<String>();
+    let trimmed = sanitized.trim_matches('-').to_string();
+    if trimmed.is_empty() {
+        "snapshot".to_string()
+    } else {
+        trimmed
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OpaqueValue {
     Bytes(BytesValue),
@@ -364,6 +710,9 @@ pub enum OpaqueValue {
     TcpListener(TcpListenerValue),
     SocketAddr(SocketAddrValue),
     NetDeadline(NetDeadlineValue),
+    TestContext(TestContextValue),
+    TempDir(TempDirValue),
+    TempFile(TempFileValue),
 }
 
 impl OpaqueValue {
@@ -376,6 +725,9 @@ impl OpaqueValue {
             Self::TcpListener(_) => "TcpListener",
             Self::SocketAddr(_) => "SocketAddr",
             Self::NetDeadline(_) => "NetDeadline",
+            Self::TestContext(_) => "TestContext",
+            Self::TempDir(_) => "TempDir",
+            Self::TempFile(_) => "TempFile",
         }
     }
 
@@ -388,6 +740,9 @@ impl OpaqueValue {
             Self::TcpListener(_) => "<tcp_listener>".to_string(),
             Self::SocketAddr(value) => value.text(),
             Self::NetDeadline(value) => format!("<net_deadline:{}>", value.unix_millis()),
+            Self::TestContext(value) => format!("<test_context:{}>", value.display_name()),
+            Self::TempDir(value) => format!("<temp_dir:{}>", value.path.display()),
+            Self::TempFile(value) => format!("<temp_file:{}>", value.path.display()),
         }
     }
 }
@@ -1926,6 +2281,328 @@ pub fn run_with_output_with_args(
     run_with_output_with_args_and_optional_stdin(module, program_args, None)
 }
 
+pub fn run_test_function_with_output(
+    module: &Module,
+    typed_module: &TypedModule,
+    function_name: &str,
+    options: TestRuntimeOptions,
+    module_state: &mut TestModuleState,
+) -> Result<TestExecutionResult, Diagnostics> {
+    reset_select_arm_rotation();
+
+    let functions = Arc::new(
+        module
+            .functions
+            .iter()
+            .filter(|function| function.receiver_type.is_none())
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect::<HashMap<_, _>>(),
+    );
+    let methods = Arc::new(
+        module
+            .functions
+            .iter()
+            .filter_map(|function| {
+                function.receiver_type.as_ref().map(|receiver_type| {
+                    (
+                        (receiver_type.name.clone(), function.name.clone()),
+                        function.clone(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>(),
+    );
+    let structs = Arc::new(
+        module
+            .structs
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.clone()))
+            .collect::<HashMap<_, _>>(),
+    );
+    let mut enum_table = module
+        .enums
+        .iter()
+        .map(|decl| (decl.name.clone(), decl.clone()))
+        .collect::<HashMap<_, _>>();
+    enum_table.extend(builtin_enum_table());
+    let enums = Arc::new(enum_table);
+    let output = OutputBuffer::new(options.program_args.clone());
+    let typed_functions = typed_module
+        .functions
+        .iter()
+        .filter(|function| function.receiver_type.is_none())
+        .map(|function| (function.name.clone(), function.clone()))
+        .collect::<HashMap<_, _>>();
+    let fixture_specs = build_fixture_specs(typed_module);
+
+    let function = functions.get(function_name).cloned().ok_or_else(|| {
+        Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3115",
+                format!("unknown test function `{function_name}`"),
+                "the requested language-level test is missing from this module",
+                Span::new(1, 1, 1),
+            )
+            .with_fix_it("rerun discovery or update the requested test name"),
+        ])
+    })?;
+    let typed_function = typed_functions.get(function_name).cloned().ok_or_else(|| {
+        Diagnostics(vec![Diagnostic::error(
+            "GOF3115",
+            format!("unknown test function `{function_name}`"),
+            "the requested language-level test is missing from the typed module",
+            Span::new(1, 1, 1),
+        )
+        .with_fix_it("rebuild the module graph and rerun the requested test")])
+    })?;
+
+    let mut test_context = None;
+    let mut test_fixture_cache = HashMap::new();
+    let mut resolving = Vec::new();
+    let args = match build_runtime_param_bindings(&typed_function) {
+        Ok(bindings) => {
+            let mut resolved = Vec::with_capacity(bindings.len());
+            for binding in bindings {
+                match binding {
+                    FixtureParamBinding::TestContext => resolved.push(Value::Opaque(
+                        OpaqueValue::TestContext(ensure_test_context(
+                            &mut test_context,
+                            &options,
+                            function_name,
+                        )),
+                    )),
+                    FixtureParamBinding::Dependency(name) => {
+                        match resolve_fixture(
+                            &name,
+                            &fixture_specs,
+                            &functions,
+                            &methods,
+                            &structs,
+                            &enums,
+                            &output,
+                            &options,
+                            &mut test_context,
+                            module_state,
+                            &mut test_fixture_cache,
+                            &mut resolving,
+                            function_name,
+                        ) {
+                            Ok(value) => resolved.push(value),
+                            Err(outcome) => {
+                                return Ok(TestExecutionResult {
+                                    outcome,
+                                    stdout: output.snapshot(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+            resolved
+        }
+        Err(outcome) => {
+            return Ok(TestExecutionResult {
+                outcome,
+                stdout: output.snapshot(),
+            });
+        }
+    };
+
+    let outcome = match eval_test_function(
+        &function, &args, &functions, &methods, &structs, &enums, &output,
+    ) {
+        Ok(outcome) => outcome,
+        Err(diagnostics) => TestExecutionOutcome::FailedDiagnostics(diagnostics),
+    };
+
+    if let Some(context) = test_context {
+        if let Err(error) = context.cleanup() {
+            return Ok(TestExecutionResult {
+                outcome: TestExecutionOutcome::Failed(error),
+                stdout: output.snapshot(),
+            });
+        }
+    }
+
+    Ok(TestExecutionResult {
+        outcome,
+        stdout: output.snapshot(),
+    })
+}
+
+fn build_fixture_specs(typed_module: &TypedModule) -> HashMap<String, FixtureRuntimeSpec> {
+    typed_module
+        .functions
+        .iter()
+        .filter(|function| function.kind == crate::ast::FunctionKind::Fixture)
+        .filter_map(|function| {
+            Some((
+                function.name.clone(),
+                FixtureRuntimeSpec {
+                    name: function.name.clone(),
+                    scope: function.fixture_scope?,
+                    return_type: function.return_type.clone(),
+                    param_bindings: build_runtime_param_bindings(function).ok()?,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn build_runtime_param_bindings(
+    function: &TypedFunction,
+) -> Result<Vec<FixtureParamBinding>, TestExecutionOutcome> {
+    let mut bindings = Vec::with_capacity(function.params.len());
+    for param in &function.params {
+        if matches!(param.ty, Type::Opaque(ref name) if name == "TestContext") {
+            bindings.push(FixtureParamBinding::TestContext);
+        } else {
+            bindings.push(FixtureParamBinding::Dependency(param.name.clone()));
+        }
+    }
+    Ok(bindings)
+}
+
+fn ensure_test_context(
+    test_context: &mut Option<TestContextValue>,
+    options: &TestRuntimeOptions,
+    test_name: &str,
+) -> TestContextValue {
+    test_context
+        .get_or_insert_with(|| {
+            TestContextValue::new(
+                options.snapshot_root.clone(),
+                options.snapshot_group.clone(),
+                test_name.to_string(),
+                options.update_snapshots,
+            )
+        })
+        .clone()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_fixture(
+    name: &str,
+    fixture_specs: &HashMap<String, FixtureRuntimeSpec>,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    options: &TestRuntimeOptions,
+    test_context: &mut Option<TestContextValue>,
+    module_state: &mut TestModuleState,
+    test_fixture_cache: &mut HashMap<String, Value>,
+    resolving: &mut Vec<String>,
+    test_name: &str,
+) -> Result<Value, TestExecutionOutcome> {
+    if let Some(value) = test_fixture_cache.get(name) {
+        return Ok(value.clone());
+    }
+    if let Some(value) = module_state.module_fixtures.get(name) {
+        return Ok(value.clone());
+    }
+
+    let Some(spec) = fixture_specs.get(name) else {
+        return Err(TestExecutionOutcome::FailedDiagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3123",
+                format!("typed fixture dependency `{name}` is unresolved at runtime"),
+                "the typed fixture graph changed after compilation or was not carried into the test runner",
+                Span::new(1, 1, 1),
+            ),
+        ])));
+    };
+    let Some(function) = functions.get(name).cloned() else {
+        return Err(TestExecutionOutcome::Failed(format!(
+            "fixture `{name}` is missing from the runtime function table"
+        )));
+    };
+
+    if resolving.iter().any(|entry| entry == name) {
+        let mut cycle = resolving.clone();
+        cycle.push(name.to_string());
+        return Err(TestExecutionOutcome::Failed(format!(
+            "fixture dependency cycle reached runtime unexpectedly: {}",
+            cycle.join(" -> ")
+        )));
+    }
+    resolving.push(name.to_string());
+
+    let mut args = Vec::with_capacity(spec.param_bindings.len());
+    for binding in &spec.param_bindings {
+        match binding {
+            FixtureParamBinding::TestContext => args.push(Value::Opaque(OpaqueValue::TestContext(
+                ensure_test_context(test_context, options, test_name),
+            ))),
+            FixtureParamBinding::Dependency(dependency) => args.push(resolve_fixture(
+                dependency,
+                fixture_specs,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                options,
+                test_context,
+                module_state,
+                test_fixture_cache,
+                resolving,
+                test_name,
+            )?),
+        }
+    }
+
+    let result = match eval_function(&function, &args, functions, methods, structs, enums, output) {
+        Ok(value) => unwrap_fixture_value(spec, value).map_err(TestExecutionOutcome::Failed),
+        Err(diagnostics) => Err(test_outcome_from_diagnostics(diagnostics)),
+    };
+
+    resolving.pop();
+    let value = result?;
+    match spec.scope {
+        FixtureScope::Test => {
+            test_fixture_cache.insert(name.to_string(), value.clone());
+        }
+        FixtureScope::Module => {
+            module_state
+                .module_fixtures
+                .insert(name.to_string(), value.clone());
+        }
+    }
+    Ok(value)
+}
+
+fn unwrap_fixture_value(spec: &FixtureRuntimeSpec, value: Value) -> Result<Value, String> {
+    match &spec.return_type {
+        Type::Result(_, _) => match value {
+            Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Ok" => {
+                Ok(enum_value
+                    .payloads
+                    .first()
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or(Value::Unit))
+            }
+            Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Err" => {
+                let detail = enum_value
+                    .payloads
+                    .first()
+                    .and_then(|(_, value)| value.cli_text())
+                    .unwrap_or_else(|| "fixture returned Result.Err".to_string());
+                Err(format!("fixture `{}` returned Result.Err({detail})", spec.name))
+            }
+            other => Err(format!(
+                "fixture `{}` returned `{}` instead of `Result[...]`",
+                spec.name,
+                other
+                    .cli_text()
+                    .unwrap_or_else(|| value_name(&other).to_string())
+            )),
+        },
+        _ => Ok(value),
+    }
+}
+
 fn run_with_output_with_args_and_optional_stdin(
     module: &Module,
     program_args: Vec<String>,
@@ -2071,6 +2748,114 @@ fn eval_function(
             .with_fix_it("move this statement into a surrounding `while` or `for` loop")
             .with_source_path(function.source_path.clone()),
         ])),
+    }
+}
+
+fn eval_test_function(
+    function: &Function,
+    args: &[Value],
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+) -> Result<TestExecutionOutcome, Diagnostics> {
+    if function.params.len() != args.len() {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{}`", function.name),
+                format!(
+                    "expected {} argument(s), got {}",
+                    function.params.len(),
+                    args.len()
+                ),
+                function.span,
+            )
+            .with_source_path(function.source_path.clone()),
+        ]));
+    }
+
+    let mut scopes = ScopeStack::new(&function.params, args);
+    let outcome = match eval_block(
+        &function.body,
+        &mut scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        0,
+        false,
+        &function.source_path,
+    ) {
+        Ok(outcome) => outcome,
+        Err(EvalSignal::Diagnostics(diagnostics)) => {
+            return Ok(test_outcome_from_diagnostics(diagnostics));
+        }
+        Err(EvalSignal::Propagate(value)) => EvalOutcome::Return(value),
+    };
+
+    match outcome {
+        EvalOutcome::Next => Ok(TestExecutionOutcome::Passed),
+        EvalOutcome::Return(value) => Ok(test_outcome_from_value(value)),
+        EvalOutcome::Break => Ok(TestExecutionOutcome::FailedDiagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3053",
+                "`break` is only valid inside a loop",
+                "`break` currently works only inside `while` and `for` loop bodies",
+                function.span,
+            )
+            .with_fix_it("move this statement into a surrounding `while` or `for` loop")
+            .with_source_path(function.source_path.clone()),
+        ]))),
+        EvalOutcome::Continue => Ok(TestExecutionOutcome::FailedDiagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3054",
+                "`continue` is only valid inside a loop",
+                "`continue` currently works only inside `while` and `for` loop bodies",
+                function.span,
+            )
+            .with_fix_it("move this statement into a surrounding `while` or `for` loop")
+            .with_source_path(function.source_path.clone()),
+        ]))),
+    }
+}
+
+fn test_outcome_from_value(value: Value) -> TestExecutionOutcome {
+    match value {
+        Value::Unit => TestExecutionOutcome::Passed,
+        Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Ok" => {
+            TestExecutionOutcome::Passed
+        }
+        Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Err" => {
+            let detail = enum_value
+                .payloads
+                .iter()
+                .find(|(name, _)| name == "error")
+                .and_then(|(_, value)| value.cli_text())
+                .unwrap_or_else(|| "test returned Result.Err".to_string());
+            TestExecutionOutcome::Failed(format!("test returned Result.Err({detail})"))
+        }
+        other => TestExecutionOutcome::Failed(format!(
+            "test returned `{}` instead of `unit` or `Result[unit, RuntimeError]`",
+            other
+                .cli_text()
+                .unwrap_or_else(|| value_name(&other).to_string())
+        )),
+    }
+}
+
+fn test_outcome_from_diagnostics(diagnostics: Diagnostics) -> TestExecutionOutcome {
+    let Some(first) = diagnostics.0.first() else {
+        return TestExecutionOutcome::FailedDiagnostics(diagnostics);
+    };
+
+    match first.code {
+        "GOF3117" => TestExecutionOutcome::Failed(first.note.clone()),
+        "GOF3118" => TestExecutionOutcome::Skipped(first.note.clone()),
+        "GOF3119" => TestExecutionOutcome::Todo(first.note.clone()),
+        _ => TestExecutionOutcome::FailedDiagnostics(diagnostics),
     }
 }
 
@@ -10093,6 +10878,19 @@ fn eval_stdlib_bridge_builtin(
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
+    if let Some(result) = eval_testing_bridge_builtin(
+        callee,
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    ) {
+        return result;
+    }
     if let Some(result) = eval_bytes_deadline_bridge_builtin(
         callee,
         args,
@@ -10145,6 +10943,988 @@ fn eval_stdlib_bridge_builtin(
         )
         .with_source_path(source_path.to_path_buf()),
     ]))
+}
+
+fn eval_testing_bridge_builtin(
+    callee: &str,
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> Option<EvalResult<Value>> {
+    let result = match callee {
+        "__gof_internal_test_fail" => eval_test_fail_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        "__gof_internal_test_equal" => eval_test_equal_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            false,
+        ),
+        "__gof_internal_test_not_equal" => eval_test_equal_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            true,
+        ),
+        "__gof_internal_test_true" => eval_test_bool_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            true,
+        ),
+        "__gof_internal_test_false" => eval_test_bool_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            false,
+        ),
+        "__gof_internal_test_ok" => eval_test_result_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            true,
+        ),
+        "__gof_internal_test_err" => eval_test_result_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            false,
+        ),
+        "__gof_internal_test_match_snapshot" => eval_test_match_snapshot_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        "__gof_internal_test_case" => eval_test_case_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        "__gof_internal_test_temp_dir" => eval_test_temp_dir_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        "__gof_internal_test_temp_file" => eval_test_temp_file_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        "__gof_internal_test_env" => eval_test_env_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        "__gof_internal_test_skip" => eval_test_skip_or_todo_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            true,
+        ),
+        "__gof_internal_test_todo" => eval_test_skip_or_todo_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+            false,
+        ),
+        "__gof_internal_temp_dir_path" => eval_temp_dir_path_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        "__gof_internal_temp_file_path" => eval_temp_file_path_bridge_builtin(
+            args,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        ),
+        _ => return None,
+    };
+    Some(result)
+}
+
+fn eval_test_fail_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    let (context, message, span) = eval_test_context_and_message(
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "fail",
+    )?;
+    eval_diagnostics(test_failure_diagnostics(
+        source_path,
+        span,
+        format!("{}: {message}", context.display_name()),
+    ))
+}
+
+fn eval_test_equal_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    expect_inequality: bool,
+) -> EvalResult<Value> {
+    if args.len() != 4 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            expect_inequality.then_some("not_equal").unwrap_or("equal"),
+            args,
+            source_path,
+            4,
+            "call `t.equal(actual, expected, message)` or `t.not_equal(actual, expected, message)`",
+        ));
+    }
+
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "equal",
+    )?;
+    let actual = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let expected = eval_expr(
+        &args[2],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let message = eval_string_argument(
+        if expect_inequality {
+            "not_equal"
+        } else {
+            "equal"
+        },
+        &args[3],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+
+    let matches = actual == expected;
+    if matches != expect_inequality {
+        return Ok(Value::Unit);
+    }
+
+    let actual_text = render_test_value(&actual);
+    let expected_text = render_test_value(&expected);
+    let detail = if expect_inequality {
+        format!("{message}\nvalues should differ but both rendered as `{actual_text}`")
+    } else {
+        format!("{message}\nexpected `{expected_text}`, got `{actual_text}`")
+    };
+    eval_diagnostics(test_failure_diagnostics(
+        source_path,
+        args[1].span(),
+        format!("{}: {detail}", context.display_name()),
+    ))
+}
+
+fn eval_test_bool_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    expected: bool,
+) -> EvalResult<Value> {
+    if args.len() != 3 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            if expected { "true" } else { "false" },
+            args,
+            source_path,
+            3,
+            "call `t.true(condition, message)` or `t.false(condition, message)`",
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        if expected { "true" } else { "false" },
+    )?;
+    let condition = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let message = eval_string_argument(
+        if expected { "true" } else { "false" },
+        &args[2],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+    let Value::Bool(condition) = condition else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3117",
+                format!(
+                    "`TestContext.{}` requires a boolean condition",
+                    if expected { "true" } else { "false" }
+                ),
+                format!("this value resolves to `{}`", value_name(&condition)),
+                args[1].span(),
+            )
+            .with_fix_it("pass a boolean expression here")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    if condition == expected {
+        Ok(Value::Unit)
+    } else {
+        eval_diagnostics(test_failure_diagnostics(
+            source_path,
+            args[1].span(),
+            format!("{}: {message}", context.display_name()),
+        ))
+    }
+}
+
+fn eval_test_result_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    expect_ok: bool,
+) -> EvalResult<Value> {
+    if args.len() != 3 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            if expect_ok { "ok" } else { "err" },
+            args,
+            source_path,
+            3,
+            "call `t.ok(result, message)` or `t.err(result, message)`",
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "ok",
+    )?;
+    let value = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let message = eval_string_argument(
+        if expect_ok { "ok" } else { "err" },
+        &args[2],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+
+    let Value::Enum(result) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3117",
+                format!(
+                    "`TestContext.{}` requires a `Result[...]` value",
+                    if expect_ok { "ok" } else { "err" }
+                ),
+                format!("this value resolves to `{}`", value_name(&value)),
+                args[1].span(),
+            )
+            .with_fix_it("pass a `Result[...]` value here")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    let is_expected_variant =
+        result.name == "Result" && result.variant == if expect_ok { "Ok" } else { "Err" };
+    if is_expected_variant {
+        Ok(Value::Unit)
+    } else {
+        eval_diagnostics(test_failure_diagnostics(
+            source_path,
+            args[1].span(),
+            format!(
+                "{}: {message}\nreceived `{}.{}`",
+                context.display_name(),
+                result.name,
+                result.variant
+            ),
+        ))
+    }
+}
+
+fn eval_test_match_snapshot_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if args.len() != 3 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            "match_snapshot",
+            args,
+            source_path,
+            3,
+            "call `t.match_snapshot(name, value)`",
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "match_snapshot",
+    )?;
+    let snapshot_name = eval_string_argument(
+        "match_snapshot",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+    let value = eval_expr(
+        &args[2],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let rendered = render_test_value(&value);
+    match context.match_snapshot(&snapshot_name, &rendered) {
+        Ok(()) => Ok(Value::Unit),
+        Err(message) => eval_diagnostics(test_failure_diagnostics(
+            source_path,
+            args[2].span(),
+            message,
+        )),
+    }
+}
+
+fn eval_test_case_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if args.len() != 2 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            "case",
+            args,
+            source_path,
+            2,
+            "call `t.case(name)`",
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "case",
+    )?;
+    let case_name = eval_string_argument(
+        "case",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+    Ok(Value::Opaque(OpaqueValue::TestContext(
+        context.case(case_name),
+    )))
+}
+
+fn eval_test_temp_dir_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            "temp_dir",
+            args,
+            source_path,
+            1,
+            "call `t.temp_dir()`",
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "temp_dir",
+    )?;
+    match context.create_temp_dir() {
+        Ok(value) => Ok(Value::Opaque(OpaqueValue::TempDir(value))),
+        Err(message) => eval_diagnostics(test_failure_diagnostics(
+            source_path,
+            args[0].span(),
+            message,
+        )),
+    }
+}
+
+fn eval_test_temp_file_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if args.len() != 2 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            "temp_file",
+            args,
+            source_path,
+            2,
+            "call `t.temp_file(prefix)`",
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "temp_file",
+    )?;
+    let prefix = eval_string_argument(
+        "temp_file",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+    match context.create_temp_file(&prefix) {
+        Ok(value) => Ok(Value::Opaque(OpaqueValue::TempFile(value))),
+        Err(message) => eval_diagnostics(test_failure_diagnostics(
+            source_path,
+            args[1].span(),
+            message,
+        )),
+    }
+}
+
+fn eval_test_env_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if args.len() != 3 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            "env",
+            args,
+            source_path,
+            3,
+            "call `t.env(name, value)`",
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "env",
+    )?;
+    let name = eval_string_argument(
+        "env",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+    let value = eval_string_argument(
+        "env",
+        &args[2],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+    context.set_env(name, value);
+    Ok(Value::Unit)
+}
+
+fn eval_test_skip_or_todo_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    skip: bool,
+) -> EvalResult<Value> {
+    let (context, message, span) = eval_test_context_and_message(
+        args,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        if skip { "skip" } else { "todo" },
+    )?;
+    let diagnostics = Diagnostics(vec![
+        Diagnostic::error(
+            if skip { "GOF3118" } else { "GOF3119" },
+            if skip {
+                format!("test `{}` skipped", context.display_name())
+            } else {
+                format!("test `{}` marked todo", context.display_name())
+            },
+            message,
+            span,
+        )
+        .with_fix_it(if skip {
+            "remove the skip marker once the environment-dependent behavior is ready to run"
+        } else {
+            "replace `todo` with real assertions when the test is implemented"
+        })
+        .with_source_path(source_path.to_path_buf()),
+    ]);
+    eval_diagnostics(diagnostics)
+}
+
+fn eval_temp_dir_path_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            "TempDir.path",
+            args,
+            source_path,
+            1,
+            "call `dir.path()`",
+        ));
+    }
+    let value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::Opaque(OpaqueValue::TempDir(dir)) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3117",
+                "`TempDir.path()` requires a `TempDir` receiver",
+                format!("this value resolves to `{}`", value_name(&value)),
+                args[0].span(),
+            )
+            .with_fix_it("call `.path()` on a value returned from `t.temp_dir()`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    Ok(Value::String(dir.path()))
+}
+
+fn eval_temp_file_path_bridge_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            "TempFile.path",
+            args,
+            source_path,
+            1,
+            "call `file.path()`",
+        ));
+    }
+    let value = eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::Opaque(OpaqueValue::TempFile(file)) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3117",
+                "`TempFile.path()` requires a `TempFile` receiver",
+                format!("this value resolves to `{}`", value_name(&value)),
+                args[0].span(),
+            )
+            .with_fix_it("call `.path()` on a value returned from `t.temp_file(...)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    Ok(Value::String(file.path()))
+}
+
+fn eval_test_context_and_message(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    callee: &str,
+) -> EvalResult<(TestContextValue, String, Span)> {
+    if args.len() != 2 {
+        return eval_diagnostics(wrong_test_bridge_arity_diagnostics(
+            callee,
+            args,
+            source_path,
+            2,
+            format!("call `t.{callee}(message)`"),
+        ));
+    }
+    let context = eval_test_context_argument(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        callee,
+    )?;
+    let message = eval_string_argument(
+        callee,
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3117",
+    )?;
+    Ok((context, message, args[1].span()))
+}
+
+fn eval_test_context_argument(
+    arg: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    callee: &str,
+) -> EvalResult<TestContextValue> {
+    let value = eval_expr(
+        arg,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::Opaque(OpaqueValue::TestContext(context)) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3117",
+                format!("`TestContext.{callee}` requires a `TestContext` receiver"),
+                format!("this value resolves to `{}`", value_name(&value)),
+                arg.span(),
+            )
+            .with_fix_it(
+                "declare the test parameter as `t: TestContext` and call the helper on `t`",
+            )
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+    Ok(context)
+}
+
+fn wrong_test_bridge_arity_diagnostics(
+    callee: impl Into<String>,
+    args: &[Expr],
+    source_path: &Path,
+    expected: usize,
+    fix_it: impl Into<String>,
+) -> Diagnostics {
+    Diagnostics(vec![
+        Diagnostic::error(
+            "GOF3005",
+            format!("wrong number of arguments for `{}`", callee.into()),
+            format!("expected {expected} argument(s), got {}", args.len()),
+            args.first()
+                .map(|expr| expr.span())
+                .unwrap_or(Span::new(1, 1, 1)),
+        )
+        .with_fix_it(fix_it)
+        .with_source_path(source_path.to_path_buf()),
+    ])
+}
+
+fn test_failure_diagnostics(source_path: &Path, span: Span, detail: String) -> Diagnostics {
+    Diagnostics(vec![
+        Diagnostic::error("GOF3117", "test assertion failed", detail, span)
+            .with_fix_it("adjust the expectation or repair the code under test")
+            .with_source_path(source_path.to_path_buf()),
+    ])
+}
+
+fn render_test_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Unit => "unit".to_string(),
+        other => other
+            .cli_text()
+            .unwrap_or_else(|| value_name(other).to_string()),
+    }
 }
 
 fn eval_json_parse_builtin(
@@ -11554,13 +13334,16 @@ fn condition_span(stmt: &Stmt) -> Span {
 mod tests {
     use super::{
         CancelTokenValue, ChannelHandle, ChannelReceiveState, TaskBoundary, TaskHandle, TaskPanic,
-        Value, result_ok, run, run_with_output, run_with_output_with_args,
+        TestExecutionOutcome, TestModuleState, TestRuntimeOptions, Value, result_ok, run,
+        run_test_function_with_output, run_with_output, run_with_output_with_args,
     };
     use crate::ast::parse;
     use crate::cst::CstModule;
     use crate::lexer::lex;
+    use crate::pipeline::{CompileMode, compile_source};
     use crate::source::SourceFile;
     use crate::source::Span;
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::path::PathBuf;
@@ -11612,6 +13395,30 @@ mod tests {
         )
     }
 
+    fn run_test_source(
+        text: &str,
+        test_name: &str,
+        snapshot_root: &std::path::Path,
+        snapshot_group: &str,
+        update_snapshots: bool,
+    ) -> Result<super::TestExecutionResult, crate::diagnostics::Diagnostics> {
+        let source = SourceFile::new("math_test.gof", text);
+        let compiled = compile_source(&source, CompileMode::Library)?;
+        let mut module_state = TestModuleState::default();
+        run_test_function_with_output(
+            &compiled.ast,
+            &compiled.typed_hir,
+            test_name,
+            TestRuntimeOptions {
+                snapshot_root: snapshot_root.to_path_buf(),
+                snapshot_group: PathBuf::from(snapshot_group),
+                update_snapshots,
+                program_args: Vec::new(),
+            },
+            &mut module_state,
+        )
+    }
+
     #[test]
     fn evaluates_go_and_await() {
         let value = run_source(
@@ -11630,6 +13437,188 @@ mod tests {
         .expect("program should run");
 
         assert_eq!(result.value, Value::Int(3));
+    }
+
+    #[test]
+    fn runs_language_level_test_functions() {
+        let temp = tempdir().expect("tempdir should exist");
+        let result = run_test_source(
+            "import testing\n\ntest fn truthy_case(t: TestContext):\n    t.true(true, \"expected truth\")\n",
+            "truthy_case",
+            temp.path(),
+            "unit/basic",
+            false,
+        )
+        .expect("language-level test should execute");
+
+        assert!(matches!(result.outcome, TestExecutionOutcome::Passed));
+    }
+
+    #[test]
+    fn test_runner_writes_and_reuses_snapshots() {
+        let temp = tempdir().expect("tempdir should exist");
+        let source = "import testing\n\ntest fn snapshot_case(t: TestContext):\n    t.match_snapshot(\"rendered\", \"hello\")\n";
+
+        let first = run_test_source(source, "snapshot_case", temp.path(), "unit/snapshot", true)
+            .expect("snapshot update should succeed");
+        assert!(matches!(first.outcome, TestExecutionOutcome::Passed));
+
+        let second = run_test_source(source, "snapshot_case", temp.path(), "unit/snapshot", false)
+            .expect("snapshot reuse should succeed");
+        assert!(matches!(second.outcome, TestExecutionOutcome::Passed));
+        assert!(
+            temp.path()
+                .join("unit")
+                .join("snapshot")
+                .join("snapshot-case--rendered.snap")
+                .is_file()
+        );
+    }
+
+    #[test]
+    fn test_runner_restores_env_after_execution() {
+        let temp = tempdir().expect("tempdir should exist");
+        unsafe {
+            std::env::remove_var("GOF_TEST_TEMP_ENV");
+        }
+        let result = run_test_source(
+            "import testing\n\ntest fn env_case(t: TestContext) -> Result[unit, RuntimeError]:\n    t.env(\"GOF_TEST_TEMP_ENV\", \"set\")\n    value = env(\"GOF_TEST_TEMP_ENV\")?\n    return Result.Ok(t.equal(value, \"set\", \"expected updated env\"))\n",
+            "env_case",
+            temp.path(),
+            "unit/env",
+            false,
+        )
+        .expect("env-backed test should execute");
+
+        assert!(matches!(result.outcome, TestExecutionOutcome::Passed));
+        assert!(std::env::var("GOF_TEST_TEMP_ENV").is_err());
+    }
+
+    #[test]
+    fn test_runner_reports_skip_and_todo_outcomes() {
+        let temp = tempdir().expect("tempdir should exist");
+        let skipped = run_test_source(
+            "import testing\n\ntest fn skipped_case(t: TestContext):\n    t.skip(\"waiting for external dependency\")\n",
+            "skipped_case",
+            temp.path(),
+            "unit/skip",
+            false,
+        )
+        .expect("skip-backed test should execute");
+        assert!(matches!(
+            skipped.outcome,
+            TestExecutionOutcome::Skipped(message) if message == "waiting for external dependency"
+        ));
+
+        let todo = run_test_source(
+            "import testing\n\ntest fn todo_case(t: TestContext):\n    t.todo(\"pending implementation\")\n",
+            "todo_case",
+            temp.path(),
+            "unit/todo",
+            false,
+        )
+        .expect("todo-backed test should execute");
+        assert!(matches!(
+            todo.outcome,
+            TestExecutionOutcome::Todo(message) if message == "pending implementation"
+        ));
+    }
+
+    #[test]
+    fn test_runner_temp_resources_create_real_paths() {
+        let temp = tempdir().expect("tempdir should exist");
+        let result = run_test_source(
+            "import testing\n\ntest fn temp_paths_case(t: TestContext) -> Result[unit, RuntimeError]:\n    dir = t.temp_dir()\n    file = t.temp_file(\"artifact\")\n    t.true(exists(dir.path()), \"expected temp dir to exist\")\n    return Result.Ok(t.true(exists(file.path()), \"expected temp file to exist\"))\n",
+            "temp_paths_case",
+            temp.path(),
+            "unit/temp-resources",
+            false,
+        )
+        .expect("temp resource test should execute");
+
+        assert!(matches!(result.outcome, TestExecutionOutcome::Passed));
+    }
+
+    #[test]
+    fn test_runner_resolves_test_scoped_fixtures() {
+        let temp = tempdir().expect("tempdir should exist");
+        let result = run_test_source(
+            "import testing\n\nfixture(test) fn temp_root(t: TestContext) -> TempDir:\n    return t.temp_dir()\n\ntest fn uses_fixture(temp_root: TempDir, t: TestContext) -> Result[unit, RuntimeError]:\n    return Result.Ok(t.true(exists(temp_root.path()), \"expected injected fixture temp dir\"))\n",
+            "uses_fixture",
+            temp.path(),
+            "unit/test-fixtures",
+            false,
+        )
+        .expect("fixture-backed test should execute");
+
+        assert!(matches!(result.outcome, TestExecutionOutcome::Passed));
+    }
+
+    #[test]
+    fn test_runner_reuses_module_scoped_fixtures_across_tests() {
+        let temp = tempdir().expect("tempdir should exist");
+        let counter_path = temp
+            .path()
+            .join("counter.txt")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source_text = format!(
+            "import testing\n\nfixture(module) fn shared_counter() -> Result[int, RuntimeError]:\n    path = \"{counter_path}\"\n    if exists(path):\n        current_text = read_file(path)?\n        current = parse_int(current_text)?\n        next = current + 1\n        write_file(path, to_string(next))\n        return Result.Ok(next)\n    write_file(path, \"1\")\n    return Result.Ok(1)\n\ntest fn first(shared_counter: int, t: TestContext):\n    t.equal(shared_counter, 1, \"expected cached module fixture value\")\n\ntest fn second(shared_counter: int, t: TestContext):\n    t.equal(shared_counter, 1, \"expected cached module fixture value\")\n"
+        );
+        let source = SourceFile::new("math_test.gof", &source_text);
+        let compiled = compile_source(&source, CompileMode::Library)
+            .expect("fixture-backed source should compile");
+        let options = TestRuntimeOptions {
+            snapshot_root: temp.path().to_path_buf(),
+            snapshot_group: PathBuf::from("unit/module-fixtures"),
+            update_snapshots: false,
+            program_args: Vec::new(),
+        };
+        let mut module_state = TestModuleState::default();
+
+        let first = run_test_function_with_output(
+            &compiled.ast,
+            &compiled.typed_hir,
+            "first",
+            options.clone(),
+            &mut module_state,
+        )
+        .expect("first test should execute");
+        let second = run_test_function_with_output(
+            &compiled.ast,
+            &compiled.typed_hir,
+            "second",
+            options,
+            &mut module_state,
+        )
+        .expect("second test should execute");
+
+        assert!(matches!(first.outcome, TestExecutionOutcome::Passed));
+        assert!(matches!(second.outcome, TestExecutionOutcome::Passed));
+        assert_eq!(
+            fs::read_to_string(temp.path().join("counter.txt"))
+                .expect("counter file should exist"),
+            "1"
+        );
+    }
+
+    #[test]
+    fn test_runner_reports_fixture_result_errors() {
+        let temp = tempdir().expect("tempdir should exist");
+        let result = run_test_source(
+            "import testing\n\nfixture(test) fn broken_value() -> Result[int, RuntimeError]:\n    return parse_int(\"oops\")\n\ntest fn uses_fixture(broken_value: int, t: TestContext):\n    t.equal(broken_value, 1, \"expected resolved fixture value\")\n",
+            "uses_fixture",
+            temp.path(),
+            "unit/fixture-errors",
+            false,
+        )
+        .expect("fixture-backed test should execute");
+
+        assert!(matches!(
+            result.outcome,
+            TestExecutionOutcome::Failed(ref message)
+                if message.contains("fixture `broken_value` returned Result.Err")
+        ));
     }
 
     #[test]

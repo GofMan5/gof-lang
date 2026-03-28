@@ -1,4 +1,4 @@
-use crate::ast::{BinaryOp, UnaryOp};
+use crate::ast::{BinaryOp, FixtureScope, FunctionKind, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{
     HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule, HirSelectArm,
@@ -7,7 +7,7 @@ use crate::hir::{
 use crate::source::Span;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum Type {
@@ -88,6 +88,16 @@ const BUILTIN_OPAQUE_TYPE_NAMES: &[&str] = &[
     "TcpListener",
     "SocketAddr",
     "NetDeadline",
+    "TestContext",
+    "TempDir",
+    "TempFile",
+    "FixtureContext",
+    "BenchContext",
+    "PropertyContext",
+    "FuzzContext",
+    "StressContext",
+    "SnapshotMode",
+    "TestFailure",
 ];
 
 const STDLIB_BRIDGE_PREFIX: &str = "__gof_internal_";
@@ -133,6 +143,8 @@ pub struct TypedModule {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedFunction {
     pub id: usize,
+    pub kind: FunctionKind,
+    pub fixture_scope: Option<FixtureScope>,
     pub symbol_name: String,
     pub receiver_type: Option<Type>,
     pub name: String,
@@ -327,11 +339,30 @@ pub enum TypedExprKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FunctionSignature {
     symbol_name: String,
+    fixture_scope: Option<FixtureScope>,
     receiver_type: Option<String>,
     arity: usize,
     param_types: Vec<Type>,
     declared_return_type: Option<Type>,
+    fixture_value_type: Option<Type>,
     return_type: Type,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FixtureDependencyRef {
+    name: String,
+    expected_type: Type,
+    span: Span,
+}
+
+#[derive(Debug, Clone)]
+struct FixtureDescriptor {
+    name: String,
+    scope: FixtureScope,
+    value_type: Type,
+    source_path: PathBuf,
+    contract_span: Span,
+    dependencies: Vec<FixtureDependencyRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -766,6 +797,11 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
     let mut signatures = HashMap::new();
     let mut method_signatures = HashMap::new();
     for function in &module.functions {
+        let fixture_scope = if function.kind == FunctionKind::Fixture {
+            parse_fixture_scope(function, &mut diagnostics)
+        } else {
+            None
+        };
         let declared_return_type = resolve_type_annotation(
             function.return_type.as_ref(),
             &known_structs,
@@ -793,6 +829,23 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
             .collect::<Vec<_>>();
         let symbol_name = function_symbol_from_hir(function);
 
+        if function.kind == FunctionKind::Test {
+            validate_test_contract(
+                function,
+                &param_types,
+                declared_return_type.as_ref(),
+                &mut diagnostics,
+            );
+        } else if function.kind == FunctionKind::Fixture {
+            validate_fixture_contract(
+                function,
+                fixture_scope,
+                &param_types,
+                declared_return_type.as_ref(),
+                &mut diagnostics,
+            );
+        }
+
         if let Some(receiver_type) = &function.receiver_type {
             validate_method_contract(
                 function,
@@ -805,10 +858,12 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                 (receiver_type.name.clone(), function.name.clone()),
                 FunctionSignature {
                     symbol_name,
+                    fixture_scope: None,
                     receiver_type: Some(receiver_type.name.clone()),
                     arity: function.params.len(),
                     param_types,
                     declared_return_type: declared_return_type.clone(),
+                    fixture_value_type: None,
                     return_type: declared_return_type.unwrap_or(Type::Unknown),
                 },
             );
@@ -817,15 +872,21 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                 function.name.clone(),
                 FunctionSignature {
                     symbol_name,
+                    fixture_scope,
                     receiver_type: None,
                     arity: function.params.len(),
                     param_types,
                     declared_return_type: declared_return_type.clone(),
+                    fixture_value_type: declared_return_type
+                        .as_ref()
+                        .and_then(fixture_value_type),
                     return_type: declared_return_type.unwrap_or(Type::Unknown),
                 },
             );
         }
     }
+
+    validate_fixture_resolution(module, &signatures, &mut diagnostics);
 
     for _ in 0..=module.functions.len() {
         let typed_functions = module
@@ -994,6 +1055,507 @@ fn validate_method_contract(
     }
 }
 
+fn validate_test_contract(
+    function: &HirFunction,
+    param_types: &[Type],
+    declared_return_type: Option<&Type>,
+    diagnostics: &mut Diagnostics,
+) {
+    let contract_span = hir_function_contract_span(function);
+    if function.receiver_type.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3113",
+                format!("test `{}` cannot declare a receiver", function.name),
+                "language-level tests are always top-level functions",
+                contract_span,
+            )
+            .with_fix_it("declare this test as `test fn name(...)` without `Type.`")
+            .with_source_path(function.source_path.clone()),
+        );
+    }
+
+    let mut test_context_params = 0usize;
+    for (param, actual_type) in function.params.iter().zip(param_types.iter()) {
+        if param.ty.is_none() {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3113",
+                    format!(
+                        "test `{}` requires explicit parameter types for fixture injection",
+                        function.name
+                    ),
+                    format!(
+                        "parameter `{}` must be annotated as `TestContext` or a concrete fixture type",
+                        param.name
+                    ),
+                    param.span,
+                )
+                .with_fix_it(format!("annotate `{}` as `{}: Type`", param.name, param.name))
+                .with_source_path(function.source_path.clone()),
+            );
+            continue;
+        }
+
+        if matches!(actual_type, Type::Opaque(name) if name == "TestContext") {
+            test_context_params += 1;
+        }
+    }
+
+    if test_context_params > 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3113",
+                format!("test `{}` declares `TestContext` more than once", function.name),
+                "a `test fn` may inject `TestContext` at most once; other parameters must resolve through typed fixtures",
+                contract_span,
+            )
+            .with_fix_it("keep one `TestContext` parameter and move other dependencies to typed fixtures")
+            .with_source_path(function.source_path.clone()),
+        );
+    }
+
+    if let Some(return_type) = declared_return_type {
+        validate_test_return_type(
+            function,
+            return_type,
+            function
+                .return_type
+                .as_ref()
+                .map(|ty| ty.span)
+                .unwrap_or(contract_span),
+            diagnostics,
+        );
+    }
+}
+
+fn parse_fixture_scope(function: &HirFunction, diagnostics: &mut Diagnostics) -> Option<FixtureScope> {
+    let Some(scope_ref) = function.fixture_scope.as_ref() else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3121",
+                format!("fixture `{}` is missing a declared scope", function.name),
+                "fixtures must declare an explicit lifetime scope such as `fixture(test)` or `fixture(module)`",
+                hir_function_contract_span(function),
+            )
+            .with_fix_it("declare the fixture as `fixture(test) fn ...` or `fixture(module) fn ...`")
+            .with_source_path(function.source_path.clone()),
+        );
+        return None;
+    };
+
+    match scope_ref.name.as_str() {
+        "test" => Some(FixtureScope::Test),
+        "module" => Some(FixtureScope::Module),
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3121",
+                    format!("fixture `{}` uses an unknown scope `{}`", function.name, scope_ref.name),
+                    "supported fixture scopes are currently `test` and `module`",
+                    scope_ref.span,
+                )
+                .with_fix_it("replace the scope with `test` or `module`")
+                .with_source_path(function.source_path.clone()),
+            );
+            None
+        }
+    }
+}
+
+fn validate_fixture_contract(
+    function: &HirFunction,
+    scope: Option<FixtureScope>,
+    param_types: &[Type],
+    declared_return_type: Option<&Type>,
+    diagnostics: &mut Diagnostics,
+) {
+    let contract_span = hir_function_contract_span(function);
+    if function.receiver_type.is_some() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3120",
+                format!("fixture `{}` cannot declare a receiver", function.name),
+                "fixtures are always top-level functions; receiver methods are not part of fixture injection",
+                contract_span,
+            )
+            .with_fix_it("declare this fixture as `fixture(scope) fn name(...)` without `Type.`")
+            .with_source_path(function.source_path.clone()),
+        );
+    }
+
+    let mut test_context_params = 0usize;
+    for (param, actual_type) in function.params.iter().zip(param_types.iter()) {
+        if param.ty.is_none() {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3120",
+                    format!(
+                        "fixture `{}` requires explicit parameter types for dependency resolution",
+                        function.name
+                    ),
+                    format!(
+                        "parameter `{}` must be annotated with the fixture value type it expects",
+                        param.name
+                    ),
+                    param.span,
+                )
+                .with_fix_it(format!("annotate `{}` as `{}: Type`", param.name, param.name))
+                .with_source_path(function.source_path.clone()),
+            );
+            continue;
+        }
+
+        if matches!(actual_type, Type::Opaque(name) if name == "TestContext") {
+            test_context_params += 1;
+            if scope != Some(FixtureScope::Test) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3120",
+                        format!(
+                            "fixture `{}` can only inject `TestContext` in `test` scope",
+                            function.name
+                        ),
+                        "`TestContext` is per-test state, so module-scoped fixtures may not request it",
+                        param.span,
+                    )
+                    .with_fix_it("move this fixture to `fixture(test)` or remove the `TestContext` parameter")
+                    .with_source_path(function.source_path.clone()),
+                );
+            }
+        }
+    }
+
+    if test_context_params > 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3120",
+                format!("fixture `{}` declares `TestContext` more than once", function.name),
+                "a fixture may inject `TestContext` at most once",
+                contract_span,
+            )
+            .with_fix_it("keep one `TestContext` parameter and express other dependencies as fixture parameters")
+            .with_source_path(function.source_path.clone()),
+        );
+    }
+
+    match declared_return_type {
+        Some(return_type) => validate_fixture_return_type(
+            function,
+            return_type,
+            function
+                .return_type
+                .as_ref()
+                .map(|ty| ty.span)
+                .unwrap_or(contract_span),
+            diagnostics,
+        ),
+        None => diagnostics.push(
+            Diagnostic::error(
+                "GOF3120",
+                format!("fixture `{}` must declare an explicit return type", function.name),
+                "typed fixture resolution depends on a stable fixture value type; implicit fixture return inference is not supported",
+                contract_span,
+            )
+            .with_fix_it("add `-> Type` or `-> Result[Type, RuntimeError]` to this fixture")
+            .with_source_path(function.source_path.clone()),
+        ),
+    }
+}
+
+fn validate_test_return_type(
+    function: &HirFunction,
+    return_type: &Type,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+) {
+    if is_valid_test_return_type(return_type) {
+        return;
+    }
+
+    diagnostics.push(
+        Diagnostic::error(
+            "GOF3113",
+            format!("test `{}` has an unsupported return type", function.name),
+            format!(
+                "`test fn` currently supports only `unit` or `Result[unit, RuntimeError]`, not `{}`",
+                return_type.display_name()
+            ),
+            span,
+        )
+        .with_fix_it("remove the annotation or use `-> Result[unit, RuntimeError]`")
+        .with_source_path(function.source_path.clone()),
+    );
+}
+
+fn is_valid_test_return_type(return_type: &Type) -> bool {
+    match return_type {
+        Type::Unit | Type::Unknown => true,
+        Type::Result(ok, err) => {
+            matches!(ok.as_ref(), Type::Unit | Type::Unknown)
+                && match err.as_ref() {
+                    Type::Unknown => true,
+                    Type::Enum(runtime_error) => runtime_error == "RuntimeError",
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+fn validate_fixture_return_type(
+    function: &HirFunction,
+    return_type: &Type,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+) {
+    if fixture_value_type(return_type).is_some() {
+        return;
+    }
+
+    diagnostics.push(
+        Diagnostic::error(
+            "GOF3120",
+            format!("fixture `{}` has an unsupported return type", function.name),
+            format!(
+                "`fixture(scope) fn` currently supports `Type` or `Result[Type, RuntimeError]`, not `{}`",
+                return_type.display_name()
+            ),
+            span,
+        )
+        .with_fix_it("declare the fixture as `-> Type` or `-> Result[Type, RuntimeError]`")
+        .with_source_path(function.source_path.clone()),
+    );
+}
+
+fn fixture_value_type(return_type: &Type) -> Option<Type> {
+    match return_type {
+        Type::Unknown => Some(Type::Unknown),
+        Type::Result(ok, err) => {
+            if matches!(err.as_ref(), Type::Unknown)
+                || matches!(err.as_ref(), Type::Enum(runtime_error) if runtime_error == "RuntimeError")
+            {
+                Some((**ok).clone())
+            } else {
+                None
+            }
+        }
+        other => Some(other.clone()),
+    }
+}
+
+fn validate_fixture_resolution(
+    module: &HirModule,
+    signatures: &HashMap<String, FunctionSignature>,
+    diagnostics: &mut Diagnostics,
+) {
+    let fixtures = module
+        .functions
+        .iter()
+        .filter(|function| function.kind == FunctionKind::Fixture)
+        .filter_map(|function| {
+            let signature = signatures.get(&function.name)?;
+            let scope = signature.fixture_scope?;
+            let value_type = signature.fixture_value_type.clone()?;
+            let dependencies = function
+                .params
+                .iter()
+                .zip(signature.param_types.iter())
+                .filter_map(|(param, ty)| {
+                    if matches!(ty, Type::Opaque(name) if name == "TestContext") {
+                        None
+                    } else {
+                        Some(FixtureDependencyRef {
+                            name: param.name.clone(),
+                            expected_type: ty.clone(),
+                            span: param.span,
+                        })
+                    }
+                })
+                .collect::<Vec<_>>();
+            Some((
+                function.name.clone(),
+                FixtureDescriptor {
+                    name: function.name.clone(),
+                    scope,
+                    value_type,
+                    source_path: function.source_path.clone(),
+                    contract_span: hir_function_contract_span(function),
+                    dependencies,
+                },
+            ))
+        })
+        .collect::<HashMap<_, _>>();
+
+    for function in module.functions.iter().filter(|function| {
+        function.receiver_type.is_none()
+            && matches!(function.kind, FunctionKind::Test | FunctionKind::Fixture)
+    }) {
+        let Some(signature) = signatures.get(&function.name) else {
+            continue;
+        };
+        let owner_scope = if function.kind == FunctionKind::Fixture {
+            signature.fixture_scope
+        } else {
+            None
+        };
+        for (param, ty) in function.params.iter().zip(signature.param_types.iter()) {
+            if matches!(ty, Type::Opaque(name) if name == "TestContext") {
+                continue;
+            }
+
+            let Some(fixture) = fixtures.get(&param.name) else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3123",
+                        format!(
+                            "typed fixture dependency `{}` is unresolved for `{}`",
+                            param.name, function.name
+                        ),
+                        format!(
+                            "no `fixture(scope) fn {}` provides a `{}` value in this module graph",
+                            param.name,
+                            ty.display_name()
+                        ),
+                        param.span,
+                    )
+                    .with_fix_it("declare a matching fixture or rename the parameter to an existing fixture name")
+                    .with_source_path(function.source_path.clone()),
+                );
+                continue;
+            };
+
+            if !fixture_types_compatible(ty, &fixture.value_type) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3123",
+                        format!(
+                            "typed fixture dependency `{}` is incompatible for `{}`",
+                            param.name, function.name
+                        ),
+                        format!(
+                            "parameter `{}` expects `{}`, but fixture `{}` provides `{}`",
+                            param.name,
+                            ty.display_name(),
+                            fixture.name,
+                            fixture.value_type.display_name()
+                        ),
+                        param.span,
+                    )
+                    .with_fix_it("align the parameter type with the fixture return type, or change the fixture contract")
+                    .with_source_path(function.source_path.clone()),
+                );
+            }
+
+            if owner_scope == Some(FixtureScope::Module) && fixture.scope == FixtureScope::Test {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3124",
+                        format!(
+                            "module-scoped fixture `{}` cannot depend on test-scoped fixture `{}`",
+                            function.name, fixture.name
+                        ),
+                        "a broader-lifetime fixture cannot depend on a narrower per-test fixture",
+                        param.span,
+                    )
+                    .with_fix_it("move the parent fixture to `fixture(test)` or widen the dependency to `fixture(module)`")
+                    .with_source_path(function.source_path.clone()),
+                );
+            }
+        }
+    }
+
+    let mut visiting = Vec::new();
+    let mut visited = HashSet::new();
+    let mut names = fixtures.keys().cloned().collect::<Vec<_>>();
+    names.sort();
+    for name in names {
+        detect_fixture_cycle(&name, &fixtures, &mut visiting, &mut visited, diagnostics);
+    }
+}
+
+fn fixture_types_compatible(expected: &Type, actual: &Type) -> bool {
+    matches!(expected, Type::Unknown) || matches!(actual, Type::Unknown) || expected == actual
+}
+
+fn detect_fixture_cycle(
+    name: &str,
+    fixtures: &HashMap<String, FixtureDescriptor>,
+    visiting: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+    diagnostics: &mut Diagnostics,
+) {
+    if visited.contains(name) {
+        return;
+    }
+
+    if let Some(position) = visiting.iter().position(|entry| entry == name) {
+        let cycle = visiting[position..]
+            .iter()
+            .chain(std::iter::once(&visiting[position]))
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(fixture) = fixtures.get(name) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3122",
+                    format!("fixture cycle detected for `{}`", fixture.name),
+                    format!("fixture dependencies must stay acyclic, but this path loops: {}", cycle.join(" -> ")),
+                    fixture.contract_span,
+                )
+                .with_fix_it("break the cycle by extracting shared setup into an upstream fixture")
+                .with_source_path(fixture.source_path.clone()),
+            );
+        }
+        return;
+    }
+
+    let Some(fixture) = fixtures.get(name) else {
+        return;
+    };
+
+    visiting.push(name.to_string());
+    for dependency in &fixture.dependencies {
+        if fixtures.contains_key(&dependency.name) {
+            detect_fixture_cycle(&dependency.name, fixtures, visiting, visited, diagnostics);
+        }
+    }
+    visiting.pop();
+    visited.insert(name.to_string());
+}
+
+fn hir_function_contract_span(function: &HirFunction) -> Span {
+    function
+        .return_type
+        .as_ref()
+        .map(|ty| ty.span)
+        .or_else(|| function.params.first().map(|param| param.span))
+        .or_else(|| {
+            function
+                .receiver_type
+                .as_ref()
+                .map(|receiver| receiver.span)
+        })
+        .or_else(|| function.body.first().map(hir_stmt_span))
+        .unwrap_or(Span::new(1, 1, 1))
+}
+
+fn hir_stmt_span(stmt: &HirStmt) -> Span {
+    match stmt {
+        HirStmt::Return(_, span)
+        | HirStmt::Break(span)
+        | HirStmt::Continue(span)
+        | HirStmt::Expr(_, span) => *span,
+        HirStmt::Bind { span, .. }
+        | HirStmt::Assign { span, .. }
+        | HirStmt::If { span, .. }
+        | HirStmt::While { span, .. }
+        | HirStmt::For { span, .. }
+        | HirStmt::Match { span, .. }
+        | HirStmt::Select { span, .. } => *span,
+    }
+}
+
 fn lower_function(
     function: &HirFunction,
     signatures: &HashMap<String, FunctionSignature>,
@@ -1067,8 +1629,19 @@ fn lower_function(
         None => inferred_return_type,
     };
 
+    if function.kind == FunctionKind::Test {
+        validate_test_return_type(
+            function,
+            &return_type,
+            hir_function_contract_span(function),
+            diagnostics,
+        );
+    }
+
     TypedFunction {
         id: function.id,
+        kind: function.kind,
+        fixture_scope: signature.fixture_scope,
         symbol_name: signature.symbol_name.clone(),
         receiver_type: signature.receiver_type.as_ref().map(|receiver_type| {
             builtin_opaque_type(receiver_type)
@@ -7667,6 +8240,66 @@ fn validate_stdlib_bridge_call(
     source_path: &Path,
 ) {
     match callee {
+        "__gof_internal_test_fail" | "__gof_internal_test_skip" | "__gof_internal_test_todo" => {
+            validate_test_context_and_string_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_test_equal" | "__gof_internal_test_not_equal" => {
+            validate_test_context_value_value_string_call(
+                callee,
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_test_true" | "__gof_internal_test_false" => {
+            validate_test_context_bool_string_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_test_ok" | "__gof_internal_test_err" => {
+            validate_test_context_result_string_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_test_match_snapshot" => {
+            validate_test_context_string_value_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_test_case" | "__gof_internal_test_temp_file" => {
+            validate_test_context_and_string_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_test_temp_dir" => {
+            validate_single_builtin_opaque_argument_call(
+                callee,
+                "GOF3114",
+                "TestContext",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_test_env" => {
+            validate_test_context_and_two_string_call(callee, args, span, diagnostics, source_path);
+        }
+        "__gof_internal_temp_dir_path" => {
+            validate_single_builtin_opaque_argument_call(
+                callee,
+                "GOF3114",
+                "TempDir",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
+        "__gof_internal_temp_file_path" => {
+            validate_single_builtin_opaque_argument_call(
+                callee,
+                "GOF3114",
+                "TempFile",
+                args,
+                span,
+                diagnostics,
+                source_path,
+            );
+        }
         "__gof_internal_bytes_from_string" => {
             validate_single_string_argument_call(callee, args, span, diagnostics, source_path);
         }
@@ -8060,6 +8693,290 @@ fn validate_single_builtin_opaque_argument_call(
     validate_builtin_opaque_argument(expected, &args[0], code, name, diagnostics, source_path);
 }
 
+fn validate_test_context_and_string_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(t, message)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(
+        "TestContext",
+        &args[0],
+        "GOF3114",
+        name,
+        diagnostics,
+        source_path,
+    );
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3114",
+                format!("`{name}` requires a string message"),
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a descriptive string message")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_test_context_and_two_string_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 3 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(t, name, value)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(
+        "TestContext",
+        &args[0],
+        "GOF3114",
+        name,
+        diagnostics,
+        source_path,
+    );
+    for arg in &args[1..] {
+        if !matches!(arg.ty, Type::String | Type::Unknown) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3114",
+                    format!("`{name}` requires string arguments after the test context"),
+                    format!("this argument resolves to `{}`", arg.ty.display_name()),
+                    arg.span,
+                )
+                .with_fix_it("pass string values here")
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+    }
+}
+
+fn validate_test_context_bool_string_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 3 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(t, condition, message)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(
+        "TestContext",
+        &args[0],
+        "GOF3114",
+        name,
+        diagnostics,
+        source_path,
+    );
+    if !matches!(args[1].ty, Type::Bool | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3114",
+                format!("`{name}` requires a boolean condition"),
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a boolean expression here")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+    if !matches!(args[2].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3114",
+                format!("`{name}` requires a string message"),
+                format!("this argument resolves to `{}`", args[2].ty.display_name()),
+                args[2].span,
+            )
+            .with_fix_it("pass a descriptive string message")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_test_context_result_string_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 3 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(t, result, message)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(
+        "TestContext",
+        &args[0],
+        "GOF3114",
+        name,
+        diagnostics,
+        source_path,
+    );
+    if !matches!(args[1].ty, Type::Result(_, _) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3114",
+                format!("`{name}` requires a `Result[...]` value"),
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass the result value you want to validate")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+    if !matches!(args[2].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3114",
+                format!("`{name}` requires a string message"),
+                format!("this argument resolves to `{}`", args[2].ty.display_name()),
+                args[2].span,
+            )
+            .with_fix_it("pass a descriptive string message")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_test_context_string_value_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 3 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 3 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(t, name, value)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(
+        "TestContext",
+        &args[0],
+        "GOF3114",
+        name,
+        diagnostics,
+        source_path,
+    );
+    if !matches!(args[1].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3114",
+                format!("`{name}` requires a string snapshot name"),
+                format!("this argument resolves to `{}`", args[1].ty.display_name()),
+                args[1].span,
+            )
+            .with_fix_it("pass a stable string snapshot name")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+fn validate_test_context_value_value_string_call(
+    name: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 4 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{name}`"),
+                format!("expected 4 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it(format!("call `{name}(t, actual, expected, message)`"))
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    validate_builtin_opaque_argument(
+        "TestContext",
+        &args[0],
+        "GOF3114",
+        name,
+        diagnostics,
+        source_path,
+    );
+    if !matches!(args[3].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3114",
+                format!("`{name}` requires a string message"),
+                format!("this argument resolves to `{}`", args[3].ty.display_name()),
+                args[3].span,
+            )
+            .with_fix_it("pass a descriptive string message")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_two_builtin_opaque_arguments_call(
     name: &str,
     code: &'static str,
@@ -8259,6 +9176,21 @@ fn validate_builtin_opaque_argument(
 
 fn stdlib_bridge_return_type(callee: &str) -> Type {
     match callee {
+        "__gof_internal_test_fail"
+        | "__gof_internal_test_equal"
+        | "__gof_internal_test_not_equal"
+        | "__gof_internal_test_true"
+        | "__gof_internal_test_false"
+        | "__gof_internal_test_ok"
+        | "__gof_internal_test_err"
+        | "__gof_internal_test_match_snapshot"
+        | "__gof_internal_test_env"
+        | "__gof_internal_test_skip"
+        | "__gof_internal_test_todo" => Type::Unit,
+        "__gof_internal_test_case" => Type::opaque("TestContext"),
+        "__gof_internal_test_temp_dir" => Type::opaque("TempDir"),
+        "__gof_internal_test_temp_file" => Type::opaque("TempFile"),
+        "__gof_internal_temp_dir_path" | "__gof_internal_temp_file_path" => Type::String,
         "__gof_internal_bytes_from_string" => Type::opaque("Bytes"),
         "__gof_internal_bytes_to_string" => runtime_result(Type::String),
         "__gof_internal_bytes_len" => Type::Int,
@@ -8336,11 +9268,12 @@ fn is_printable_type(ty: &Type) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{Type, TypedExprKind, TypedMatchPattern, TypedSelectArmKind, TypedStmt, lower};
-    use crate::ast::BinaryOp;
     use crate::ast::parse;
+    use crate::ast::{BinaryOp, FixtureScope, FunctionKind};
     use crate::cst::CstModule;
     use crate::hir::lower as lower_hir;
     use crate::lexer::lex;
+    use crate::pipeline::{CompileMode, compile_source};
     use crate::source::SourceFile;
 
     fn lower_source(text: &str) -> Result<super::TypedModule, crate::diagnostics::Diagnostics> {
@@ -8349,6 +9282,119 @@ mod tests {
         let ast = parse(&CstModule::new(tokens)).expect("parsing should succeed");
         let hir = lower_hir(&ast);
         lower(&hir)
+    }
+
+    fn compile_typed_source(
+        path: &str,
+        text: &str,
+    ) -> Result<super::TypedModule, crate::diagnostics::Diagnostics> {
+        let source = SourceFile::new(path, text);
+        compile_source(&source, CompileMode::Library).map(|compiled| compiled.typed_hir)
+    }
+
+    #[test]
+    fn types_test_functions_with_test_context() {
+        let module = compile_typed_source(
+            "math_test.gof",
+            "import testing\n\ntest fn truthy_case(t: TestContext):\n    t.true(true, \"expected truth\")\n",
+        )
+        .expect("test functions should typecheck");
+
+        let test_function = module
+            .functions
+            .iter()
+            .find(|function| function.name == "truthy_case")
+            .expect("compiled module should include the language-level test");
+
+        assert_eq!(test_function.kind, FunctionKind::Test);
+        assert_eq!(test_function.fixture_scope, None);
+        assert_eq!(test_function.params[0].ty, Type::opaque("TestContext"));
+        assert_eq!(test_function.return_type, Type::Unit);
+    }
+
+    #[test]
+    fn rejects_untyped_test_fixture_dependency_parameter() {
+        let diagnostics = lower_source("test fn broken_case(repo):\n    return 0\n")
+            .expect_err("untyped test fixture parameters should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3113", "GOF3123", "GOF3113"]);
+    }
+
+    #[test]
+    fn types_fixture_functions_and_test_dependencies() {
+        let module = compile_typed_source(
+            "math_test.gof",
+            "import testing\n\nfixture(module) fn shared_total() -> int:\n    return 41\n\nfixture(test) fn temp_root(t: TestContext) -> TempDir:\n    return t.temp_dir()\n\ntest fn truthy_case(shared_total: int, temp_root: TempDir, t: TestContext):\n    t.true(shared_total == 41, \"expected module fixture value\")\n    t.true(exists(temp_root.path()), \"expected test fixture value\")\n",
+        )
+        .expect("fixtures and tests should typecheck together");
+
+        let module_fixture = module
+            .functions
+            .iter()
+            .find(|function| function.name == "shared_total")
+            .expect("compiled module should include the module fixture");
+        assert_eq!(module_fixture.kind, FunctionKind::Fixture);
+        assert_eq!(module_fixture.fixture_scope, Some(FixtureScope::Module));
+        assert_eq!(module_fixture.return_type, Type::Int);
+
+        let test_fixture = module
+            .functions
+            .iter()
+            .find(|function| function.name == "temp_root")
+            .expect("compiled module should include the test fixture");
+        assert_eq!(test_fixture.kind, FunctionKind::Fixture);
+        assert_eq!(test_fixture.fixture_scope, Some(FixtureScope::Test));
+        assert_eq!(test_fixture.params[0].ty, Type::opaque("TestContext"));
+        assert_eq!(test_fixture.return_type, Type::opaque("TempDir"));
+
+        let test_function = module
+            .functions
+            .iter()
+            .find(|function| function.name == "truthy_case")
+            .expect("compiled module should include the test");
+        assert_eq!(test_function.params[0].ty, Type::Int);
+        assert_eq!(test_function.params[1].ty, Type::opaque("TempDir"));
+        assert_eq!(test_function.params[2].ty, Type::opaque("TestContext"));
+    }
+
+    #[test]
+    fn rejects_unknown_fixture_scope() {
+        let diagnostics = lower_source(
+            "fixture(package) fn shared_total() -> int:\n    return 41\n",
+        )
+        .expect_err("unknown fixture scopes should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3121"]);
+    }
+
+    #[test]
+    fn rejects_missing_or_incompatible_fixture_dependencies() {
+        let diagnostics = lower_source(
+            "fixture(module) fn shared_total() -> string:\n    return \"41\"\n\ntest fn truthy_case(shared_total: int, missing_dep: string):\n    return 0\n",
+        )
+        .expect_err("fixture dependency mismatches should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3123", "GOF3123", "GOF3113"]);
+    }
+
+    #[test]
+    fn rejects_fixture_cycles() {
+        let diagnostics = lower_source(
+            "fixture(module) fn left(right: int) -> int:\n    return right\n\nfixture(module) fn right(left: int) -> int:\n    return left\n",
+        )
+        .expect_err("fixture cycles should fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3122"));
+    }
+
+    #[test]
+    fn rejects_module_fixture_dependencies_on_test_scope() {
+        let diagnostics = lower_source(
+            "fixture(test) fn temp_root() -> int:\n    return 1\n\nfixture(module) fn shared_total(temp_root: int) -> int:\n    return temp_root\n",
+        )
+        .expect_err("module fixtures should not depend on test fixtures");
+
+        assert!(diagnostics.codes().contains(&"GOF3124"));
     }
 
     #[test]

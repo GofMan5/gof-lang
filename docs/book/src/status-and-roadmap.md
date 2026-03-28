@@ -23,6 +23,7 @@ The current repo already supports:
 - JSON helpers and bootstrap HTTP GET
 - channels, `close`, cancellation tokens, and `select`
 - `go` / `await`
+- language-level `test fn`, typed `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test`, and opt-in markdown doctests
 - a real CLI and a bootstrap-native build path
 - an installable VS Code editor baseline with syntax highlighting and snippets for `.gof` files
 
@@ -34,6 +35,7 @@ It is also enough to express a first long-polling Telegram bot baseline.
 The next major steps are:
 
 - richer stdlib growth without semantic mud
+- deeper testing slices: fixture cleanup, unified product harnesses, reporters, property/fuzz/stress, and benchmark gates
 - production-grade concurrency contracts
 - package system hardening
 - direct native code generation
@@ -51,10 +53,15 @@ Use `roadmap.md` to answer:
 
 Do not use the roadmap as marketing. Use it as an engineering truth source.
 
+Use `plans/roadmap/` when you need the ordered implementation program behind one
+area instead of the status summary. The testing platform is the first major
+program decomposed that way.
+
 ## Where to look next
 
 - `README.md` for the public project overview
 - `roadmap.md` for milestone status
+- `plans/roadmap/` for ordered multi-slice implementation plans
 - `spec/` for exact language and diagnostics contracts
 - `examples/` for runnable source files
 - this book for the teachable explanation layer

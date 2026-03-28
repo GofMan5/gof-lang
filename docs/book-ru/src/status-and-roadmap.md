@@ -23,6 +23,7 @@
 - JSON helpers и bootstrap HTTP GET
 - channels, `close`, cancellation tokens и `select`
 - `go` / `await`
+- language-level `test fn`, typed `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test` и opt-in markdown doctests
 - реальный CLI и bootstrap-native build path
 
 Этого уже достаточно, чтобы учить реальную семантику, запускать нетривиальные
@@ -33,12 +34,13 @@ examples и собирать первый baseline long-polling Telegram bot.
 Следующие крупные шаги:
 
 - richer stdlib без semantic mud
+- следующие testing slices: fixture cleanup, unified product harnesses, reporters, property/fuzz/stress и benchmark gates
 - production-grade concurrency contracts
 - package system hardening
 - direct native code generation
 
 Это не косметические milestones. Это слои, которые переводят `gof` из
-“сильного bootstrap-языка” в “серьезный production-язык”.
+«сильного bootstrap-языка» в «серьезный production-язык».
 
 ## Как правильно использовать roadmap
 
@@ -50,10 +52,15 @@ examples и собирать первый baseline long-polling Telegram bot.
 
 Roadmap — это инженерный truth source, а не маркетинговый текст.
 
+Если нужен не только summary-status, а упорядоченная программа реализации по
+областям, смотри `plans/roadmap/`. Тестовая платформа уже разложена туда
+отдельным деревом файлов.
+
 ## Куда смотреть дальше
 
 - `README.md` — публичный обзор проекта
 - `roadmap.md` — статусы milestones
+- `plans/roadmap/` — пофайловые планы развития
 - `spec/` — точные контракты языка и diagnostics
 - `examples/` — runnable source files
 - эта книга — обучающий слой поверх всего этого

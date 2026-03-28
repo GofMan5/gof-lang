@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-const RESERVED_STDLIB_MODULE_NAMES: &[&str] = &["bytes", "io", "time", "net", "http"];
+const RESERVED_STDLIB_MODULE_NAMES: &[&str] = &["bytes", "io", "time", "net", "http", "testing"];
 
 fn compiler_workspace_root() -> &'static PathBuf {
     static ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -312,6 +312,7 @@ mod tests {
     fn stdlib_module_names_are_reserved_and_mapped_into_workspace_stdlib() {
         assert!(is_reserved_stdlib_module_name("http"));
         assert!(is_reserved_stdlib_module_name("bytes"));
+        assert!(is_reserved_stdlib_module_name("testing"));
         assert!(!is_reserved_stdlib_module_name("math"));
 
         let http_path = stdlib_module_path("http").expect("http should resolve to stdlib");

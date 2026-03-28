@@ -61,6 +61,8 @@ test("snippet file includes core gof templates", async () => {
   for (const key of [
     "Module Skeleton",
     "Function",
+    "Test Function",
+    "Fixture Function",
     "Struct",
     "Enum",
     "Match Result",

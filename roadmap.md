@@ -18,6 +18,20 @@ The real goal is not feature count. Every phase of language development must:
 - Runtime or performance hardening cannot move ahead of semantic stability for the corresponding feature set.
 - A milestone is closed only when its exit criteria are met.
 
+## Detailed Program Plans
+
+`roadmap.md` stays the summary-status index. Ordered implementation programs now
+live under `plans/roadmap/`:
+
+- [Roadmap index](plans/roadmap/00-index.md)
+- [Language platform program](plans/roadmap/10-language-platform.md)
+- [Testing platform overview](plans/roadmap/20-testing-platform/00-overview.md)
+- [Testing language surface](plans/roadmap/20-testing-platform/01-language-surface.md)
+- [Testing runner, discovery, and CLI](plans/roadmap/20-testing-platform/02-runner-discovery-cli.md)
+- [Fixtures, snapshots, and doctests](plans/roadmap/20-testing-platform/03-fixtures-snapshots-doctests.md)
+- [Property, fuzz, stress, and bench](plans/roadmap/20-testing-platform/04-property-fuzz-stress-bench.md)
+- [CI quality gates](plans/roadmap/20-testing-platform/05-ci-quality-gates.md)
+
 ## Status Legend
 
 - `[x]` done
@@ -30,6 +44,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[~]` M4: minimal useful standard library for CLI and bot-oriented programs
 - `[~]` M5: concurrency semantics beyond task spawn and await
 - `[~]` M7: bootstrap-native build path on the road to direct codegen
+- `[~]` M8: hybrid language-level test platform slice 2, reporters, and unified product harness follow-through
 - `[~]` M10: service/network stdlib delivery, bytes/stream foundations, and reserved import groundwork
 - Immediate mandatory result: keep stdlib side effects small, explicit, and allocation-transparent
 - Immediate semantic result: keep explicit recoverable error flow moving toward `Result`-based operational APIs
@@ -291,11 +306,18 @@ Hard sequencing rule:
 
 ### M8. Reliability, Tooling, and Production Discipline
 
+- `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery
+- `[x]` opt-in markdown doctest baseline through `gof test --docs`
+- `[~]` typed fixtures through `fixture(test|module) fn` with DAG-backed injection and runtime caching
 - `[ ]` richer diagnostics coverage
 - `[ ]` fuzzing for parser, resolver, and type layer
 - `[ ]` stress harness for runtime and concurrency
 - `[ ]` golden tests for compiler outputs
 - `[ ]` observability and debuggability improvements
+- Checkpoints:
+- `[x]` CP-M8-0: hybrid testing platform slice 1
+- `[~]` CP-M8-1: typed fixtures, doctests, and product-grade reporters
+- `[ ]` CP-M8-2: property, fuzz, stress, and benchmark integration
 - Exit criteria:
 - production engineering quality is visible in tooling, not just language design
 
@@ -439,15 +461,23 @@ Hard sequencing rule:
 - finish task propagation over plain `task[T]`, `Result`, and panic boundaries
 - concurrency contract tests and benchmarks
 
-5. `[ ]` Start the competitive coverage closure path:
+5. `[~]` Turn testing into a first-class product surface:
+- `[x]` add `test fn`, shipped `testing` stdlib, snapshots, and hybrid `gof test` discovery baseline
+- `[~]` split detailed execution plans out of the monolithic roadmap into `plans/roadmap/`
+- `[x]` add opt-in markdown doctests through `gof test --docs`
+- `[~]` add typed fixtures
+- `[ ]` add JSON/JUnit reporters, property/fuzz/stress, and benchmark gates
+
+6. `[ ]` Start the competitive coverage closure path:
 - package and registry design strong enough for large codebases
 - native backend and ABI milestones strong enough for systems work
 - service runtime and observability milestones strong enough for Go-class workloads
 - script-runner and automation stdlib milestones strong enough for Python/Node-class workflows
 
-6. `[~]` Execute Phase 1 before widening the front:
+7. `[~]` Execute Phase 1 before widening the front:
 - `[x]` finish package identity and deterministic local package workflow
 - `[x]` make package-aware `gof test` honest for executable package targets while keeping library targets compile-only
+- `[x]` make language-level `gof test` discovery, snapshots, and shipped `testing` helpers real enough for repo and user code
 - build script-first UX and richer automation/data stdlib
 - ship reference apps that make the Python/Node replacement story concrete
 

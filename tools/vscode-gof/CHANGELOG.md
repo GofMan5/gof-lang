@@ -1,5 +1,17 @@
 # Change Log
 
+## 0.2.10
+
+- Added syntax coverage for `fixture(test|module) fn`
+- Added a typed fixture snippet for explicit testing dependencies
+- Kept the VS Code editor surface aligned with the expanded `gof` testing contract
+
+## 0.2.9
+
+- Added syntax coverage for `test fn` and shipped `testing` stdlib types
+- Added a language-level test snippet for `TestContext` and nested `t.case(...)`
+- Kept the VS Code editor surface aligned with the first shipped `gof` testing-platform slice
+
 ## 0.2.8
 
 - Added syntax coverage for shipped `bytes`, `io`, `time`, and `net` stdlib foundation names

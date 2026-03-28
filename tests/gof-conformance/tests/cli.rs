@@ -1669,7 +1669,7 @@ fn gof_test_executes_manifest_backed_executable_targets_honestly() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("GOF3068"))
-        .stdout(predicate::str::contains("passed").not());
+        .stdout(predicate::str::contains("0 passed; 1 failed"));
 }
 
 #[test]
@@ -1688,7 +1688,8 @@ fn gof_test_compile_checks_library_package_targets_without_execution() {
         .arg(&package_root)
         .assert()
         .success()
-        .stdout(predicate::str::contains("passed 1 package target(s)"));
+        .stdout(predicate::str::contains("test result: 1 passed; 0 failed"))
+        .stdout(predicate::str::contains("src/lib.gof"));
 }
 
 #[test]
@@ -1710,7 +1711,8 @@ fn gof_test_recognizes_canonicalized_package_roots() {
         .arg(&canonical_root)
         .assert()
         .success()
-        .stdout(predicate::str::contains("package target"))
+        .stdout(predicate::str::contains("src/lib.gof"))
+        .stdout(predicate::str::contains("test result: 1 passed; 0 failed"))
         .stdout(predicate::str::contains("fixture").not());
 }
 
@@ -1943,4 +1945,217 @@ fn gof_build_native_preserves_shipped_stdlib_imports_across_working_directories(
         String::from_utf8_lossy(&execution.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&execution.stdout).trim(), "7");
+}
+
+#[test]
+fn gof_test_discovers_language_level_tests_and_updates_snapshots() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("math_test.gof"),
+        "import testing\n\ntest fn truthy_case(t: TestContext):\n    t.true(true, \"expected truth\")\n\ntest fn snapshot_case(t: TestContext):\n    t.match_snapshot(\"rendered\", \"hello from snapshot\")\n",
+    )
+    .expect("language-level test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--update-snapshots")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok").and(predicate::str::contains("truthy_case")))
+        .stdout(predicate::str::contains("ok").and(predicate::str::contains("snapshot_case")));
+
+    let snapshot = temp
+        .path()
+        .join("tests")
+        .join("snapshots")
+        .join("tests")
+        .join("math_test")
+        .join("snapshot-case--rendered.snap");
+    assert!(
+        snapshot.is_file(),
+        "snapshot should be created at {}",
+        snapshot.display()
+    );
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
+}
+
+#[test]
+fn gof_test_lists_language_level_tests() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("list_test.gof"),
+        "import testing\n\ntest fn alpha_case(t: TestContext):\n    t.true(true, \"alpha\")\n\ntest fn beta_case(t: TestContext):\n    t.true(true, \"beta\")\n",
+    )
+    .expect("language-level test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("alpha_case"))
+        .stdout(predicate::str::contains("beta_case"))
+        .stdout(predicate::str::contains("listed 2"));
+}
+
+#[test]
+fn gof_test_reports_skip_and_todo_statuses() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("status_test.gof"),
+        "import testing\n\ntest fn skipped_case(t: TestContext):\n    t.skip(\"waiting for network\")\n\ntest fn todo_case(t: TestContext):\n    t.todo(\"pending assertions\")\n",
+    )
+    .expect("status language-level test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("skip "))
+        .stdout(predicate::str::contains("todo "))
+        .stdout(predicate::str::contains(
+            "0 passed; 0 failed; 1 skipped; 1 todo",
+        ));
+}
+
+#[test]
+fn gof_test_resolves_typed_fixtures_and_reuses_module_scope() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    let counter_path = temp
+        .path()
+        .join("counter.txt")
+        .to_string_lossy()
+        .replace('\\', "/");
+    fs::write(
+        tests_root.join("fixture_test.gof"),
+        format!(
+            "import testing\n\nfixture(module) fn shared_counter() -> Result[int, RuntimeError]:\n    path = \"{counter_path}\"\n    if exists(path):\n        current_text = read_file(path)?\n        current = parse_int(current_text)?\n        next = current + 1\n        write_file(path, to_string(next))\n        return Result.Ok(next)\n    write_file(path, \"1\")\n    return Result.Ok(1)\n\nfixture(test) fn temp_root(t: TestContext) -> TempDir:\n    return t.temp_dir()\n\ntest fn first(shared_counter: int, temp_root: TempDir, t: TestContext):\n    t.equal(shared_counter, 1, \"expected cached module fixture value\")\n    t.true(exists(temp_root.path()), \"expected injected test fixture temp dir\")\n\ntest fn second(shared_counter: int, t: TestContext):\n    t.equal(shared_counter, 1, \"expected cached module fixture value\")\n"
+        ),
+    )
+    .expect("fixture-backed language-level test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ok ").and(predicate::str::contains(
+            "fixture_test.gof::first",
+        )))
+        .stdout(predicate::str::contains("ok ").and(predicate::str::contains(
+            "fixture_test.gof::second",
+        )))
+        .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("counter.txt"))
+            .expect("counter file should exist after fixture execution"),
+        "1"
+    );
+}
+
+#[test]
+fn gof_test_surfaces_invalid_typed_fixture_dependencies() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("broken_fixture_test.gof"),
+        "fixture(module) fn shared_total() -> string:\n    return \"41\"\n\ntest fn broken_case(shared_total: int):\n    return 0\n",
+    )
+    .expect("broken fixture-backed test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3123"))
+        .stderr(predicate::str::contains("shared_total"));
+}
+
+#[test]
+fn gof_test_runs_opt_in_doctests() {
+    let temp = tempdir().expect("tempdir should exist");
+    fs::write(
+        temp.path().join("README.md"),
+        "# Sample\n\n```gof doctest\nfn main() -> int:\n    return 7\n```\n\n```gof doctest no_run\nstruct Point:\n    x: int\n```\n\n```gof doctest compile_fail\nfn main() -> int:\n    return \"oops\"\n```\n\n```gof doctest runtime_fail\nfn main() -> int:\n    return 1 / 0\n```\n",
+    )
+    .expect("markdown doctest file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("README.md:4::doctest#1"))
+        .stdout(predicate::str::contains("README.md:9::doctest-no-run#2"))
+        .stdout(predicate::str::contains(
+            "README.md:14::doctest-compile-fail#3",
+        ))
+        .stdout(predicate::str::contains(
+            "README.md:19::doctest-runtime-fail#4",
+        ))
+        .stdout(predicate::str::contains(
+            "4 passed; 0 failed; 0 skipped; 0 todo",
+        ));
+}
+
+#[test]
+fn gof_test_lists_opt_in_doctests() {
+    let temp = tempdir().expect("tempdir should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 1\n```\n\n```gof doctest no_run\nimport testing\n\ntest fn sample(t: TestContext):\n    t.true(true, \"ok\")\n```\n",
+    )
+    .expect("markdown doctest file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("guide.md:4::doctest#1"))
+        .stdout(predicate::str::contains("guide.md:9::doctest-no-run#2"))
+        .stdout(predicate::str::contains("listed 2"));
+}
+
+#[test]
+fn gof_test_surfaces_invalid_test_signatures() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("broken_test.gof"),
+        "test fn broken_case(repo):\n    return 0\n",
+    )
+    .expect("broken language-level test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3113"))
+        .stderr(predicate::str::contains("broken_case"));
 }

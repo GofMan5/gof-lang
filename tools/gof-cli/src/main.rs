@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod test_runner;
 mod watch;
 
 #[derive(Parser)]
@@ -86,9 +87,23 @@ struct FmtArgs {
 }
 
 #[derive(Args)]
-struct TestArgs {
-    #[arg(default_value = "tests/fixtures")]
-    fixtures: PathBuf,
+pub(crate) struct TestArgs {
+    #[arg()]
+    paths: Vec<PathBuf>,
+    #[arg(long)]
+    filter: Option<String>,
+    #[arg(long)]
+    exact: bool,
+    #[arg(long)]
+    list: bool,
+    #[arg(long)]
+    fail_fast: bool,
+    #[arg(long)]
+    nocapture: bool,
+    #[arg(long)]
+    update_snapshots: bool,
+    #[arg(long)]
+    docs: bool,
 }
 
 #[derive(Subcommand)]
@@ -125,7 +140,7 @@ fn run() -> Result<()> {
         Command::Build(args) => build(args),
         Command::Check(args) => check_file(args),
         Command::Run(args) => run_file(args),
-        Command::Test(args) => test_fixtures(args),
+        Command::Test(args) => test_runner::run(args),
         Command::Fmt(args) => format_file(args),
         Command::Mod { command } => match command {
             ModCommand::Init(args) => init_module(args),
@@ -240,33 +255,6 @@ fn run_file(args: FileInput) -> Result<()> {
     }
 
     execute_run_target(&target, &args.args)
-}
-
-fn test_fixtures(args: TestArgs) -> Result<()> {
-    if let Some(package_entry) = resolve_package_test_input(&args.fixtures)? {
-        ensure_package_lockfile(&package_entry, "test")?;
-        run_package_test(&package_entry)?;
-        println!("passed 1 package target(s)");
-        return Ok(());
-    }
-
-    let fixtures = discover_fixtures(&args.fixtures)?;
-    let mut failures = Vec::new();
-    let mut passed = 0usize;
-
-    for fixture in fixtures {
-        match run_fixture(&fixture) {
-            Ok(()) => passed += 1,
-            Err(message) => failures.push(format!("{}: {message}", fixture.display())),
-        }
-    }
-
-    println!("passed {passed} fixture(s)");
-    if failures.is_empty() {
-        return Ok(());
-    }
-
-    bail!(failures.join("\n"))
 }
 
 fn format_file(args: FmtArgs) -> Result<()> {
@@ -638,29 +626,6 @@ fn normalize_cli_path(path: &Path) -> String {
     } else {
         normalized
     }
-}
-
-fn discover_fixtures(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut fixtures = Vec::new();
-    if !root.exists() {
-        bail!("fixture directory does not exist: {}", root.display());
-    }
-    collect_gof_files(root, &mut fixtures)?;
-    fixtures.sort();
-    Ok(fixtures)
-}
-
-fn collect_gof_files(root: &Path, fixtures: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.is_dir() {
-            collect_gof_files(&path, fixtures)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("gof") {
-            fixtures.push(path);
-        }
-    }
-    Ok(())
 }
 
 fn run_fixture(path: &Path) -> Result<()> {

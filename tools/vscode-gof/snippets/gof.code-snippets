@@ -13,9 +13,28 @@
     "prefix": "goffn",
     "body": [
       "fn ${1:name}(${2}) -> ${3:unit}:",
-      "    ${4:return ()}"
+      "    ${4:assert(true, \"todo\")}"
     ],
     "description": "Create a gof function with an explicit return contract"
+  },
+  "Test Function": {
+    "prefix": "goftest",
+    "body": [
+      "import testing",
+      "",
+      "test fn ${1:name}(t: TestContext):",
+      "    ${2:case} = t.case(${3:\"smoke\"})",
+      "    ${2:case}.equal(${4:2 + 2}, ${5:4}, ${6:\"expected deterministic result\"})"
+    ],
+    "description": "Create a language-level gof test with the shipped testing module"
+  },
+  "Fixture Function": {
+    "prefix": "goffixture",
+    "body": [
+      "fixture(${1|test,module|}) fn ${2:name}(${3}) -> ${4:int}:",
+      "    ${5:return 0}"
+    ],
+    "description": "Create a typed gof fixture with explicit scope and return contract"
   },
   "Struct": {
     "prefix": "gofstruct",

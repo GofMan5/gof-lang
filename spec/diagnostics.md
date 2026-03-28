@@ -124,3 +124,14 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3110`: invalid operand or contract for shipped `io` stdlib helpers
 - `GOF3111`: invalid operand or contract for shipped `net` stdlib helpers
 - `GOF3112`: invalid operand or negative duration for shipped `time` deadline helpers
+- `GOF3113`: invalid `test fn` contract
+- `GOF3114`: invalid operand or contract for shipped `testing` stdlib helpers
+- `GOF3115`: unknown language-level test function requested by the runner
+- `GOF3117`: language-level test assertion, snapshot, or harness failure
+- `GOF3118`: language-level test skipped
+- `GOF3119`: language-level test marked todo
+- `GOF3120`: invalid `fixture(scope) fn` contract
+- `GOF3121`: missing or unknown fixture scope
+- `GOF3122`: fixture dependency cycle
+- `GOF3123`: unresolved or incompatible typed fixture dependency
+- `GOF3124`: invalid fixture lifetime dependency between scopes

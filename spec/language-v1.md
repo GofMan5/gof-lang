@@ -26,6 +26,8 @@
 
 - `module`
 - `fn`
+- `test fn`
+- `fixture(scope) fn`
 - `struct`
 - `enum`
 - `protocol`
@@ -41,12 +43,14 @@
 The bootstrap compiler in this repository currently supports:
 
 - local imports through `import name`, including same-directory modules, package-root modules, and manifest-resolved local path packages
-- shipped stdlib imports through reserved module names `bytes`, `io`, `time`, `net`, and `http`
-- shipped stdlib foundation through `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, and `NetDeadline`
+- shipped stdlib imports through reserved module names `bytes`, `io`, `time`, `net`, `http`, and `testing`
+- shipped stdlib foundation through `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, `NetDeadline`, `TestContext`, `TempDir`, and `TempFile`
 - deterministic local package lockfiles through `gof.lock` and `gof mod resolve`
 - top-level `struct`
 - top-level `enum` with unit and payload variants
 - top-level `fn`
+- top-level `test fn`
+- top-level `fixture(scope) fn`
 - function parameters with optional builtin, parameterized builtin, or known user-defined type annotations
 - explicit function return type annotations through `fn name(...) -> type:`
 - block indentation with `INDENT` / `DEDENT`
@@ -126,13 +130,25 @@ The bootstrap compiler in this repository currently supports:
 - function return types can currently be annotated with the same builtin types plus known struct and enum names
 - local bindings and return contracts can currently use parameterized builtin annotations like `list[int]`, `dict[int]`, `channel[int]`, `task[int]`, and `Result[int, RuntimeError]`
 - `import name` currently resolves in deterministic order: `name.gof` next to the importing source file, then `src/name.gof` inside the nearest package root with `gof.mod`, then `src/lib.gof` from a local path dependency declared under `[dependencies]` in `gof.mod`
-- reserved stdlib import names `bytes`, `io`, `time`, `net`, and `http` currently resolve to shipped modules under `stdlib/` instead of local files or dependency aliases
+- reserved stdlib import names `bytes`, `io`, `time`, `net`, `http`, and `testing` currently resolve to shipped modules under `stdlib/` instead of local files or dependency aliases
 - local files, package-root modules, and dependency aliases that try to use reserved stdlib names are currently rejected with an explicit diagnostic instead of shadowing the shipped stdlib
 - the shipped `bytes` module currently exposes `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, and `bytes_concat`
 - the shipped `io` module currently exposes `ReadStream`, `WriteStream`, `open_read_stream`, and `open_write_stream`
 - the shipped `time` module currently exposes `NetDeadline`, `deadline_after`, and `deadline_at_unix_millis`
 - the shipped `net` module currently exposes `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, and `listen_tcp`
-- `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, and `NetDeadline` are currently opaque shipped-stdlib types rather than user-declarable language types
+- the shipped `testing` module currently exposes `TestContext`, `TempDir`, `TempFile`, `TestContext.fail`, `TestContext.equal`, `TestContext.not_equal`, `TestContext.true`, `TestContext.false`, `TestContext.ok`, `TestContext.err`, `TestContext.match_snapshot`, `TestContext.case`, `TestContext.temp_dir`, `TestContext.temp_file`, `TestContext.env`, `TestContext.skip`, `TestContext.todo`, `TempDir.path`, and `TempFile.path`
+- `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, `NetDeadline`, `TestContext`, `TempDir`, and `TempFile` are currently opaque shipped-stdlib types rather than user-declarable language types
+- `fixture(scope) fn` currently declares a top-level typed fixture and cannot declare a receiver
+- supported fixture scopes are currently `test` and `module`
+- `test fn` currently declares a top-level language-level test and cannot declare a receiver
+- `test fn` currently accepts zero or more typed fixture parameters plus at most one `t: TestContext`
+- typed fixture parameters currently resolve by parameter name to a same-named `fixture(scope) fn` whose value type is compatible with the parameter type
+- `test fn` currently returns either `unit` or `Result[unit, RuntimeError]`
+- fixtures currently must declare an explicit return type of either `Type` or `Result[Type, RuntimeError]`
+- `fixture(test)` may currently accept typed fixture dependencies plus at most one `t: TestContext`
+- `fixture(module)` may currently accept only typed fixture dependencies and may not request `TestContext`
+- module-scoped fixtures are currently cached once per language test file during one `gof test` run
+- test-scoped fixtures are currently cached once per test case during one `gof test` run
 - package directories currently use `src/main.gof` as the executable entrypoint and `src/lib.gof` as the dependency entrypoint
 - manifest-backed `gof run`, `gof build`, and package-aware `gof test` require a fresh `gof.lock`
 - manifest-backed `gof test` currently executes `src/main.gof` package targets as compile plus execute smoke
@@ -197,6 +213,20 @@ The bootstrap compiler in this repository currently supports:
 - `channel()`, `channel(capacity)`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
 - `print` currently accepts exactly one printable value and returns `unit`
 - `assert` currently accepts either `(bool)` or `(bool, string)` and returns `unit`
+- `gof test` currently discovers language-level tests from `*_test.gof` and `tests/**/*.gof`
+- `gof test --docs` currently discovers opt-in markdown doctests from fenced ` ```gof doctest ... ` blocks
+- `TestContext.fail(message)` currently fails the running test immediately
+- `TestContext.equal(actual, expected, message)` and `TestContext.not_equal(actual, expected, message)` currently compare rendered values inside the test runner
+- `TestContext.true(condition, message)` and `TestContext.false(condition, message)` currently fail when the boolean contract is violated
+- `TestContext.ok(result, message)` and `TestContext.err(result, message)` currently require a `Result` value and assert the expected variant
+- `TestContext.match_snapshot(name, value)` currently stores and compares rendered values under `tests/snapshots/`
+- `TestContext.case(name)` currently returns a nested `TestContext` that extends the test case path used in failures and snapshots
+- `TestContext.temp_dir()` and `TestContext.temp_file(prefix)` currently create per-test temporary resources that the runner removes automatically
+- `TestContext.env(name, value)` currently overrides one environment variable for the current test and restores the previous value after teardown
+- `TestContext.skip(message)` currently marks the current test as skipped
+- `TestContext.todo(message)` currently marks the current test as todo
+- `TempDir.path()` and `TempFile.path()` currently return the concrete host path backing the temporary resource
+- explicit fixture cleanup hooks are not shipped yet; only `TestContext`-managed temp resources and environment overrides clean up automatically
 - `run_process(program, args)` currently requires `(string, list[string])` and returns `Result[json, RuntimeError]`
 - `run_process(program, args)` currently executes the program directly without shell interpolation
 - `run_process(program, args)` currently captures `program`, `args`, `status`, `stdout`, and `stderr` inside the returned JSON object

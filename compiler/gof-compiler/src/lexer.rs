@@ -354,6 +354,8 @@ fn lex_line(
                 let kind = match value.as_str() {
                     "module" => TokenKind::Module,
                     "import" => TokenKind::Import,
+                    "test" => TokenKind::Test,
+                    "fixture" => TokenKind::Fixture,
                     "fn" => TokenKind::Fn,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
@@ -521,5 +523,29 @@ mod tests {
         let tokens = lex(&source).expect("source should lex");
 
         assert!(tokens.iter().any(|token| token.kind == TokenKind::Question));
+    }
+
+    #[test]
+    fn lexes_test_function_keyword() {
+        let source = SourceFile::new(
+            "math_test.gof",
+            "import testing\n\ntest fn truthy_case(t: TestContext):\n    t.true(true, \"expected truth\")\n",
+        );
+        let tokens = lex(&source).expect("source should lex");
+
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Test));
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Fn));
+    }
+
+    #[test]
+    fn lexes_fixture_function_keyword() {
+        let source = SourceFile::new(
+            "math_test.gof",
+            "fixture(test) fn repo_root() -> string:\n    return \"tmp\"\n",
+        );
+        let tokens = lex(&source).expect("source should lex");
+
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Fixture));
+        assert!(tokens.iter().any(|token| token.kind == TokenKind::Fn));
     }
 }

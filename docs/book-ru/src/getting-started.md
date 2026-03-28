@@ -33,7 +33,7 @@ cargo run -q -p gof-cli --bin gof -- run examples/hello_print.gof
 
 Напиши так:
 
-```gof
+```gof doctest
 fn main() -> int:
     print("hello from gof")
     return 42

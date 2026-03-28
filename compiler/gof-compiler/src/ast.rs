@@ -21,6 +21,8 @@ pub struct Import {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Function {
+    pub kind: FunctionKind,
+    pub fixture_scope: Option<FixtureScopeRef>,
     pub receiver_type: Option<TypeRef>,
     pub name: String,
     pub params: Vec<Param>,
@@ -28,6 +30,34 @@ pub struct Function {
     pub body: Vec<Stmt>,
     pub span: Span,
     pub source_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FunctionKind {
+    Function,
+    Test,
+    Fixture,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum FixtureScope {
+    Test,
+    Module,
+}
+
+impl FixtureScope {
+    pub const fn keyword(self) -> &'static str {
+        match self {
+            Self::Test => "test",
+            Self::Module => "module",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FixtureScopeRef {
+    pub name: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -311,7 +341,37 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_function(&mut self) -> Function {
-        let start = self.expect(TokenDiscriminant::Fn, "expected `fn` to start a function");
+        let (kind, fixture_scope, start) = if self.matches(TokenDiscriminant::Test) {
+            let start = self.previous().span;
+            self.expect(TokenDiscriminant::Fn, "expected `fn` after `test`");
+            (FunctionKind::Test, None, start)
+        } else if self.matches(TokenDiscriminant::Fixture) {
+            let start = self.previous().span;
+            self.expect(
+                TokenDiscriminant::LParen,
+                "expected `(` after `fixture` to declare a lifetime scope",
+            );
+            let (scope, scope_span) = self.parse_fixture_scope_name();
+            self.expect(
+                TokenDiscriminant::RParen,
+                "expected `)` after the fixture scope",
+            );
+            self.expect(TokenDiscriminant::Fn, "expected `fn` after `fixture(scope)`");
+            (
+                FunctionKind::Fixture,
+                Some(FixtureScopeRef {
+                    name: scope,
+                    span: scope_span,
+                }),
+                start,
+            )
+        } else {
+            (
+                FunctionKind::Function,
+                None,
+                self.expect(TokenDiscriminant::Fn, "expected `fn` to start a function"),
+            )
+        };
         let head = self.expect_ident("expected a function name after `fn`");
         let head_span = self.previous().span;
         let (receiver_type, name) = if self.matches(TokenDiscriminant::Dot) {
@@ -321,7 +381,7 @@ impl<'a> Parser<'a> {
                     args: Vec::new(),
                     span: head_span,
                 }),
-                self.expect_ident("expected a method name after `TypeName.`"),
+                self.expect_member_name("expected a method name after `TypeName.`"),
             )
         } else {
             (None, head)
@@ -343,6 +403,8 @@ impl<'a> Parser<'a> {
         let body = self.parse_block("expected an indented block after function signature");
 
         Function {
+            kind,
+            fixture_scope,
             receiver_type,
             name,
             params,
@@ -351,6 +413,17 @@ impl<'a> Parser<'a> {
             span: Span::new(start.line, start.column, start.end_column),
             source_path: PathBuf::new(),
         }
+    }
+
+    fn parse_fixture_scope_name(&mut self) -> (String, Span) {
+        if self.matches(TokenDiscriminant::Test) {
+            return ("test".to_string(), self.previous().span);
+        }
+        if self.matches(TokenDiscriminant::Module) {
+            return ("module".to_string(), self.previous().span);
+        }
+        let scope = self.expect_ident("expected a fixture scope like `test` or `module`");
+        (scope, self.previous().span)
     }
 
     fn parse_struct(&mut self) -> StructDecl {
@@ -994,7 +1067,7 @@ impl<'a> Parser<'a> {
 
             if self.matches(TokenDiscriminant::Dot) {
                 let start = expr.span();
-                let field = self.expect_ident("expected a field name after `.`");
+                let field = self.expect_member_name("expected a field name after `.`");
                 if self.matches(TokenDiscriminant::LParen) {
                     let args = self.parse_args();
                     let end = self.expect(
@@ -1219,6 +1292,27 @@ impl<'a> Parser<'a> {
         }
     }
 
+    fn expect_member_name(&mut self, message: &'static str) -> String {
+        let token = self.advance().clone();
+        match token.kind {
+            TokenKind::Ident(value) => value,
+            TokenKind::True => "true".to_string(),
+            TokenKind::False => "false".to_string(),
+            _ => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF2002",
+                        message,
+                        "member names must be identifiers or supported keyword literals like `true`/`false`",
+                        token.span,
+                    )
+                    .with_fix_it("replace this token with a valid member name"),
+                );
+                "_error".to_string()
+            }
+        }
+    }
+
     fn skip_newlines(&mut self) {
         while self.matches(TokenDiscriminant::Newline) {}
     }
@@ -1311,9 +1405,12 @@ impl MatchPattern {
 
 #[derive(Debug, Clone, Copy)]
 enum TokenDiscriminant {
+    Module,
     Import,
     Struct,
     Enum,
+    Test,
+    Fixture,
     Fn,
     If,
     Else,
@@ -1364,9 +1461,12 @@ impl TokenDiscriminant {
     fn matches(self, kind: &TokenKind) -> bool {
         matches!(
             (self, kind),
-            (Self::Import, TokenKind::Import)
+            (Self::Module, TokenKind::Module)
+                | (Self::Import, TokenKind::Import)
                 | (Self::Struct, TokenKind::Struct)
                 | (Self::Enum, TokenKind::Enum)
+                | (Self::Test, TokenKind::Test)
+                | (Self::Fixture, TokenKind::Fixture)
                 | (Self::Fn, TokenKind::Fn)
                 | (Self::If, TokenKind::If)
                 | (Self::Else, TokenKind::Else)
@@ -1416,9 +1516,11 @@ impl TokenDiscriminant {
 
     fn as_hint(self) -> &'static str {
         match self {
+            Self::Module => "`module`",
             Self::Import => "`import`",
             Self::Struct => "`struct`",
             Self::Enum => "`enum`",
+            Self::Fixture => "`fixture`",
             Self::Fn => "`fn`",
             Self::If => "`if`",
             Self::Else => "`else`",
@@ -1436,6 +1538,7 @@ impl TokenDiscriminant {
             Self::Or => "`or`",
             Self::Not => "`not`",
             Self::Return => "`return`",
+            Self::Test => "`test`",
             Self::Mut => "`mut`",
             Self::LParen => "`(`",
             Self::RParen => "`)`",
@@ -1480,7 +1583,7 @@ fn token_debug_name(kind: &TokenKind) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryOp, Expr, MatchPattern, SelectArmKind, Stmt, UnaryOp, parse};
+    use super::{BinaryOp, Expr, FunctionKind, MatchPattern, SelectArmKind, Stmt, UnaryOp, parse};
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
@@ -1834,6 +1937,42 @@ mod tests {
             &module.functions[1].body[1],
             Stmt::Return(Expr::MethodCall { method, args, .. }, _) if method == "total" && args.len() == 1
         ));
+    }
+
+    #[test]
+    fn parses_test_functions() {
+        let source = SourceFile::new(
+            "math_test.gof",
+            "import testing\n\ntest fn truthy_case(t: TestContext):\n    t.true(true, \"expected truth\")\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(module.functions[0].kind, FunctionKind::Test);
+        assert_eq!(module.functions[0].name, "truthy_case");
+    }
+
+    #[test]
+    fn parses_fixture_functions() {
+        let source = SourceFile::new(
+            "math_test.gof",
+            "fixture(module) fn shared_total() -> int:\n    return 41\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+
+        assert_eq!(module.functions.len(), 1);
+        assert_eq!(module.functions[0].kind, FunctionKind::Fixture);
+        assert_eq!(
+            module.functions[0]
+                .fixture_scope
+                .as_ref()
+                .expect("fixture scope should be recorded")
+                .name,
+            "module"
+        );
+        assert_eq!(module.functions[0].name, "shared_total");
     }
 
     #[test]

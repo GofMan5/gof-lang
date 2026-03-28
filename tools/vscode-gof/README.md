@@ -5,6 +5,7 @@ This extension provides an installable editor baseline for `gof`:
 - `.gof` file association
 - syntax highlighting
 - starter snippets for the core language surface
+- snippets and syntax coverage for language-level `test fn`, `fixture(scope) fn`, and the shipped `testing` stdlib
 - compiler-backed diagnostics powered by `gof check --json`
 - comment toggling with `#`
 - bracket pairing
@@ -95,6 +96,10 @@ The test suite covers:
 - TextMate grammar scopes
 - manifest/configuration packaging contract
 - diagnostics helper logic, single-flight cancellation, and toolchain resolution
+
+That means the editor package is kept in sync not only with scripting/stdlib
+surface but also with the current testing baseline that ships through
+`test fn`, `fixture(scope) fn`, and `import testing`.
 
 ## Local installation in VS Code
 

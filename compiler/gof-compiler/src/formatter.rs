@@ -1,6 +1,7 @@
 use crate::ast::{
-    BinaryOp, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function, Import,
-    MatchPattern, Module, Param, SelectArmKind, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
+    BinaryOp, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function, FunctionKind,
+    Import, MatchPattern, Module, Param, SelectArmKind, Stmt, StructDecl, StructField, TypeRef,
+    UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -105,6 +106,22 @@ fn format_enum_variant_field(field: &EnumVariantField) -> String {
 }
 
 fn format_function(function: &Function) -> String {
+    let keyword = match function.kind {
+        FunctionKind::Function => "fn",
+        FunctionKind::Test => "test fn",
+        FunctionKind::Fixture => {
+            let scope = function
+                .fixture_scope
+                .as_ref()
+                .map(|scope| scope.name.as_str())
+                .unwrap_or("test");
+            return format_function_with_keyword(function, &format!("fixture({scope}) fn"));
+        }
+    };
+    format_function_with_keyword(function, keyword)
+}
+
+fn format_function_with_keyword(function: &Function, keyword: &str) -> String {
     let head = match &function.receiver_type {
         Some(receiver_type) => format!("{}.{}", format_type_ref(receiver_type), function.name),
         None => function.name.clone(),
@@ -121,7 +138,7 @@ fn format_function(function: &Function) -> String {
         .map(|ty| format!(" -> {}", format_type_ref(ty)))
         .unwrap_or_default();
     let body = format_block(&function.body, 1);
-    format!("fn {head}({params}){return_annotation}:\n{body}\n",)
+    format!("{keyword} {head}({params}){return_annotation}:\n{body}\n",)
 }
 
 fn format_param(param: &Param) -> String {
@@ -543,6 +560,32 @@ mod tests {
         assert_eq!(
             formatted,
             "fn parse_port() -> Result[int, string]:\n    return Result.Ok(41)\n\nfn main() -> Result[int, string]:\n    port = parse_port()?\n    return Result.Ok(port + 1)\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_test_functions() {
+        let source = SourceFile::new(
+            "math_test.gof",
+            "import testing\n\ntest fn truthy_case(t:TestContext):\n    t.true(true,\"expected truth\")\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "import testing\n\ntest fn truthy_case(t: TestContext):\n    t.true(true, \"expected truth\")\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_fixture_functions() {
+        let source = SourceFile::new(
+            "math_test.gof",
+            "fixture(module) fn shared_total()->int:\n    return 41\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "fixture(module) fn shared_total() -> int:\n    return 41\n"
         );
     }
 }
