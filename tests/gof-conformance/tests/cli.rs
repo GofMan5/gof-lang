@@ -70,6 +70,38 @@ fn write_local_package_pair(root: &Path) -> (std::path::PathBuf, std::path::Path
     (app_root, math_root)
 }
 
+fn write_runtime_fail_package(root: &Path) -> std::path::PathBuf {
+    let package_root = root.join("runtime_fail_package");
+    fs::create_dir_all(package_root.join("src")).expect("package source root should exist");
+    fs::write(
+        package_root.join("gof.mod"),
+        "module = \"example/runtime_fail\"\nedition = \"2026\"\n\n[dependencies]\n",
+    )
+    .expect("manifest should exist");
+    fs::write(
+        package_root.join("src").join("main.gof"),
+        "fn main() -> int:\n    return 1 / 0\n",
+    )
+    .expect("main source should exist");
+    package_root
+}
+
+fn write_library_package(root: &Path) -> std::path::PathBuf {
+    let package_root = root.join("library_package");
+    fs::create_dir_all(package_root.join("src")).expect("package source root should exist");
+    fs::write(
+        package_root.join("gof.mod"),
+        "module = \"example/library\"\nedition = \"2026\"\n\n[dependencies]\n",
+    )
+    .expect("manifest should exist");
+    fs::write(
+        package_root.join("src").join("lib.gof"),
+        "fn meaning() -> int:\n    return 42\n",
+    )
+    .expect("library source should exist");
+    package_root
+}
+
 #[test]
 fn gof_run_executes_bootstrap_main() {
     let fixture = gof_conformance::workspace_root()
@@ -1144,6 +1176,68 @@ fn gof_test_runs_fixtures() {
 }
 
 #[test]
+fn gof_test_executes_manifest_backed_executable_targets_honestly() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_runtime_fail_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("test")
+        .arg(&package_root)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3068"))
+        .stdout(predicate::str::contains("passed").not());
+}
+
+#[test]
+fn gof_test_compile_checks_library_package_targets_without_execution() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_library_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("test")
+        .arg(&package_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("passed 1 package target(s)"));
+}
+
+#[test]
+fn gof_test_recognizes_canonicalized_package_roots() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_library_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    let canonical_root = package_root
+        .canonicalize()
+        .expect("canonical package root should exist");
+    gof_command()
+        .arg("test")
+        .arg(&canonical_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("package target"))
+        .stdout(predicate::str::contains("fixture").not());
+}
+
+#[test]
 fn gof_build_native_emits_runnable_host_executable() {
     let temp = tempdir().expect("tempdir should exist");
     let source = gof_conformance::workspace_root()
@@ -1181,4 +1275,90 @@ fn gof_build_native_emits_runnable_host_executable() {
     assert!(stdout.contains("gof ready"));
     assert!(stdout.contains("42"));
     assert!(stdout.contains("7"));
+}
+
+#[test]
+fn gof_build_native_preserves_same_directory_imports_across_working_directories() {
+    let temp = tempdir().expect("tempdir should exist");
+    let helper_path = temp.path().join("math.gof");
+    let main_path = temp.path().join("main.gof");
+    let output = temp.path().join("import-native");
+    let built_binary = if cfg!(windows) {
+        output.with_extension("exe")
+    } else {
+        output.clone()
+    };
+
+    fs::write(
+        &helper_path,
+        "fn square(x: int) -> int:\n    return x * x\n",
+    )
+    .expect("helper module should be written");
+    fs::write(
+        &main_path,
+        "import math\n\nfn main() -> int:\n    return square(9)\n",
+    )
+    .expect("main module should be written");
+
+    gof_command()
+        .arg("build")
+        .arg(&main_path)
+        .arg("--native")
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success();
+
+    let run_dir = temp.path().join("run-from-here");
+    fs::create_dir_all(&run_dir).expect("run directory should exist");
+    let execution = ProcessCommand::new(&built_binary)
+        .current_dir(&run_dir)
+        .output()
+        .expect("native binary should execute");
+    assert!(
+        execution.status.success(),
+        "native binary failed: {}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&execution.stdout).trim(), "81");
+}
+
+#[test]
+fn gof_build_native_preserves_manifest_backed_package_imports_across_working_directories() {
+    let temp = tempdir().expect("tempdir should exist");
+    let (app_root, _) = write_local_package_pair(temp.path());
+    let output = temp.path().join("package-native");
+    let built_binary = if cfg!(windows) {
+        output.with_extension("exe")
+    } else {
+        output.clone()
+    };
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("build")
+        .arg(&app_root)
+        .arg("--native")
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success();
+
+    let run_dir = temp.path().join("other-cwd");
+    fs::create_dir_all(&run_dir).expect("run directory should exist");
+    let execution = ProcessCommand::new(&built_binary)
+        .current_dir(&run_dir)
+        .output()
+        .expect("native binary should execute");
+    assert!(
+        execution.status.success(),
+        "native binary failed: {}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&execution.stdout).trim(), "90");
 }

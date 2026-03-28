@@ -1,6 +1,4 @@
 "use strict";
-
-const { spawn } = require("node:child_process");
 const vscode = require("vscode");
 
 const {
@@ -10,6 +8,13 @@ const {
   normalizeDiagnosticsConfig,
   parseCheckReport
 } = require("./lib/diagnostics.cjs");
+const {
+  cancelInflight,
+  isExpectedCancellation,
+  replaceInflight,
+  settleInflight,
+  startCheckProcess
+} = require("./lib/inflight.cjs");
 
 function activate(context) {
   const diagnostics = vscode.languages.createDiagnosticCollection("gof");
@@ -17,6 +22,7 @@ function activate(context) {
   const state = {
     diagnostics,
     output,
+    inflight: new Map(),
     timers: new Map(),
     generations: new Map()
   };
@@ -90,11 +96,15 @@ function scheduleDocumentDiagnostics(document, state, reason) {
   if (existingTimer) {
     clearTimeout(existingTimer);
   }
+  cancelInflight(state, key, `superseded ${reason} diagnostics run`);
 
   const delay = reason === "manual" || reason === "save" ? 0 : config.debounceMs;
   const timer = setTimeout(() => {
     state.timers.delete(key);
     runDocumentDiagnostics(document, state, currentGeneration).catch((error) => {
+      if (isExpectedCancellation(error)) {
+        return;
+      }
       appendOutput(state, `unexpected diagnostics failure for ${document.uri.fsPath}: ${error.stack || error.message}`);
       publishExtensionWarning(
         document,
@@ -126,10 +136,17 @@ async function runDocumentDiagnostics(document, state, generation) {
     `checking ${document.uri.fsPath} via ${formatInvocation(invocation)}`
   );
 
+  const inflight = startCheckProcess(invocation, document.getText());
+  replaceInflight(state, key, inflight);
   let processResult;
   try {
-    processResult = await runCheckProcess(invocation, document.getText());
+    processResult = await inflight.promise;
   } catch (error) {
+    settleInflight(state, key, inflight);
+    if (isExpectedCancellation(error)) {
+      appendOutput(state, `cancelled stale diagnostics run for ${document.uri.fsPath}`);
+      return;
+    }
     if (state.generations.get(key) !== generation) {
       return;
     }
@@ -140,6 +157,7 @@ async function runDocumentDiagnostics(document, state, generation) {
     publishExtensionWarning(document, state, "GOFEXT001", buildToolchainFailureMessage(config, error));
     return;
   }
+  settleInflight(state, key, inflight);
 
   if (state.generations.get(key) !== generation) {
     return;
@@ -179,37 +197,6 @@ async function runDocumentDiagnostics(document, state, generation) {
     toVsCodeDiagnostic(diagnostic, document)
   );
   state.diagnostics.set(document.uri, ownDiagnostics);
-}
-
-function runCheckProcess(invocation, sourceText) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(invocation.command, invocation.args, {
-      cwd: invocation.cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true
-    });
-
-    let stdout = "";
-    let stderr = "";
-
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString();
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      resolve({
-        code: typeof code === "number" ? code : -1,
-        stdout,
-        stderr
-      });
-    });
-
-    child.stdin.on("error", () => {});
-    child.stdin.end(sourceText, "utf8");
-  });
 }
 
 function toVsCodeDiagnostic(diagnostic, document) {
@@ -255,6 +242,7 @@ function clearDocumentState(uri, state) {
     clearTimeout(timer);
     state.timers.delete(key);
   }
+  cancelInflight(state, key, "document state cleared");
   state.generations.delete(key);
   state.diagnostics.delete(uri);
 }

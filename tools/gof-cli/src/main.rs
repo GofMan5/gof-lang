@@ -1,7 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use clap::{Args, Parser, Subcommand};
 use gof_compiler::{
-    CompileMode, Diagnostics, SourceFile, compile_source, format_source,
+    CompileMode, Diagnostics, SourceFile, build_embedded_source_bundle, compile_source,
+    format_source, normalize_source_path,
     package::{
         PackageGraphError, PackageManifestError, ensure_fresh_lockfile_for_source,
         find_package_root, package_library_entry_path, package_main_entry_path,
@@ -334,7 +335,7 @@ fn resolve_package_test_input(input: &Path) -> Result<Option<PathBuf>> {
     let Some(package_root) = find_package_root(input) else {
         return Ok(None);
     };
-    if package_root != input {
+    if normalize_cli_path(&package_root) != normalize_cli_path(input) {
         return Ok(None);
     }
 
@@ -358,7 +359,21 @@ fn resolve_package_test_input(input: &Path) -> Result<Option<PathBuf>> {
 fn run_package_test(entry_path: &Path) -> Result<()> {
     let source = SourceFile::from_path(entry_path)?;
     let mode = compile_mode_for_entry_path(entry_path);
-    compile_source(&source, mode).map_err(|error| render_error(&source, error))?;
+    match mode {
+        CompileMode::Library => {
+            compile_source(&source, mode).map_err(|error| render_error(&source, error))?;
+        }
+        CompileMode::Executable => {
+            let result =
+                run_module_with_output(&source).map_err(|error| render_error(&source, error))?;
+            if !result.stdout.is_empty() {
+                print!("{}", result.stdout);
+            }
+            if let Some(rendered) = result.value.cli_text() {
+                println!("{rendered}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -505,14 +520,16 @@ fn build_native_host_executable(source: &SourceFile, output: &Path) -> Result<()
     fs::create_dir_all(&src_dir)?;
 
     let compiler_path = compiler_crate.to_string_lossy().replace('\\', "/");
+    let embedded_bundle =
+        build_embedded_source_bundle(source).map_err(|error| render_error(source, error))?;
+    let serialized_bundle = serde_json::to_string(&embedded_bundle)?;
     let cargo_toml = format!(
-        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ngof-compiler = {{ path = \"{compiler_path}\" }}\n\n[workspace]\n"
+        "[package]\nname = \"{package_name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[dependencies]\ngof-compiler = {{ path = \"{compiler_path}\" }}\nserde_json = \"1.0\"\n\n[workspace]\n"
     );
     fs::write(project_dir.join("Cargo.toml"), cargo_toml)?;
 
-    let embedded_source = serde_json::to_string(source.text())?;
     let runner = format!(
-        "use gof_compiler::{{run_module_with_output, SourceFile}};\n\nfn main() {{\n    let source = SourceFile::new(\"embedded.gof\", {embedded_source});\n    match run_module_with_output(&source) {{\n        Ok(result) => {{\n            if !result.stdout.is_empty() {{\n                print!(\"{{}}\", result.stdout);\n            }}\n            if let Some(rendered) = result.value.cli_text() {{\n                println!(\"{{rendered}}\");\n            }}\n        }}\n        Err(error) => {{\n            eprintln!(\"{{}}\", error.render(&source));\n            std::process::exit(1);\n        }}\n    }}\n}}\n"
+        "use gof_compiler::{{EmbeddedSourceBundle, run_embedded_bundle_with_output}};\n\nconst EMBEDDED_BUNDLE: &str = {serialized_bundle:?};\n\nfn main() {{\n    let bundle: EmbeddedSourceBundle = serde_json::from_str(EMBEDDED_BUNDLE)\n        .expect(\"embedded source bundle should deserialize\");\n    match run_embedded_bundle_with_output(&bundle) {{\n        Ok(result) => {{\n            if !result.stdout.is_empty() {{\n                print!(\"{{}}\", result.stdout);\n            }}\n            if let Some(rendered) = result.value.cli_text() {{\n                println!(\"{{rendered}}\");\n            }}\n        }}\n        Err(error) => {{\n            let source = bundle\n                .entry_source()\n                .expect(\"embedded source bundle should contain entry source\");\n            eprintln!(\"{{}}\", error.render(&source));\n            std::process::exit(1);\n        }}\n    }}\n}}\n"
     );
     fs::write(src_dir.join("main.rs"), runner)?;
 
@@ -572,6 +589,18 @@ fn sanitize_package_name(stem: &str) -> String {
         value.insert(0, 'g');
     }
     value
+}
+
+fn normalize_cli_path(path: &Path) -> String {
+    let normalized = normalize_source_path(path)
+        .to_string_lossy()
+        .replace("\\\\?\\", "")
+        .replace('\\', "/");
+    if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
+    }
 }
 
 fn discover_fixtures(root: &Path) -> Result<Vec<PathBuf>> {

@@ -28,6 +28,7 @@ and maps the reported diagnostics back into VS Code. That means:
 - syntax and type errors come from the real compiler, not hand-written editor heuristics
 - the active buffer is checked through stdin, so diagnostics track unsaved edits
 - diagnostics stay aligned with the language's stable CLI contract instead of hidden extension-only logic
+- rapid edits and config refreshes keep only one live compiler check per document; stale runs are cancelled instead of piling up in the background
 
 The extension only publishes diagnostics for the active file it checked. If the
 compiler reports an imported module error, open that `.gof` file directly to see
@@ -93,7 +94,7 @@ The test suite covers:
 
 - TextMate grammar scopes
 - manifest/configuration packaging contract
-- diagnostics helper logic and toolchain resolution
+- diagnostics helper logic, single-flight cancellation, and toolchain resolution
 
 ## Local installation in VS Code
 

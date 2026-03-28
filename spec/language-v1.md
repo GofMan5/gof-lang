@@ -123,6 +123,8 @@ The bootstrap compiler in this repository currently supports:
 - `import name` currently resolves in deterministic order: `name.gof` next to the importing source file, then `src/name.gof` inside the nearest package root with `gof.mod`, then `src/lib.gof` from a local path dependency declared under `[dependencies]` in `gof.mod`
 - package directories currently use `src/main.gof` as the executable entrypoint and `src/lib.gof` as the dependency entrypoint
 - manifest-backed `gof run`, `gof build`, and package-aware `gof test` require a fresh `gof.lock`
+- manifest-backed `gof test` currently executes `src/main.gof` package targets as compile plus execute smoke
+- manifest-backed `gof test` currently keeps `src/lib.gof` package targets compile-only until a dedicated language test surface exists
 - import cycles are rejected during module graph loading
 - duplicate top-level function names across the module graph are rejected
 - duplicate struct names across the module graph are rejected
@@ -273,6 +275,8 @@ The bootstrap compiler in this repository currently supports:
 - `select` currently prepares each send/receive operation once at select-entry and then polls those prepared operations until one resolves to either `Result.Ok(...)` or `Result.Err(...)`
 - `select` executes its `default:` arm immediately when no send/receive arm is ready during the current polling pass
 - `select` currently rotates its polling start arm in a deterministic round-robin baseline when multiple send/receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
+- `gof build --native` currently packages the bootstrap evaluator plus a deterministic embedded source bundle for the entry source, reachable same-directory imports, and manifest-backed local package imports
+- bootstrap-native executables currently preserve supported import and local package behavior independently of the binary launch working directory
 - channels currently expose an explicit capacity baseline only through `channel(capacity)`; richer buffering policies are still future work
 - most operational bootstrap builtins now return `Result[..., RuntimeError]`; `await_result(task)` and `await_result(task, token)` give an explicit recoverable join path for plain tasks, `await` also preserves task-boundary failures for tasks with explicit `Result[..., RuntimeError]` contracts, while runtime diagnostics still remain for invariant failures, assertion failures, bad helper contracts, plain `await task` joins, and a small set of bootstrap evaluator gaps
 - control-flow conditions must evaluate to `bool`

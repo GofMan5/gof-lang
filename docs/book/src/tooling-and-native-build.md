@@ -39,6 +39,16 @@ gof check program.gof --json --stdin
 That contract is what the VS Code extension uses for compiler-backed
 diagnostics.
 
+### `gof test`
+
+Today package-aware `gof test` has an explicit split contract:
+
+- executable package targets (`src/main.gof`) run compile plus execute smoke
+- library package targets (`src/lib.gof`) currently stay compile-only
+
+That keeps the command honest for runnable packages without pretending the
+language already has a dedicated in-language test surface for libraries.
+
 ### `gof build`
 
 By default:
@@ -62,13 +72,16 @@ the CLI emits a runnable host executable.
 ## Important honesty rule
 
 Today `--native` is a bootstrap-native path. The generated executable packages the
-bootstrap evaluator around the source program.
+bootstrap evaluator around a deterministic embedded source bundle.
 
 That is useful because:
 
 - users can run a native host executable now
 - install and packaging flows can already target a real binary
 - the project can harden build ergonomics before direct codegen is finished
+- reachable same-directory imports and manifest-backed local package imports keep
+  working even when the binary is launched from a different current working
+  directory
 
 But it is not the final backend. The long-term goal is direct native code generation
 without embedding the bootstrap evaluator.
@@ -120,7 +133,9 @@ The extension resolves diagnostics toolchains in this order:
 3. `gof` on `PATH`
 
 That keeps diagnostics aligned with the actual compiler instead of maintaining a
-second, fake validation layer inside the editor.
+second, fake validation layer inside the editor. The extension also keeps
+diagnostics single-flight per document and cancels stale compiler runs during
+rapid edits or config refreshes.
 
 For local packaging:
 

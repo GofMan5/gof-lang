@@ -112,3 +112,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3098`: invalid operand for bootstrap CSV helpers
 - `GOF3099`: invalid operand for bootstrap TOML helpers
 - `GOF3100`: invalid operand for bootstrap process orchestration helpers
+- `GOF3101`: invalid embedded source bundle for bootstrap-native execution

@@ -273,6 +273,7 @@ Hard sequencing rule:
 ### M7. Native Backend and Runtime Hardening
 
 - `[x]` bootstrap-native host executable path via `gof build --native`
+- `[x]` bootstrap-native embedded source bundles preserve reachable imports and local package graph semantics
 - `[ ]` transition from SSA JSON artifact to real codegen
 - `[ ]` runtime allocation model formalization
 - `[ ]` debug info and ABI smoke tests
@@ -281,6 +282,7 @@ Hard sequencing rule:
 - Checkpoints:
 - `[ ]` CP-M7-1: backend IR contract stabilization
 - `[~]` CP-M7-2: first native artifact path
+- `[x]` CP-M7-2a: bootstrap-native executables keep same supported import/package behavior outside the source tree
 - `[ ]` CP-M7-3: performance regression gates
 - Exit criteria:
 - `gof build` emits real executable artifacts
@@ -349,6 +351,7 @@ Hard sequencing rule:
 
 - `[x]` installable VS Code editor baseline for `.gof` with syntax highlighting, snippets, and compiler-backed diagnostics
 - `[x]` rolling snapshot release now ships the installable VS Code extension asset
+- `[x]` single-flight VS Code diagnostics cancellation keeps one compiler check per document
 - `[ ]` package identity, registry, and deterministic dependency model
 - `[ ]` editions or compatibility policy for long-lived codebases
 - `[ ]` LSP, debugger, profiler, and richer IDE support
@@ -357,6 +360,7 @@ Hard sequencing rule:
 - `[ ]` diagnostics and observability suitable for multi-team repos
 - Checkpoints:
 - `[x]` CP-M12-0: installable VS Code editor baseline with syntax-highlighting, snippets, compiler-backed diagnostics, packaging, and snapshot distribution
+- `[x]` CP-M12-0a: diagnostics lifecycle cancels stale compiler runs instead of piling up background checks
 - `[ ]` CP-M12-1: long-term compatibility and evolution policy
 - `[ ]` CP-M12-2: enterprise-scale tooling surface
 - `[ ]` CP-M12-3: workspace and package ergonomics for large codebases
@@ -417,6 +421,7 @@ Hard sequencing rule:
 3. `[ ]` Move the bootstrap-native build path closer to direct codegen:
 - reduce wrapper overhead in generated host executables
 - stabilize artifact naming and smoke coverage for `gof build --native`
+- `[x]` preserve supported import and local package semantics through an embedded source bundle
 - keep direct codegen milestones honest in docs and tooling
 
 4. `[~]` Deepen concurrency semantics:
@@ -432,6 +437,7 @@ Hard sequencing rule:
 
 6. `[~]` Execute Phase 1 before widening the front:
 - `[x]` finish package identity and deterministic local package workflow
+- `[x]` make package-aware `gof test` honest for executable package targets while keeping library targets compile-only
 - build script-first UX and richer automation/data stdlib
 - ship reference apps that make the Python/Node replacement story concrete
 

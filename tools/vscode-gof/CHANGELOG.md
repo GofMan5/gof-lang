@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.2
+
+- Added single-flight diagnostics lifecycle so each document keeps only one live compiler check
+- Cancel stale background `gof check --json --stdin` processes during rapid edits, refreshes, and closes
+- Kept compiler-backed diagnostics aligned with the CLI without spawning piles of obsolete checks
+
 ## 0.2.1
 
 - Added syntax coverage for `run_process(...)`

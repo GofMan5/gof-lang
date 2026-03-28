@@ -1,13 +1,18 @@
 use crate::ast::Module;
 use crate::backend::{BackendArtifact, lower as lower_backend};
 use crate::cst::CstModule;
-use crate::diagnostics::Diagnostics;
+use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::formatter::format_module;
 use crate::hir::{HirModule, lower as lower_hir};
 use crate::interpreter::{ExecutionResult, Value, run_with_output as run_interpreter_with_output};
 use crate::mir::{MirModule, lower as lower_mir};
-use crate::module_graph::{load_module_graph, parse_single_source};
+use crate::module_graph::{load_module_graph_with_provider, parse_single_source};
+use crate::package::find_package_context_for_source;
 use crate::source::SourceFile;
+use crate::source::{
+    EmbeddedPackageContext, EmbeddedSourceBundle, EmbeddedSourceProvider, FileSystemSourceProvider,
+    SourceProvider, normalize_source_path,
+};
 use crate::ssa::{SsaModule, lower as lower_ssa};
 use crate::typed_hir::{TypedModule, lower as lower_typed};
 use serde::Serialize;
@@ -33,7 +38,19 @@ pub fn compile_source(
     source: &SourceFile,
     mode: CompileMode,
 ) -> Result<CompiledModule, Diagnostics> {
-    let ast = load_module_graph(source)?;
+    compile_source_with_provider(source, mode, &FileSystemSourceProvider)
+}
+
+pub fn compile_source_with_provider<Provider>(
+    source: &SourceFile,
+    mode: CompileMode,
+    provider: &Provider,
+) -> Result<CompiledModule, Diagnostics>
+where
+    Provider: SourceProvider,
+{
+    let loaded_graph = load_module_graph_with_provider(source, provider)?;
+    let ast = loaded_graph.module;
     let cst = CstModule::new(
         crate::lexer::lex(source)
             .map_err(|diagnostics| diagnostics.with_source_path(source.path()))?,
@@ -61,6 +78,33 @@ pub fn compile_source(
     })
 }
 
+pub fn build_embedded_source_bundle(
+    source: &SourceFile,
+) -> Result<EmbeddedSourceBundle, Diagnostics> {
+    let loaded_graph = load_module_graph_with_provider(source, &FileSystemSourceProvider)?;
+    let mut bundle_sources = loaded_graph.sources;
+    bundle_sources.sort_by(|left, right| left.path().cmp(right.path()));
+
+    let mut package_contexts = bundle_sources
+        .iter()
+        .map(|loaded_source| {
+            let context = find_package_context_for_source(loaded_source.path())
+                .map_err(|error| package_manifest_diagnostic(loaded_source, error))?;
+            Ok(EmbeddedPackageContext {
+                source_path: loaded_source.path().to_path_buf(),
+                context,
+            })
+        })
+        .collect::<Result<Vec<_>, Diagnostics>>()?;
+    package_contexts.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+
+    Ok(EmbeddedSourceBundle {
+        entry_path: normalize_source_path(source.path()),
+        sources: bundle_sources,
+        package_contexts,
+    })
+}
+
 pub fn format_source(source: &SourceFile) -> Result<String, Diagnostics> {
     let module = parse_single_source(source)?;
     Ok(format_module(&module))
@@ -75,12 +119,81 @@ pub fn run_module_with_output(source: &SourceFile) -> Result<ExecutionResult, Di
     run_interpreter_with_output(&compiled.ast)
 }
 
+pub fn run_embedded_bundle_with_output(
+    bundle: &EmbeddedSourceBundle,
+) -> Result<ExecutionResult, Diagnostics> {
+    let provider = EmbeddedSourceProvider::new(bundle.clone());
+    let entry_source = bundle
+        .entry_source()
+        .map_err(|error| package_bundle_diagnostic(bundle, error))?;
+    let compiled = compile_source_with_provider(&entry_source, CompileMode::Executable, &provider)?;
+    run_interpreter_with_output(&compiled.ast)
+}
+
+fn package_manifest_diagnostic(
+    source: &SourceFile,
+    error: crate::package::PackageManifestError,
+) -> Diagnostics {
+    let diagnostic = match error {
+        crate::package::PackageManifestError::Read { path, message } => Diagnostic::error(
+            "GOF3089",
+            "invalid package manifest",
+            format!("failed to read {}: {message}", path.display()),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it("repair `gof.mod` or remove the broken local package configuration")
+        .with_source_path(source.path().to_path_buf()),
+        crate::package::PackageManifestError::Parse { path, message } => Diagnostic::error(
+            "GOF3089",
+            "invalid package manifest",
+            format!("failed to parse {}: {message}", path.display()),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it("fix the TOML syntax in `gof.mod`")
+        .with_source_path(source.path().to_path_buf()),
+        crate::package::PackageManifestError::MissingDependencyManifest {
+            manifest,
+            dependency,
+            expected_manifest,
+        } => Diagnostic::error(
+            "GOF3089",
+            format!("invalid local dependency `{dependency}`"),
+            format!(
+                "{} declares `{dependency}`, but `{}` does not exist",
+                manifest.display(),
+                expected_manifest.display()
+            ),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it("repair the dependency path in `gof.mod` or restore the dependency manifest")
+        .with_source_path(source.path().to_path_buf()),
+    };
+    Diagnostics(vec![diagnostic])
+}
+
+fn package_bundle_diagnostic(bundle: &EmbeddedSourceBundle, error: std::io::Error) -> Diagnostics {
+    Diagnostics(vec![
+        Diagnostic::error(
+            "GOF3101",
+            "invalid embedded source bundle",
+            error.to_string(),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it("rebuild the native executable so the embedded source bundle is refreshed")
+        .with_source_path(bundle.entry_path.clone()),
+    ])
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CompileMode, compile_source};
+    use super::{
+        CompileMode, build_embedded_source_bundle, compile_source, run_embedded_bundle_with_output,
+    };
     use crate::source::SourceFile;
     use crate::ssa::SsaInstruction;
     use crate::typed_hir::Type;
+    use std::fs;
+    use tempfile::tempdir;
 
     #[test]
     fn pipeline_emits_backend_artifact() {
@@ -1290,5 +1403,31 @@ mod tests {
                 .iter()
                 .any(|value| matches!(value.instruction, SsaInstruction::Propagate { .. }))
         );
+    }
+
+    #[test]
+    fn embedded_source_bundle_preserves_same_directory_imports() {
+        let temp = tempdir().expect("tempdir should exist");
+        let main_path = temp.path().join("main.gof");
+        let helper_path = temp.path().join("math.gof");
+
+        fs::write(
+            &helper_path,
+            "fn square(value: int) -> int:\n    return value * value\n",
+        )
+        .expect("helper module should exist");
+        fs::write(
+            &main_path,
+            "import math\n\nfn main() -> int:\n    return square(9)\n",
+        )
+        .expect("main module should exist");
+
+        let source = SourceFile::from_path(&main_path).expect("source should load");
+        let bundle =
+            build_embedded_source_bundle(&source).expect("embedded source bundle should build");
+        let result =
+            run_embedded_bundle_with_output(&bundle).expect("embedded bundle should execute");
+
+        assert_eq!(result.value.cli_text().as_deref(), Some("81"));
     }
 }

@@ -2,14 +2,22 @@ use crate::ast::{Module, parse};
 use crate::cst::CstModule;
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::lexer::lex;
-use crate::package::{PackageContext, PackageManifestError, find_package_context_for_source};
-use crate::source::SourceFile;
+use crate::package::{PackageContext, PackageManifestError};
+use crate::source::{FileSystemSourceProvider, SourceFile, SourceProvider};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Default)]
-struct ModuleResolver {
+#[derive(Debug, Clone)]
+pub struct LoadedModuleGraph {
+    pub module: Module,
+    pub sources: Vec<SourceFile>,
+}
+
+#[derive(Debug)]
+struct ModuleResolver<'provider, Provider> {
+    provider: &'provider Provider,
     modules: HashMap<PathBuf, Module>,
+    sources: HashMap<PathBuf, SourceFile>,
     package_contexts: HashMap<PathBuf, Option<PackageContext>>,
     load_order: Vec<PathBuf>,
     loading_stack: Vec<PathBuf>,
@@ -39,8 +47,18 @@ pub fn parse_single_source(source: &SourceFile) -> Result<Module, Diagnostics> {
 }
 
 pub fn load_module_graph(source: &SourceFile) -> Result<Module, Diagnostics> {
-    let root_path = normalize_path(source.path());
-    let mut resolver = ModuleResolver::default();
+    Ok(load_module_graph_with_provider(source, &FileSystemSourceProvider)?.module)
+}
+
+pub fn load_module_graph_with_provider<Provider>(
+    source: &SourceFile,
+    provider: &Provider,
+) -> Result<LoadedModuleGraph, Diagnostics>
+where
+    Provider: SourceProvider,
+{
+    let root_path = provider.normalize_path(source.path());
+    let mut resolver = ModuleResolver::new(provider);
     let mut diagnostics = Diagnostics::default();
 
     resolver.load_source(source.clone(), &mut diagnostics)?;
@@ -52,29 +70,52 @@ pub fn load_module_graph(source: &SourceFile) -> Result<Module, Diagnostics> {
     let (structs, enums, functions) = resolver.collect_items(&mut diagnostics);
 
     if diagnostics.is_empty() {
-        Ok(Module {
-            imports: root_imports,
-            structs,
-            enums,
-            functions,
+        let sources = resolver
+            .load_order
+            .iter()
+            .filter_map(|path| resolver.sources.get(path).cloned())
+            .collect();
+        Ok(LoadedModuleGraph {
+            module: Module {
+                imports: root_imports,
+                structs,
+                enums,
+                functions,
+            },
+            sources,
         })
     } else {
         Err(diagnostics)
     }
 }
 
-impl ModuleResolver {
+impl<'provider, Provider> ModuleResolver<'provider, Provider>
+where
+    Provider: SourceProvider,
+{
+    fn new(provider: &'provider Provider) -> Self {
+        Self {
+            provider,
+            modules: HashMap::new(),
+            sources: HashMap::new(),
+            package_contexts: HashMap::new(),
+            load_order: Vec::new(),
+            loading_stack: Vec::new(),
+        }
+    }
+
     fn load_source(
         &mut self,
         source: SourceFile,
         diagnostics: &mut Diagnostics,
     ) -> Result<(), Diagnostics> {
-        let path = normalize_path(source.path());
+        let path = self.provider.normalize_path(source.path());
         if self.modules.contains_key(&path) {
             return Ok(());
         }
 
-        let module = match parse_single_source(&source) {
+        let normalized_source = SourceFile::new(path.clone(), source.text().to_string());
+        let module = match parse_single_source(&normalized_source) {
             Ok(module) => module,
             Err(source_diagnostics) => {
                 diagnostics.0.extend(source_diagnostics.0);
@@ -144,7 +185,7 @@ impl ModuleResolver {
                 continue;
             }
 
-            let import_source = match SourceFile::from_path(&import_path) {
+            let import_source = match self.provider.load_source(&import_path) {
                 Ok(source) => source,
                 Err(_) => {
                     diagnostics.push(import_resolution_missing_file_diagnostic(
@@ -165,6 +206,7 @@ impl ModuleResolver {
 
         self.loading_stack.pop();
         self.load_order.push(path.clone());
+        self.sources.insert(path.clone(), normalized_source);
         self.modules.insert(path, module);
         Ok(())
     }
@@ -422,12 +464,12 @@ impl ModuleResolver {
         &mut self,
         source_path: &Path,
     ) -> Result<Option<PackageContext>, PackageManifestError> {
-        let normalized_source = normalize_path(source_path);
+        let normalized_source = self.provider.normalize_path(source_path);
         if let Some(context) = self.package_contexts.get(&normalized_source) {
             return Ok(context.clone());
         }
 
-        let context = find_package_context_for_source(source_path)?;
+        let context = self.provider.package_context_for_source(source_path)?;
         self.package_contexts
             .insert(normalized_source, context.clone());
         Ok(context)
@@ -443,8 +485,8 @@ impl ModuleResolver {
             .unwrap_or_else(|| Path::new("."))
             .join(format!("{module_name}.gof"));
         let mut searched = vec![same_directory_candidate.clone()];
-        if same_directory_candidate.is_file() {
-            return Ok(normalize_path(&same_directory_candidate));
+        if self.provider.is_file(&same_directory_candidate) {
+            return Ok(self.provider.normalize_path(&same_directory_candidate));
         }
 
         if let Some(package_context) = self
@@ -456,33 +498,21 @@ impl ModuleResolver {
                 .join(format!("{module_name}.gof"));
             if package_root_candidate != same_directory_candidate {
                 searched.push(package_root_candidate.clone());
-                if package_root_candidate.is_file() {
-                    return Ok(normalize_path(&package_root_candidate));
+                if self.provider.is_file(&package_root_candidate) {
+                    return Ok(self.provider.normalize_path(&package_root_candidate));
                 }
             }
 
             if let Some(dependency) = package_context.dependencies.get(module_name) {
                 searched.push(dependency.entry_path.clone());
-                if dependency.entry_path.is_file() {
-                    return Ok(normalize_path(&dependency.entry_path));
+                if self.provider.is_file(&dependency.entry_path) {
+                    return Ok(self.provider.normalize_path(&dependency.entry_path));
                 }
             }
         }
 
         Err(ImportResolutionError::Unresolved { searched })
     }
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| {
-        if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            std::env::current_dir()
-                .unwrap_or_else(|_| PathBuf::from("."))
-                .join(path)
-        }
-    })
 }
 
 fn package_manifest_diagnostic(

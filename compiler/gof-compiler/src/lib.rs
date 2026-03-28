@@ -18,6 +18,11 @@ pub mod typed_hir;
 pub use diagnostics::{Diagnostic, Diagnostics, Severity};
 pub use interpreter::ExecutionResult;
 pub use pipeline::{
-    CompileMode, CompiledModule, compile_source, format_source, run_module, run_module_with_output,
+    CompileMode, CompiledModule, build_embedded_source_bundle, compile_source,
+    compile_source_with_provider, format_source, run_embedded_bundle_with_output, run_module,
+    run_module_with_output,
 };
-pub use source::{SourceFile, Span};
+pub use source::{
+    EmbeddedPackageContext, EmbeddedSourceBundle, EmbeddedSourceProvider, FileSystemSourceProvider,
+    SourceFile, SourceProvider, Span, normalize_source_path,
+};

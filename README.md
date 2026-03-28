@@ -22,7 +22,7 @@ fn main() -> int:
 ```
 
 > **Bootstrap stage.** The compiler, evaluator, and toolchain are functional and actively developed.
-> Native builds work via `gof build --native`. Direct codegen backend is in progress.
+> Native builds work via `gof build --native`, which currently packages the bootstrap evaluator plus a deterministic embedded source bundle that preserves reachable imports and local package context. Direct codegen backend is still in progress.
 
 ## Install
 
@@ -75,6 +75,11 @@ See the [language spec](spec/language-v1.md) for the full contract.
 Manifest-backed packages now require a committed, fresh `gof.lock` for `gof run`,
 `gof build`, and package-aware `gof test`. Refresh it explicitly with
 `gof mod resolve --dir <package-root>`.
+
+Package-aware `gof test` is intentionally split today:
+
+- executable package targets (`src/main.gof`) perform compile plus execute smoke
+- library package targets (`src/lib.gof`) currently perform compile-only validation
 
 `select` now rotates its polling start arm in a deterministic round-robin
 baseline when multiple send/receive arms are already ready, but scheduler-level
@@ -155,7 +160,9 @@ npm run package
 
 The extension now uses the real compiler through `gof check --json --stdin`
 when a toolchain is available, so syntax/type diagnostics stay aligned with the
-language contract instead of drifting into extension-only heuristics.
+language contract instead of drifting into extension-only heuristics. Stale
+editor checks are now cancelled single-flight per document so rapid edits do
+not pile up obsolete compiler processes.
 
 Or package the same `.vsix` through the repo-level release helper:
 

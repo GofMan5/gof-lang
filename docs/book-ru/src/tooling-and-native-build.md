@@ -39,6 +39,16 @@ gof check program.gof --json --stdin
 Именно этот контракт использует VS Code extension для compiler-backed
 diagnostics.
 
+### `gof test`
+
+Сегодня package-aware `gof test` имеет явный split contract:
+
+- executable package targets (`src/main.gof`) делают compile plus execute smoke
+- library package targets (`src/lib.gof`) пока остаются compile-only
+
+Это держит команду честной для runnable packages и не притворяется, что у
+языка уже есть отдельная встроенная test surface для библиотек.
+
 ### `gof build`
 
 По умолчанию:
@@ -62,13 +72,15 @@ CLI делает runnable host executable.
 ## Главное честное правило
 
 Сегодня `--native` это bootstrap-native path. Сгенерированный executable
-упаковывает bootstrap evaluator вокруг source program.
+упаковывает bootstrap evaluator вокруг deterministic embedded source bundle.
 
 Это полезно, потому что:
 
 - уже сейчас можно запускать native host executable
 - install и packaging flow уже могут работать с реальным бинарем
 - можно закалять build ergonomics до финального direct codegen backend
+- reachable same-directory imports и manifest-backed local package imports
+  продолжают работать даже если binary запущен из другой working directory
 
 Но это еще не финальный backend.
 
@@ -116,7 +128,9 @@ CLI делает runnable host executable.
 3. `gof` в `PATH`
 
 Это держит editor diagnostics синхронизированными с реальным компилятором, а не
-с отдельным набором editor-only эвристик.
+с отдельным набором editor-only эвристик. Extension теперь также держит
+diagnostics single-flight на документ и отменяет stale compiler runs во время
+частых edits и config refresh.
 
 Локальная сборка пакета:
 

@@ -8,7 +8,7 @@ use thiserror::Error;
 
 const LOCKFILE_VERSION: u32 = 1;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PackageContext {
     pub manifest_path: PathBuf,
     pub package_root: PathBuf,
@@ -18,7 +18,7 @@ pub struct PackageContext {
     pub dependencies: BTreeMap<String, LocalDependency>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalDependency {
     pub package_root: PathBuf,
     pub manifest_path: PathBuf,

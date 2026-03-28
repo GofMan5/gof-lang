@@ -2,7 +2,7 @@
   "name": "gof-language",
   "displayName": "gof Language Support",
   "description": "Syntax highlighting, snippets, and compiler-backed diagnostics for the gof language.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "gofman5",
   "icon": "media/gof-icon.png",
   "main": "./extension.cjs",

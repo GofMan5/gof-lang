@@ -91,6 +91,15 @@ path = "../mathlib"
 - single-file workflows without a surrounding `gof.mod` do not require a lockfile
 - `gof run`, `gof build`, and `gof test` never rewrite `gof.lock` implicitly
 - stale or missing lockfiles must be repaired by rerunning `gof mod resolve`
+- package-aware `gof test` executes manifest-backed `src/main.gof` targets as compile plus execute smoke
+- package-aware `gof test` keeps manifest-backed `src/lib.gof` targets compile-only until the language grows a dedicated test surface
+
+## Bootstrap-native executable contract
+
+- `gof build --native` remains evaluator-backed today
+- the generated executable embeds a deterministic source bundle for the entry source plus every reachable same-directory and manifest-backed local package import
+- bootstrap-native executables preserve the same supported import and local package behavior as `gof run`
+- bootstrap-native executables do not depend on the launch working directory to resolve bundled imports
 
 ## Current limits
 
