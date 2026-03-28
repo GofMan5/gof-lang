@@ -95,6 +95,7 @@ Mutation в `gof` разрешена, но она не является silent d
 - `argv()`
 - `env(...)`
 - `cwd()`
+- `run_process(...)`
 - `read_file(...)`
 - `write_file(...)`
 - `exists(...)`

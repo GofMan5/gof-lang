@@ -65,7 +65,8 @@ test("snippet file includes core gof templates", async () => {
     "Enum",
     "Match Result",
     "Select",
-    "Task Join"
+    "Task Join",
+    "Process Capture"
   ]) {
     assert.ok(snippets[key], `missing snippet "${key}"`);
     assert.ok(snippets[key].prefix, `snippet "${key}" must define a prefix`);

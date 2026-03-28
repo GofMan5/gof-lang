@@ -1039,6 +1039,32 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_run_process_builtin() {
+        let source = SourceFile::new(
+            "process_capture.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    report = run_process(\"gof\", [\"--help\"])?\n    args = json_get(report, \"args\")?\n    status = json_int(json_get(report, \"status\")?)?\n    first = json_string(json_index(args, 0)?)?\n    return Result.Ok(status + json_len(args)? + len(first))\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected run_process bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "run_process"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_range_builtin() {
         let source = SourceFile::new(
             "range_helpers.gof",

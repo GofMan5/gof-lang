@@ -25,6 +25,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `line_io.gof`: line-oriented file I/O with `write_lines(...)`, `read_lines(...)`, and explicit cleanup
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
 - `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers
+- `process_capture.gof`: explicit `run_process(...)` orchestration with captured status, stdout, stderr, and argv metadata
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
 - `await_result.gof`: explicit recoverable task joins for plain `task[T]` values
@@ -73,6 +74,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `line_io.gof` -> `Result.Ok(value: 19)`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`
+- `process_capture.gof` -> `Result.Ok(value: 7)` when `GOF_PROCESS_EXAMPLE` points to a command that exits successfully for `--help`
 - `concurrent_squares.gof` -> `225`
 - `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``
 - `channel_select.gof` -> `Result.Ok(value: 9)`
@@ -107,6 +109,18 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `package_app/` -> `90`
 - `portfolio/main.gof` -> `160`
 - `records/main.gof` -> `140`
+
+## Package note
+
+## Process example note
+
+`process_capture.gof` defaults to running `gof --help`. For deterministic local
+or CI runs, point `GOF_PROCESS_EXAMPLE` at a known executable that exits
+successfully for `--help`.
+
+```text
+GOF_PROCESS_EXAMPLE=/path/to/program gof run examples/process_capture.gof
+```
 
 ## Package note
 

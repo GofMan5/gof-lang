@@ -38,6 +38,7 @@ fn main() -> Result[int, RuntimeError]:
 - `argv()` возвращает CLI arguments
 - `env(name)` читает одну переменную окружения
 - `cwd()` возвращает current working directory
+- `run_process(program, args)` запускает процесс напрямую без shell-интерполяции и возвращает `program`, `args`, `status`, `stdout` и `stderr` внутри `Result[json, RuntimeError]`
 - `read_file(path)` и `write_file(path, contents)` используют `Result`
 - `read_lines(path)` и `write_lines(path, lines)` дают явный line-oriented I/O через `Result[list[string], RuntimeError]` и `Result[unit, RuntimeError]`
 - `exists(path)`, `read_dir(path)`, `mkdir(path)` и `remove_file(path)` остаются string-based
@@ -45,6 +46,22 @@ fn main() -> Result[int, RuntimeError]:
 
 Это не полноценная I/O-библиотека. Это минимальный baseline для реальных side effects
 в CLI tools и bot-style automation.
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    report = run_process("gof", ["--help"])?
+    args = json_get(report, "args")?
+    status = json_int(json_get(report, "status")?)?
+    first = json_string(json_index(args, 0)?)?
+    return Result.Ok(status + json_len(args)? + len(first))
+```
+
+`run_process(...)` специально остается узким:
+
+- он не запускает shell
+- он не скрывает quoting и escaping rules
+- он держит argv явным через `list[string]`
+- он возвращает захваченный вывод как данные, а не печатает его неявно
 
 ## Helpers для коллекций
 

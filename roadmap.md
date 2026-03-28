@@ -306,6 +306,7 @@ Hard sequencing rule:
 - Checkpoints:
 - `[ ]` CP-M9-1: script runner and module UX that make small automation tasks frictionless
 - `[~]` CP-M9-2: batteries-included automation stdlib without hidden runtime magic
+- `[x]` CP-M9-2a: explicit no-shell process orchestration baseline through `run_process(program, args)` with captured status and output
 - `[~]` CP-M9-3: data transformation baseline suitable for real internal tooling
 - Exit criteria:
 - most tasks that would rationally be written in Python or Node for local automation can be written cleanly in `gof`
@@ -403,6 +404,7 @@ Hard sequencing rule:
 - `[x]` add deterministic dict view helpers without hiding ordering or allocations
 - `[x]` add predictable conversion helpers through `parse_int` and `to_string`
 - `[x]` add process, path, and filesystem helpers required by real CLI tools
+- `[x]` add explicit no-shell process orchestration with captured stdout/stderr/status
 - `[x]` add a bootstrap JSON and HTTP GET/POST client slice plus explicit retry delay for long-polling bots
 - `[x]` stdlib docs and contract tests
 

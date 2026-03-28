@@ -62,7 +62,7 @@ gof test tests/fixtures                # run conformance suite
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
-| `print`, `assert`, `argv`, `env`, `cwd`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
+| `print`, `assert`, `argv`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
 | JSON, CSV, and TOML helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
@@ -87,6 +87,11 @@ backpressure paths do not need to fake readiness through helper channels.
 `select` currently prepares each send/receive operation once at select-entry
 before polling, so arm expressions with side effects are not re-evaluated on
 every poll pass.
+
+The automation stdlib now also has an explicit process orchestration baseline
+through `run_process(program, args)`, which executes a program directly without
+shell interpolation and returns captured `status`, `stdout`, `stderr`, and
+argv metadata inside a `Result[json, RuntimeError]` report.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

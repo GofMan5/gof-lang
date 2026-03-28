@@ -63,5 +63,14 @@
       "${4:outcome} = await_result(${1:task}, ${5:timeout_token(1000)})"
     ],
     "description": "Spawn a task and join it through the recoverable await_result path"
+  },
+  "Process Capture": {
+    "prefix": "gofproc",
+    "body": [
+      "${1:report} = run_process(${2:\"gof\"}, [${3:\"--help\"}])?",
+      "${4:status} = json_int(json_get(${1:report}, \"status\")?)?",
+      "${5:stdout} = json_string(json_get(${1:report}, \"stdout\")?)?"
+    ],
+    "description": "Run a process explicitly and inspect the captured JSON report"
   }
 }

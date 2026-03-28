@@ -653,6 +653,22 @@ fn gof_run_executes_config_report_example() {
 }
 
 #[test]
+fn gof_run_executes_process_capture_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("process_capture.gof");
+    let helper = std::env::current_exe().expect("current test executable should exist");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .env("GOF_PROCESS_EXAMPLE", &helper)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Result.Ok(value: 7)"));
+}
+
+#[test]
 fn gof_run_executes_runtime_ops_example_with_args_env_and_fs_helpers() {
     let temp = tempdir().expect("tempdir should exist");
     let example = gof_conformance::workspace_root()

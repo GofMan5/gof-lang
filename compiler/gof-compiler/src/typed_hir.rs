@@ -536,6 +536,7 @@ enum CallKind {
     BuiltinArgv,
     BuiltinEnv,
     BuiltinCwd,
+    BuiltinRunProcess,
     BuiltinExists,
     BuiltinReadDir,
     BuiltinMkdir,
@@ -2212,6 +2213,7 @@ fn lower_expr(
                     | CallKind::BuiltinArgv
                     | CallKind::BuiltinEnv
                     | CallKind::BuiltinCwd
+                    | CallKind::BuiltinRunProcess
                     | CallKind::BuiltinExists
                     | CallKind::BuiltinReadDir
                     | CallKind::BuiltinMkdir
@@ -2864,6 +2866,9 @@ fn validate_call(
         CallKind::BuiltinCwd => {
             validate_no_argument_call("cwd", args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinRunProcess => {
+            validate_run_process_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinExists => {
             validate_single_string_argument_call("exists", args, span, diagnostics, source_path);
         }
@@ -3503,6 +3508,8 @@ fn resolve_call_kind(
         CallKind::BuiltinEnv
     } else if callee == "cwd" {
         CallKind::BuiltinCwd
+    } else if callee == "run_process" {
+        CallKind::BuiltinRunProcess
     } else if callee == "exists" {
         CallKind::BuiltinExists
     } else if callee == "read_dir" {
@@ -3622,6 +3629,9 @@ fn call_return_type(
         CallKind::BuiltinArgv => Type::list(Type::String),
         CallKind::BuiltinEnv => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
         CallKind::BuiltinCwd => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
+        CallKind::BuiltinRunProcess => {
+            Type::result(Type::Json, Type::Enum("RuntimeError".to_string()))
+        }
         CallKind::BuiltinExists => Type::Bool,
         CallKind::BuiltinReadDir => Type::result(
             Type::list(Type::String),
@@ -6416,6 +6426,60 @@ fn validate_read_file_call(
     }
 }
 
+fn validate_run_process_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `run_process`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `run_process(program, args)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3100",
+                "`run_process` requires a string program path",
+                format!("this program resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string executable path or command name as the first argument")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if !matches!(
+        &args[1].ty,
+        Type::List(inner) if matches!(inner.as_ref(), Type::String | Type::Unknown)
+    ) && !matches!(args[1].ty, Type::Unknown)
+    {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3100",
+                "`run_process` requires `list[string]` arguments",
+                format!(
+                    "this args value resolves to `{}`",
+                    args[1].ty.display_name()
+                ),
+                args[1].span,
+            )
+            .with_fix_it("pass a `list[string]` value as the second argument")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_write_file_call(
     args: &[TypedExpr],
     span: Span,
@@ -7753,6 +7817,29 @@ mod tests {
     }
 
     #[test]
+    fn supports_run_process_builtin() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    report = run_process(\"gof\", [\"--help\"])?\n    args = json_get(report, \"args\")?\n    status = json_int(json_get(report, \"status\")?)?\n    first = json_string(json_index(args, 0)?)?\n    return Result.Ok(status + json_len(args)? + len(first))\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected process report bind, got {other:?}"),
+        }
+
+        assert_eq!(
+            module.functions[0].return_type,
+            Type::Result(
+                Box::new(Type::Int),
+                Box::new(Type::Enum("RuntimeError".to_string()))
+            )
+        );
+    }
+
+    #[test]
     fn supports_csv_builtins() {
         let module = lower_source(
             "fn main() -> Result[int, RuntimeError]:\n    rows = csv_parse(\"name,count\\nalpha,2\\nbeta,5\")?\n    rendered = csv_stringify(rows)?\n    assert(rows[1][0] == \"alpha\", \"expected first row\")\n    return Result.Ok(len(rows) + len(rendered))\n",
@@ -8149,6 +8236,26 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3043"]);
+    }
+
+    #[test]
+    fn rejects_invalid_run_process_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[json, RuntimeError]:\n    return run_process(1, [\"--help\"])\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3100"]);
+    }
+
+    #[test]
+    fn rejects_invalid_run_process_arg_list_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> Result[json, RuntimeError]:\n    return run_process(\"gof\", [1, 2])\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3100"]);
     }
 
     #[test]

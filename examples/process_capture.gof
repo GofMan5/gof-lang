@@ -1,0 +1,19 @@
+fn resolve_process_program() -> string:
+    configured = env("GOF_PROCESS_EXAMPLE")
+    match configured:
+        Result.Ok(value):
+            return value
+        Result.Err(_):
+            return "gof"
+
+fn main() -> Result[int, RuntimeError]:
+    program = resolve_process_program()
+    report = run_process(program, ["--help"])?
+    args = json_get(report, "args")?
+    status = json_int(json_get(report, "status")?)?
+    first = json_string(json_index(args, 0)?)?
+    stdout = json_string(json_get(report, "stdout")?)?
+    stderr = json_string(json_get(report, "stderr")?)?
+    assert(status == 0, "expected successful process status")
+    assert(len(stdout) > 0 or len(stderr) > 0, "expected captured process output")
+    return Result.Ok(status + json_len(args)? + len(first))

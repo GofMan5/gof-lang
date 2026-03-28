@@ -38,6 +38,7 @@ Current operational baseline is intentionally explicit:
 - `argv()` returns CLI arguments
 - `env(name)` reads one environment variable
 - `cwd()` returns the current working directory
+- `run_process(program, args)` executes a program directly without shell interpolation and returns captured `program`, `args`, `status`, `stdout`, and `stderr` inside `Result[json, RuntimeError]`
 - `read_file(path)` and `write_file(path, contents)` use `Result`
 - `read_lines(path)` and `write_lines(path, lines)` keep line-oriented file automation explicit through `Result[list[string], RuntimeError]` and `Result[unit, RuntimeError]`
 - `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` stay string-based
@@ -45,6 +46,22 @@ Current operational baseline is intentionally explicit:
 
 This is not pretending to be a complete I/O library. It is a minimal baseline for
 real side effects in CLI tools and bot-style automation.
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    report = run_process("gof", ["--help"])?
+    args = json_get(report, "args")?
+    status = json_int(json_get(report, "status")?)?
+    first = json_string(json_index(args, 0)?)?
+    return Result.Ok(status + json_len(args)? + len(first))
+```
+
+`run_process(...)` is intentionally narrow:
+
+- it does not invoke a shell
+- it does not hide quoting or escaping rules
+- it keeps argv shape explicit through `list[string]`
+- it returns captured output as data instead of printing it implicitly
 
 ## Collection helpers
 

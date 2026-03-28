@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.1
+
+- Added syntax coverage for `run_process(...)`
+- Added a process-orchestration snippet for explicit captured-command workflows
+- Kept the editor surface aligned with the new bootstrap process stdlib contract
+
 ## 0.2.0
 
 - Added compiler-backed VS Code diagnostics via `gof check --json --stdin`

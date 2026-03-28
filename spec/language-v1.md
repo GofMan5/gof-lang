@@ -90,7 +90,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `len(...)` for lists, strings, and dicts
 - builtin `print(...)` for one printable value
 - builtin `assert(...)` for boolean correctness contracts
-- builtin `argv()`, `env(...)`, and `cwd()` for process and environment access
+- builtin `argv()`, `env(...)`, `cwd()`, and `run_process(...)` for process and environment access
 - builtin `read_file(...)`, `write_file(...)`, `read_lines(...)`, `write_lines(...)`, `exists(...)`, `read_dir(...)`, `mkdir(...)`, and `remove_file(...)` for bootstrap filesystem work
 - builtin `path_join(...)`, `path_dir(...)`, `path_base(...)`, and `path_ext(...)` for explicit string-based path handling
 - builtin `dict()` and `insert(...)` for bootstrap key/value data
@@ -170,7 +170,7 @@ The bootstrap compiler in this repository currently supports:
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
-- `argv()`, `env(name)`, and `cwd()` are currently builtins recognized by the compiler and evaluator
+- `argv()`, `env(name)`, `cwd()`, and `run_process(program, args)` are currently builtins recognized by the compiler and evaluator
 - `read_file(path)`, `write_file(path, contents)`, `read_lines(path)`, `write_lines(path, lines)`, `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` are currently builtins recognized by the compiler and evaluator
 - `path_join(left, right)`, `path_dir(path)`, `path_base(path)`, and `path_ext(path)` are currently builtins recognized by the compiler and evaluator
 - `dict()` and `insert(dict, key, value)` are currently builtins recognized by the compiler and evaluator
@@ -183,6 +183,9 @@ The bootstrap compiler in this repository currently supports:
 - `channel()`, `channel(capacity)`, `send(channel, value)`, and `recv(channel)` are currently builtins recognized by the compiler and evaluator
 - `print` currently accepts exactly one printable value and returns `unit`
 - `assert` currently accepts either `(bool)` or `(bool, string)` and returns `unit`
+- `run_process(program, args)` currently requires `(string, list[string])` and returns `Result[json, RuntimeError]`
+- `run_process(program, args)` currently executes the program directly without shell interpolation
+- `run_process(program, args)` currently captures `program`, `args`, `status`, `stdout`, and `stderr` inside the returned JSON object
 - `dict` currently accepts no arguments and returns an empty dict value
 - `insert` currently accepts `(dict, string, value)` and returns a new dict
 - `keys` currently accepts exactly one dict and returns `list[string]` in deterministic key order

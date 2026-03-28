@@ -12,6 +12,7 @@ use std::fmt::{Debug, Formatter};
 use std::fs;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -2381,6 +2382,20 @@ fn eval_expr(
 
             if callee == "cwd" {
                 return eval_cwd_builtin(args, source_path, *span);
+            }
+
+            if callee == "run_process" {
+                return eval_run_process_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
             }
 
             if callee == "exists" {
@@ -5252,6 +5267,95 @@ fn eval_cwd_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult
     })
 }
 
+fn eval_run_process_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 2 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `run_process`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `run_process(program, args)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let program = eval_string_argument(
+        "run_process",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3100",
+    )?;
+    let program_display = program.clone();
+    let argument_strings = eval_string_list_argument(
+        "run_process",
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3100",
+    )?;
+
+    let command_output = Command::new(&program)
+        .args(&argument_strings)
+        .output()
+        .map_err(|error| runtime_io_error(format!("failed to run `{program_display}`: {error}")));
+
+    Ok(match command_output {
+        Ok(output) => {
+            let Some(status) = output.status.code() else {
+                return Ok(result_err(runtime_io_error(format!(
+                    "process `{program_display}` exited without an integer status"
+                ))));
+            };
+
+            let mut report = BTreeMap::new();
+            report.insert("program".to_string(), JsonValue::String(program));
+            report.insert(
+                "args".to_string(),
+                JsonValue::Array(
+                    argument_strings
+                        .into_iter()
+                        .map(JsonValue::String)
+                        .collect::<Vec<_>>(),
+                ),
+            );
+            report.insert("status".to_string(), JsonValue::Int(i64::from(status)));
+            report.insert(
+                "stdout".to_string(),
+                JsonValue::String(String::from_utf8_lossy(&output.stdout).into_owned()),
+            );
+            report.insert(
+                "stderr".to_string(),
+                JsonValue::String(String::from_utf8_lossy(&output.stderr).into_owned()),
+            );
+            result_ok(Value::Json(JsonValue::Object(report)))
+        }
+        Err(error) => result_err(error),
+    })
+}
+
 fn eval_exists_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -5657,6 +5761,63 @@ fn eval_string_argument(
         ]));
     };
     Ok(text)
+}
+
+fn eval_string_list_argument(
+    builtin_name: &str,
+    expr: &Expr,
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    diagnostic_code: &'static str,
+) -> EvalResult<Vec<String>> {
+    let value = eval_expr(
+        expr,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+    let Value::List(items) = value else {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                diagnostic_code,
+                format!("`{builtin_name}` requires `list[string]` arguments"),
+                format!("this value resolves to `{}`", value_name(&value)),
+                expr.span(),
+            )
+            .with_fix_it(format!("pass a `list[string]` value to `{builtin_name}`"))
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    };
+
+    let mut strings = Vec::with_capacity(items.len());
+    for item in items {
+        let Value::String(text) = item else {
+            return eval_diagnostics(Diagnostics(vec![
+                Diagnostic::error(
+                    diagnostic_code,
+                    format!("`{builtin_name}` requires `list[string]` arguments"),
+                    format!("this list contains `{}`", value_name(&item)),
+                    expr.span(),
+                )
+                .with_fix_it(format!(
+                    "ensure every argument passed to `{builtin_name}` is a string"
+                ))
+                .with_source_path(source_path.to_path_buf()),
+            ]));
+        };
+        strings.push(text);
+    }
+
+    Ok(strings)
 }
 
 fn eval_int_argument(
@@ -8435,6 +8596,33 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_run_process_builtin() {
+        let executable = std::env::current_exe().expect("current executable should exist");
+        let executable = executable.to_string_lossy().replace('\\', "\\\\");
+
+        let value = run_source(&format!(
+            "fn main() -> Result[int, RuntimeError]:\n    report = run_process(\"{executable}\", [\"--help\"])?\n    args = json_get(report, \"args\")?\n    status = json_int(json_get(report, \"status\")?)?\n    first = json_string(json_index(args, 0)?)?\n    stdout = json_string(json_get(report, \"stdout\")?)?\n    stderr = json_string(json_get(report, \"stderr\")?)?\n    assert(status == 0, \"expected successful process exit status\")\n    assert(len(stdout) > 0 or len(stderr) > 0, \"expected captured process output\")\n    return Result.Ok(status + json_len(args)? + len(first))\n"
+        ))
+        .expect("program should run");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 7)"));
+    }
+
+    #[test]
+    fn run_process_returns_runtime_errors_for_missing_programs() {
+        let value = run_source(
+            "fn main() -> string:\n    outcome = run_process(\"definitely-not-a-real-gof-command\", [\"--help\"])\n    match outcome:\n        Result.Ok(_):\n            return \"unexpected\"\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("program should run");
+
+        let rendered = value
+            .cli_text()
+            .expect("missing-process result should render as text");
+        assert!(rendered.starts_with("RuntimeError.Io(message:"));
+        assert!(rendered.contains("failed to run `definitely-not-a-real-gof-command`"));
+    }
+
+    #[test]
     fn evaluates_csv_builtins() {
         let value = run_source(
             "fn main() -> Result[int, RuntimeError]:\n    text = csv_stringify([[\"name\", \"count\"], [\"alpha\", \"2\"], [\"beta\", \"5\"]])?\n    rows = csv_parse(text)?\n    assert(rows[1][0] == \"alpha\", \"expected first row\")\n    return Result.Ok(len(rows) + parse_int(rows[2][1])?)\n",
@@ -8780,6 +8968,16 @@ mod tests {
         .expect_err("write_lines should reject non-string line lists at runtime");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3043"]);
+    }
+
+    #[test]
+    fn run_process_rejects_non_string_argument_lists_at_runtime() {
+        let diagnostics = run_source(
+            "fn invoke(program: string, args: list) -> Result[json, RuntimeError]:\n    return run_process(program, args)\nfn main() -> Result[json, RuntimeError]:\n    return invoke(\"gof\", [1, 2])\n",
+        )
+        .expect_err("run_process should reject non-string arg lists at runtime");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3100"]);
     }
 
     #[test]

@@ -34,3 +34,6 @@ fn encode_rows(rows: list[list[string]]) -> Result[string, RuntimeError]:
     return Result.Ok(csv)
 
 # syntax smoke
+
+fn spawn_tool(path: string) -> Result[json, RuntimeError]:
+    return run_process(path, ["--help"])

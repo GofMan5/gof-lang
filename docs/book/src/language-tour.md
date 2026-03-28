@@ -95,6 +95,7 @@ Today the bootstrap language surface includes:
 - `argv()`
 - `env(...)`
 - `cwd()`
+- `run_process(...)`
 - `read_file(...)`
 - `write_file(...)`
 - `exists(...)`
