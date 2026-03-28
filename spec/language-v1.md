@@ -41,6 +41,7 @@
 The bootstrap compiler in this repository currently supports:
 
 - local imports through `import name`, including same-directory modules, package-root modules, and manifest-resolved local path packages
+- shipped stdlib imports through reserved module names `bytes`, `io`, `time`, `net`, and `http`
 - deterministic local package lockfiles through `gof.lock` and `gof mod resolve`
 - top-level `struct`
 - top-level `enum` with unit and payload variants
@@ -124,6 +125,8 @@ The bootstrap compiler in this repository currently supports:
 - function return types can currently be annotated with the same builtin types plus known struct and enum names
 - local bindings and return contracts can currently use parameterized builtin annotations like `list[int]`, `dict[int]`, `channel[int]`, `task[int]`, and `Result[int, RuntimeError]`
 - `import name` currently resolves in deterministic order: `name.gof` next to the importing source file, then `src/name.gof` inside the nearest package root with `gof.mod`, then `src/lib.gof` from a local path dependency declared under `[dependencies]` in `gof.mod`
+- reserved stdlib import names `bytes`, `io`, `time`, `net`, and `http` currently resolve to shipped modules under `stdlib/` instead of local files or dependency aliases
+- local files, package-root modules, and dependency aliases that try to use reserved stdlib names are currently rejected with an explicit diagnostic instead of shadowing the shipped stdlib
 - package directories currently use `src/main.gof` as the executable entrypoint and `src/lib.gof` as the dependency entrypoint
 - manifest-backed `gof run`, `gof build`, and package-aware `gof test` require a fresh `gof.lock`
 - manifest-backed `gof test` currently executes `src/main.gof` package targets as compile plus execute smoke

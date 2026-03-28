@@ -26,7 +26,13 @@ struct ModuleResolver<'provider, Provider> {
 #[derive(Debug)]
 enum ImportResolutionError {
     Manifest(PackageManifestError),
-    Unresolved { searched: Vec<PathBuf> },
+    ReservedStdlibConflict {
+        stdlib_path: PathBuf,
+        conflicts: Vec<String>,
+    },
+    Unresolved {
+        searched: Vec<PathBuf>,
+    },
 }
 
 pub fn parse_single_source(source: &SourceFile) -> Result<Module, Diagnostics> {
@@ -129,6 +135,19 @@ where
                 Ok(import_path) => import_path,
                 Err(ImportResolutionError::Manifest(error)) => {
                     diagnostics.push(package_manifest_diagnostic(&path, import.span, error));
+                    continue;
+                }
+                Err(ImportResolutionError::ReservedStdlibConflict {
+                    stdlib_path,
+                    conflicts,
+                }) => {
+                    diagnostics.push(reserved_stdlib_conflict_diagnostic(
+                        &path,
+                        &import.module,
+                        import.span,
+                        &stdlib_path,
+                        &conflicts,
+                    ));
                     continue;
                 }
                 Err(ImportResolutionError::Unresolved { searched }) => {
@@ -485,14 +504,55 @@ where
             .unwrap_or_else(|| Path::new("."))
             .join(format!("{module_name}.gof"));
         let mut searched = vec![same_directory_candidate.clone()];
-        if self.provider.is_file(&same_directory_candidate) {
+        let package_context = self
+            .package_context_for_source(current_module_path)
+            .map_err(ImportResolutionError::Manifest)?;
+        if let Some(stdlib_path) = self.provider.stdlib_module_path(module_name) {
+            let mut conflicts = Vec::new();
+            if self.provider.is_file(&same_directory_candidate) {
+                conflicts.push(format!(
+                    "same-directory module at {}",
+                    same_directory_candidate.display()
+                ));
+            }
+
+            if let Some(package_context) = package_context.as_ref() {
+                let package_root_candidate = package_context
+                    .source_root
+                    .join(format!("{module_name}.gof"));
+                if package_root_candidate != same_directory_candidate
+                    && self.provider.is_file(&package_root_candidate)
+                {
+                    conflicts.push(format!(
+                        "package-root module at {}",
+                        package_root_candidate.display()
+                    ));
+                }
+
+                if let Some(dependency) = package_context.dependencies.get(module_name) {
+                    conflicts.push(format!(
+                        "local dependency alias `{module_name}` targeting {}",
+                        dependency.entry_path.display()
+                    ));
+                }
+            }
+
+            searched.push(stdlib_path.clone());
+            if !conflicts.is_empty() {
+                return Err(ImportResolutionError::ReservedStdlibConflict {
+                    stdlib_path,
+                    conflicts,
+                });
+            }
+
+            if self.provider.is_file(&stdlib_path) {
+                return Ok(self.provider.normalize_path(&stdlib_path));
+            }
+        } else if self.provider.is_file(&same_directory_candidate) {
             return Ok(self.provider.normalize_path(&same_directory_candidate));
         }
 
-        if let Some(package_context) = self
-            .package_context_for_source(current_module_path)
-            .map_err(ImportResolutionError::Manifest)?
-        {
+        if let Some(package_context) = package_context {
             let package_root_candidate = package_context
                 .source_root
                 .join(format!("{module_name}.gof"));
@@ -570,6 +630,29 @@ fn import_resolution_missing_file_diagnostic(
     )
     .with_fix_it(
         "create the imported `.gof` entrypoint, add the missing local dependency file, or remove the import",
+    )
+    .with_source_path(source_path.to_path_buf())
+}
+
+fn reserved_stdlib_conflict_diagnostic(
+    source_path: &Path,
+    module_name: &str,
+    span: crate::source::Span,
+    stdlib_path: &Path,
+    conflicts: &[String],
+) -> Diagnostic {
+    Diagnostic::error(
+        "GOF3108",
+        format!("reserved stdlib import `{module_name}` conflicts with local code"),
+        format!(
+            "`{module_name}` is reserved for the shipped stdlib entrypoint at {}; conflicting local candidates: {}",
+            stdlib_path.display(),
+            conflicts.join(", ")
+        ),
+        span,
+    )
+    .with_fix_it(
+        "rename the local module or dependency alias; shipped stdlib imports `bytes`, `io`, `time`, `net`, and `http` are reserved",
     )
     .with_source_path(source_path.to_path_buf())
 }
@@ -863,5 +946,90 @@ mod tests {
                 .expect_err("invalid manifest should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3089"]);
+    }
+
+    #[test]
+    fn loads_reserved_stdlib_modules_from_the_shipped_stdlib_root() {
+        let temp = tempdir().expect("tempdir should exist");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(
+            &main_path,
+            "import http\nimport time\n\nfn main() -> int:\n    return 7\n",
+        )
+        .expect("main should be written");
+
+        let module =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main should load"))
+                .expect("stdlib imports should resolve");
+
+        assert_eq!(module.imports.len(), 2);
+        assert_eq!(module.functions.len(), 1);
+    }
+
+    #[test]
+    fn rejects_same_directory_modules_that_conflict_with_reserved_stdlib_imports() {
+        let temp = tempdir().expect("tempdir should exist");
+        let main_path = temp.path().join("main.gof");
+        let local_http = temp.path().join("http.gof");
+
+        fs::write(&local_http, "fn helper() -> int:\n    return 1\n")
+            .expect("local http module should be written");
+        fs::write(
+            &main_path,
+            "import http\n\nfn main() -> int:\n    return 7\n",
+        )
+        .expect("main should be written");
+
+        let diagnostics =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main should load"))
+                .expect_err("reserved stdlib conflicts should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3108"]);
+        assert!(
+            diagnostics
+                .render(&SourceFile::from_path(&main_path).expect("main should reload"))
+                .contains("same-directory module"),
+            "diagnostic should explain the local conflict",
+        );
+    }
+
+    #[test]
+    fn rejects_local_dependency_aliases_that_conflict_with_reserved_stdlib_imports() {
+        let temp = tempdir().expect("tempdir should exist");
+        let dep_root = temp.path().join("dep");
+        let dep_source_root = dep_root.join("src");
+        let app_root = temp.path().join("app");
+        let app_source_root = app_root.join("src");
+        let main_path = app_source_root.join("main.gof");
+
+        fs::create_dir_all(&dep_source_root).expect("dependency source root should exist");
+        fs::create_dir_all(&app_source_root).expect("app source root should exist");
+        fs::write(
+            dep_root.join("gof.mod"),
+            "module = \"example/dep\"\nedition = \"2026\"\n\n[dependencies]\n",
+        )
+        .expect("dependency manifest should be written");
+        fs::write(
+            dep_source_root.join("lib.gof"),
+            "fn helper() -> int:\n    return 1\n",
+        )
+        .expect("dependency lib should be written");
+        fs::write(
+            app_root.join("gof.mod"),
+            "module = \"example/app\"\nedition = \"2026\"\n\n[dependencies]\nhttp = { path = \"../dep\" }\n",
+        )
+        .expect("app manifest should be written");
+        fs::write(
+            &main_path,
+            "import http\n\nfn main() -> int:\n    return 7\n",
+        )
+        .expect("main should be written");
+
+        let diagnostics =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main should load"))
+                .expect_err("reserved stdlib dependency aliases should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3108"]);
     }
 }

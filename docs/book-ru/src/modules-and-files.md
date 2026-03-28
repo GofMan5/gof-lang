@@ -13,6 +13,18 @@ Bootstrap module system в `gof` по-прежнему маленький и с�
 2. `src/name.gof` внутри ближайшего package root с `gof.mod`
 3. `src/lib.gof` из локальной зависимости, объявленной как `name = { path = "../dep" }`
 
+Зарезервированные stdlib-импорты являются единственным явным исключением:
+
+- `import bytes`
+- `import io`
+- `import time`
+- `import net`
+- `import http`
+
+Эти имена резолвятся в shipped-модули под `stdlib/`, а не в локальные файлы
+или dependency aliases. Повторно использовать одно из этих имен в пользовательском
+коде нельзя: это compile error, а не shadowing-трюк.
+
 Same-directory imports продолжают работать как раньше.
 
 Package-root imports позволяют держать entrypoint в поддиректории, не теряя
@@ -96,6 +108,7 @@ gof mod resolve --dir package_app
 Сейчас он:
 
 - работает для same-directory imports
+- работает для shipped stdlib imports через зарезервированные module names
 - работает для package-root imports через ближайший `gof.mod`
 - работает для локальных path dependencies через `[dependencies]`
 - загружает файлы в один merged bootstrap module graph

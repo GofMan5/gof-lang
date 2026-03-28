@@ -30,6 +30,7 @@ The real goal is not feature count. Every phase of language development must:
 - `[~]` M4: minimal useful standard library for CLI and bot-oriented programs
 - `[~]` M5: concurrency semantics beyond task spawn and await
 - `[~]` M7: bootstrap-native build path on the road to direct codegen
+- `[~]` M10: service/network stdlib delivery and reserved import groundwork
 - Immediate mandatory result: keep stdlib side effects small, explicit, and allocation-transparent
 - Immediate semantic result: keep explicit recoverable error flow moving toward `Result`-based operational APIs
 - Second mandatory result: make message-passing concurrency honest and testable
@@ -332,6 +333,7 @@ Hard sequencing rule:
 - Checkpoints:
 - `[ ]` CP-M10-1: concurrency semantics strong enough for real service workers
 - `[ ]` CP-M10-2: network and service stdlib baseline
+- `[~]` CP-M10-2a: shipped stdlib module delivery plus reserved import names for `bytes`, `io`, `time`, `net`, and `http`
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

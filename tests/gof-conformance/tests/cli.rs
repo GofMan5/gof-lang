@@ -1715,6 +1715,43 @@ fn gof_test_recognizes_canonicalized_package_roots() {
 }
 
 #[test]
+fn gof_check_rejects_local_modules_that_conflict_with_reserved_stdlib_imports() {
+    let temp = tempdir().expect("tempdir should exist");
+    let main_path = temp.path().join("main.gof");
+    let local_http = temp.path().join("http.gof");
+
+    fs::write(&local_http, "fn helper() -> int:\n    return 1\n")
+        .expect("local http module should be written");
+    fs::write(
+        &main_path,
+        "import http\n\nfn main() -> int:\n    return 7\n",
+    )
+    .expect("main module should be written");
+
+    gof_command()
+        .arg("check")
+        .arg(&main_path)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3108"))
+        .stderr(predicate::str::contains("reserved stdlib import `http`"));
+}
+
+#[test]
+fn gof_run_executes_shipped_stdlib_import_smoke_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("stdlib_imports.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("0"));
+}
+
+#[test]
 fn gof_build_native_emits_runnable_host_executable() {
     let temp = tempdir().expect("tempdir should exist");
     let source = gof_conformance::workspace_root()
@@ -1838,4 +1875,44 @@ fn gof_build_native_preserves_manifest_backed_package_imports_across_working_dir
         String::from_utf8_lossy(&execution.stderr)
     );
     assert_eq!(String::from_utf8_lossy(&execution.stdout).trim(), "90");
+}
+
+#[test]
+fn gof_build_native_preserves_shipped_stdlib_imports_across_working_directories() {
+    let temp = tempdir().expect("tempdir should exist");
+    let main_path = temp.path().join("main.gof");
+    let output = temp.path().join("stdlib-native");
+    let built_binary = if cfg!(windows) {
+        output.with_extension("exe")
+    } else {
+        output.clone()
+    };
+
+    fs::write(
+        &main_path,
+        "import bytes\nimport http\nimport io\nimport net\nimport time\n\nfn main() -> int:\n    return 7\n",
+    )
+    .expect("main module should be written");
+
+    gof_command()
+        .arg("build")
+        .arg(&main_path)
+        .arg("--native")
+        .arg("--output")
+        .arg(&output)
+        .assert()
+        .success();
+
+    let run_dir = temp.path().join("stdlib-other-cwd");
+    fs::create_dir_all(&run_dir).expect("run directory should exist");
+    let execution = ProcessCommand::new(&built_binary)
+        .current_dir(&run_dir)
+        .output()
+        .expect("native binary should execute");
+    assert!(
+        execution.status.success(),
+        "native binary failed: {}",
+        String::from_utf8_lossy(&execution.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&execution.stdout).trim(), "7");
 }

@@ -65,7 +65,7 @@ gof test tests/fixtures                # run conformance suite
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `base64_encode(...)`, `base64_decode(...)`, `range`, `sleep(...)`, `unix_seconds()`, `unix_millis()` | stable |
 | JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` / `http_request(...)` | bootstrap |
-| Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
+| Same-directory imports, reserved shipped stdlib imports (`bytes` / `io` / `time` / `net` / `http`), and manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | `gof check --json [--stdin]` | stable compiler-backed diagnostics contract |
@@ -77,6 +77,18 @@ See the [language spec](spec/language-v1.md) for the full contract.
 Manifest-backed packages now require a committed, fresh `gof.lock` for `gof run`,
 `gof build`, and package-aware `gof test`. Refresh it explicitly with
 `gof mod resolve --dir <package-root>`.
+
+Shipped stdlib imports now resolve through reserved module names:
+
+- `import bytes`
+- `import io`
+- `import time`
+- `import net`
+- `import http`
+
+Those names no longer shadow to same-directory files or local dependency aliases.
+If user code tries to reuse one of those names, the compiler reports an explicit
+reserved-stdlib conflict instead of silently picking the wrong module graph.
 
 `gof run --watch` now gives a script-first fast edit-run loop for single-file
 scripts and executable packages. It keeps exactly one run in flight, batches

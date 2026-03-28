@@ -5,6 +5,19 @@ The current standard-library surface is deliberately small.
 That is not because the language wants to stay tiny. It is because the project
 does not want to teach unstable semantics as if they were settled.
 
+The shipped stdlib now also has a real import-delivery path. These module names
+are reserved and resolve through `stdlib/`:
+
+- `bytes`
+- `io`
+- `time`
+- `net`
+- `http`
+
+That does not mean their final API surface is finished. It means the language
+now has a real place to grow typed networking and stream primitives without
+stretching bootstrap builtins forever.
+
 ## Output and correctness checks
 
 ```gof

@@ -2,6 +2,17 @@
 
 The standard library is intentionally separate from `core`.
 
+Current first-wave shipped module names:
+
+- `bytes`
+- `io`
+- `time`
+- `net`
+- `http`
+
+These names are now reserved import targets. `import http` resolves to
+`stdlib/http.gof`, not to a same-directory module or local dependency alias.
+
 Planned first-wave areas:
 
 - collections

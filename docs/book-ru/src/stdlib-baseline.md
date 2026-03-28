@@ -5,6 +5,19 @@
 Это не потому, что язык хочет остаться игрушечным. Это потому, что проект не
 хочет учить нестабильной семантике как будто она уже устоялась.
 
+Shipped stdlib теперь также имеет реальный import-delivery path. Эти module names
+зарезервированы и резолвятся через `stdlib/`:
+
+- `bytes`
+- `io`
+- `time`
+- `net`
+- `http`
+
+Это не значит, что их финальный API surface уже завершен. Это значит, что у
+языка теперь есть реальная точка роста для typed networking и stream primitives
+без бесконечного растягивания bootstrap builtins.
+
 ## Output и correctness checks
 
 ```gof

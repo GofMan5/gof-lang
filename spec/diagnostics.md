@@ -119,3 +119,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3105`: invalid operand for bootstrap base64 helpers
 - `GOF3106`: invalid operand for structured bootstrap HTTP request helpers
 - `GOF3107`: invalid timeout for structured bootstrap HTTP request helpers
+- `GOF3108`: reserved stdlib import conflicts with local module or dependency names

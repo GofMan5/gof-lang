@@ -1650,4 +1650,32 @@ mod tests {
 
         assert_eq!(result.value.cli_text().as_deref(), Some("81"));
     }
+
+    #[test]
+    fn embedded_source_bundle_includes_reserved_stdlib_imports() {
+        let temp = tempdir().expect("tempdir should exist");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(
+            &main_path,
+            "import http\nimport time\n\nfn main() -> int:\n    return 7\n",
+        )
+        .expect("main module should exist");
+
+        let source = SourceFile::from_path(&main_path).expect("source should load");
+        let bundle =
+            build_embedded_source_bundle(&source).expect("embedded source bundle should build");
+        let result =
+            run_embedded_bundle_with_output(&bundle).expect("embedded bundle should execute");
+
+        assert_eq!(result.value.cli_text().as_deref(), Some("7"));
+        assert!(
+            bundle
+                .sources
+                .iter()
+                .any(|source| source.path().ends_with("stdlib\\http.gof")
+                    || source.path().ends_with("stdlib/http.gof")),
+            "embedded source bundle should preserve reserved stdlib imports",
+        );
+    }
 }

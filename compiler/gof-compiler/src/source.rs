@@ -3,6 +3,34 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+const RESERVED_STDLIB_MODULE_NAMES: &[&str] = &["bytes", "io", "time", "net", "http"];
+
+fn compiler_workspace_root() -> &'static PathBuf {
+    static ROOT: OnceLock<PathBuf> = OnceLock::new();
+    ROOT.get_or_init(|| {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+            .expect("compiler crate should live under the workspace root")
+    })
+}
+
+pub fn is_reserved_stdlib_module_name(module_name: &str) -> bool {
+    RESERVED_STDLIB_MODULE_NAMES.contains(&module_name)
+}
+
+pub fn stdlib_module_path(module_name: &str) -> Option<PathBuf> {
+    is_reserved_stdlib_module_name(module_name).then(|| {
+        normalize_source_path(
+            &compiler_workspace_root()
+                .join("stdlib")
+                .join(format!("{module_name}.gof")),
+        )
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFile {
@@ -39,6 +67,7 @@ pub trait SourceProvider {
     fn normalize_path(&self, path: &Path) -> PathBuf;
     fn is_file(&self, path: &Path) -> bool;
     fn load_source(&self, path: &Path) -> io::Result<SourceFile>;
+    fn stdlib_module_path(&self, module_name: &str) -> Option<PathBuf>;
     fn package_context_for_source(
         &self,
         source_path: &Path,
@@ -63,6 +92,10 @@ impl SourceProvider for FileSystemSourceProvider {
             normalized_path.clone(),
             std::fs::read_to_string(&normalized_path)?,
         ))
+    }
+
+    fn stdlib_module_path(&self, module_name: &str) -> Option<PathBuf> {
+        stdlib_module_path(module_name)
     }
 
     fn package_context_for_source(
@@ -150,6 +183,10 @@ impl SourceProvider for EmbeddedSourceProvider {
             })
     }
 
+    fn stdlib_module_path(&self, module_name: &str) -> Option<PathBuf> {
+        stdlib_module_path(module_name)
+    }
+
     fn package_context_for_source(
         &self,
         source_path: &Path,
@@ -195,11 +232,12 @@ impl Span {
 mod tests {
     use super::{
         EmbeddedPackageContext, EmbeddedSourceBundle, EmbeddedSourceProvider,
-        FileSystemSourceProvider, SourceFile, SourceProvider,
+        FileSystemSourceProvider, SourceFile, SourceProvider, is_reserved_stdlib_module_name,
+        stdlib_module_path,
     };
     use crate::package::{LocalDependency, PackageContext};
     use std::collections::BTreeMap;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn embedded_source_bundle_returns_its_entry_source() {
@@ -268,5 +306,35 @@ mod tests {
         let provider = FileSystemSourceProvider;
         let normalized = provider.normalize_path(PathBuf::from("relative-main.gof").as_path());
         assert!(normalized.is_absolute());
+    }
+
+    #[test]
+    fn stdlib_module_names_are_reserved_and_mapped_into_workspace_stdlib() {
+        assert!(is_reserved_stdlib_module_name("http"));
+        assert!(is_reserved_stdlib_module_name("bytes"));
+        assert!(!is_reserved_stdlib_module_name("math"));
+
+        let http_path = stdlib_module_path("http").expect("http should resolve to stdlib");
+        assert!(http_path.ends_with(Path::new("stdlib").join("http.gof")));
+        assert!(
+            stdlib_module_path("math").is_none(),
+            "non-stdlib names should not resolve into stdlib",
+        );
+    }
+
+    #[test]
+    fn embedded_source_provider_reuses_workspace_stdlib_paths() {
+        let http_path = stdlib_module_path("http").expect("http should resolve to stdlib");
+        let provider = EmbeddedSourceProvider::new(EmbeddedSourceBundle {
+            entry_path: PathBuf::from("/bundle/main.gof"),
+            sources: vec![SourceFile::new(&http_path, "\n")],
+            package_contexts: Vec::new(),
+        });
+
+        assert_eq!(
+            provider.stdlib_module_path("http"),
+            Some(http_path),
+            "embedded providers should keep the same reserved stdlib path contract",
+        );
     }
 }

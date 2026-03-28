@@ -13,6 +13,18 @@ pretending that a full package ecosystem already exists.
 2. `src/name.gof` inside the nearest package root with `gof.mod`
 3. `src/lib.gof` from a local path dependency declared as `name = { path = "../dep" }`
 
+Reserved stdlib imports are the one explicit exception:
+
+- `import bytes`
+- `import io`
+- `import time`
+- `import net`
+- `import http`
+
+Those names resolve to shipped modules under `stdlib/` instead of local files or
+dependency aliases. Reusing one of those names in user code is a compile error,
+not a shadowing trick.
+
 Same-directory imports still work exactly as before.
 
 Package-root imports make it possible to keep entrypoints in subdirectories while
@@ -96,6 +108,7 @@ Rules:
 Today the module graph:
 
 - works for same-directory imports
+- works for shipped stdlib imports through reserved module names
 - works for package-root imports through the nearest `gof.mod`
 - works for local path dependencies through `[dependencies]`
 - loads imported files into one merged bootstrap module graph
