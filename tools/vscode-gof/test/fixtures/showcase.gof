@@ -52,3 +52,8 @@ fn sample_time() -> Result[int, RuntimeError]:
     millis = unix_millis()?
     assert(millis >= seconds * 1000, "expected unix millis to be at least seconds * 1000")
     return Result.Ok(1)
+
+fn sample_yaml() -> Result[int, RuntimeError]:
+    config = yaml_parse("service: alpha\nport: 7")?
+    port = json_int(json_get(config, "port")?)?
+    return Result.Ok(port)

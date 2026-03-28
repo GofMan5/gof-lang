@@ -115,3 +115,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3101`: invalid embedded source bundle for bootstrap-native execution
 - `GOF3102`: invalid watch target for `gof run --watch`
 - `GOF3103`: invalid operand for bootstrap templating helpers
+- `GOF3104`: invalid operand for bootstrap YAML helpers

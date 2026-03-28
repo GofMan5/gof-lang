@@ -27,6 +27,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `time_report.gof`: explicit Unix wall-clock helpers through `unix_seconds()` and `unix_millis()`
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
 - `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers
+- `yaml_report.gof`: explicit YAML config parsing through `yaml_parse(...)` plus JSON helpers
 - `template_report.gof`: explicit `template_render(...)` over TOML-derived config data for script-friendly text generation
 - `process_capture.gof`: explicit `run_process(...)` orchestration with captured status, stdout, stderr, and argv metadata
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
@@ -79,6 +80,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `time_report.gof` -> `Result.Ok(value: 1)`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`
+- `yaml_report.gof` -> `Result.Ok(value: 17)`
 - `template_report.gof` -> `Result.Ok(value: service=alpha port=7 workers=5)`
 - `process_capture.gof` -> `Result.Ok(value: 7)` when `GOF_PROCESS_EXAMPLE` points to a command that exits successfully for `--help`
 - `concurrent_squares.gof` -> `225`

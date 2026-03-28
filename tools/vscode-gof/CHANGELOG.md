@@ -1,5 +1,11 @@
 # Change Log
 
+## 0.2.5
+
+- Added builtin syntax coverage for `yaml_parse()`
+- Added a YAML config snippet for script-first automation/config workflows
+- Kept the VS Code editor surface aligned with the new bootstrap YAML parsing contract
+
 ## 0.2.4
 
 - Added builtin syntax coverage for `unix_seconds()` and `unix_millis()`

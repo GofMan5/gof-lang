@@ -64,7 +64,7 @@ gof test tests/fixtures                # run conformance suite
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)`, `unix_seconds()`, `unix_millis()` | stable |
-| JSON, CSV, TOML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
+| JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
@@ -123,6 +123,10 @@ The script/data-wrangling slice now also has an explicit templating baseline
 through `template_render(template, values)`, which expands `{{key}}`
 placeholders from either `dict[...]` values or a top-level `json` object
 without introducing hidden framework state into the bootstrap runtime.
+
+Config/data ingestion now also includes `yaml_parse(text)`, which keeps YAML
+automation input on the same explicit `Result[json, RuntimeError]` path as
+`toml_parse(text)` without inventing a separate schema layer.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

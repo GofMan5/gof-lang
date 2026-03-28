@@ -69,7 +69,8 @@ test("snippet file includes core gof templates", async () => {
     "Process Capture",
     "Template Render",
     "Stdin Report",
-    "Time Report"
+    "Time Report",
+    "YAML Config"
   ]) {
     assert.ok(snippets[key], `missing snippet "${key}"`);
     assert.ok(snippets[key].prefix, `snippet "${key}" must define a prefix`);

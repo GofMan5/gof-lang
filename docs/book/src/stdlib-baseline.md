@@ -170,7 +170,7 @@ Current sequence-helper rules:
 - `min` and `max` currently support only `list[int]` and `list[string]`
 - sequence helpers are explicit allocation-visible transforms; they do not hide mutation
 
-## JSON, CSV, TOML, HTTP, and explicit retry delays
+## JSON, CSV, TOML, YAML, HTTP, and explicit retry delays
 
 ```gof
 fn notify(base: string) -> Result[string, RuntimeError]:
@@ -191,6 +191,8 @@ Current JSON, CSV, TOML, templating, and HTTP rules:
 - malformed CSV text or failed serialization surface as `RuntimeError.Csv(message)`
 - `toml_parse(text)` returns `Result[json, RuntimeError]`
 - unsupported TOML scalars outside the bootstrap `json` bridge surface as `RuntimeError.Toml(message)`
+- `yaml_parse(text)` returns `Result[json, RuntimeError]`
+- non-integer YAML numbers, non-string mapping keys, and tagged YAML values surface as `RuntimeError.Yaml(message)`
 - `template_render(template, values)` returns `Result[string, RuntimeError]`
 - `template_render(...)` accepts either `dict[...]` values or a top-level `json` object
 - `template_render(...)` renders explicit `{{key}}` placeholders and reports malformed placeholders or missing keys as `RuntimeError.Template(message)`
@@ -203,6 +205,16 @@ Current JSON, CSV, TOML, templating, and HTTP rules:
 fn main() -> Result[string, RuntimeError]:
     config = toml_parse("service = \"alpha\"\nport = 7")?
     return template_render("{{service}} listens on {{port}}", config)
+```
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    config = yaml_parse("service: alpha\nport: 7\nlimits:\n  workers: 5")?
+    limits = json_get(config, "limits")?
+    workers = json_int(json_get(limits, "workers")?)?
+    name = json_string(json_get(config, "service")?)?
+    port = json_int(json_get(config, "port")?)?
+    return Result.Ok(len(name) + workers + port)
 ```
 
 `template_render(...)` is intentionally narrow:

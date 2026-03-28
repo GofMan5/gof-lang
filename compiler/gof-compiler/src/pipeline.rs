@@ -1259,6 +1259,32 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_yaml_parse_builtin() {
+        let source = SourceFile::new(
+            "yaml_report.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    config = yaml_parse(\"service: alpha\\nport: 7\\nlimits:\\n  workers: 5\")?\n    limits = json_get(config, \"limits\")?\n    workers = json_int(json_get(limits, \"workers\")?)?\n    name = json_string(json_get(config, \"service\")?)?\n    port = json_int(json_get(config, \"port\")?)?\n    return Result.Ok(len(name) + workers + port)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected yaml_parse bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "yaml_parse"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_template_render_builtin() {
         let source = SourceFile::new(
             "template_report.gof",

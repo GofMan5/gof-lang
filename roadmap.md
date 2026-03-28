@@ -314,6 +314,7 @@ Hard sequencing rule:
 - `[x]` CP-M9-2c: explicit Unix wall-clock helpers for automation scripts through `unix_seconds()` and `unix_millis()`
 - `[~]` CP-M9-3: data transformation baseline suitable for real internal tooling
 - `[x]` CP-M9-3a: explicit `template_render(template, values)` baseline for dict/json-driven text generation in scripts
+- `[x]` CP-M9-3b: explicit `yaml_parse(text)` baseline for automation and CI-style config ingestion through the bootstrap `json` bridge
 - Exit criteria:
 - most tasks that would rationally be written in Python or Node for local automation can be written cleanly in `gof`
 - the language keeps explicit types and predictable costs even in scripting-heavy workflows

@@ -98,5 +98,14 @@
       "assert(${2:millis} >= ${1:seconds} * 1000, \"expected unix millis to be at least seconds * 1000\")"
     ],
     "description": "Capture explicit Unix wall-clock timestamps for automation scripts"
+  },
+  "YAML Config": {
+    "prefix": "gofyaml",
+    "body": [
+      "${1:config} = yaml_parse(${2:\"service: alpha\\nport: 7\"})?",
+      "${3:service} = json_string(json_get(${1:config}, \"service\")?)?",
+      "${4:port} = json_int(json_get(${1:config}, \"port\")?)?"
+    ],
+    "description": "Parse YAML config text through the bootstrap json bridge"
   }
 }

@@ -1,0 +1,7 @@
+fn main() -> Result[int, RuntimeError]:
+    config = yaml_parse("service: alpha\nport: 7\nlimits:\n  workers: 5")?
+    limits = json_get(config, "limits")?
+    workers = json_int(json_get(limits, "workers")?)?
+    name = json_string(json_get(config, "service")?)?
+    port = json_int(json_get(config, "port")?)?
+    return Result.Ok(len(name) + workers + port)

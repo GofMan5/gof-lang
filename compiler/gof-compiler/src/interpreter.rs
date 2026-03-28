@@ -6,6 +6,7 @@ use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
 use csv::{ReaderBuilder, WriterBuilder};
 use serde_json::Value as SerdeJsonValue;
+use serde_yaml::Value as YamlValue;
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
@@ -270,6 +271,51 @@ fn json_from_toml(value: TomlValue) -> Result<JsonValue, String> {
     }
 }
 
+fn json_from_yaml(value: YamlValue) -> Result<JsonValue, String> {
+    match value {
+        YamlValue::Null => Ok(JsonValue::Null),
+        YamlValue::Bool(value) => Ok(JsonValue::Bool(value)),
+        YamlValue::Number(number) => number.as_i64().map(JsonValue::Int).ok_or_else(|| {
+            format!(
+                "only integer YAML numbers are supported in the bootstrap json bridge (`{number}`)"
+            )
+        }),
+        YamlValue::String(value) => Ok(JsonValue::String(value)),
+        YamlValue::Sequence(values) => values
+            .into_iter()
+            .map(json_from_yaml)
+            .collect::<Result<Vec<_>, _>>()
+            .map(JsonValue::Array),
+        YamlValue::Mapping(entries) => entries
+            .into_iter()
+            .map(|(key, value)| match key {
+                YamlValue::String(key) => json_from_yaml(value).map(|json| (key, json)),
+                other => Err(format!(
+                    "YAML mapping keys must be strings in the bootstrap json bridge, got `{}`",
+                    yaml_type_name(&other)
+                )),
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()
+            .map(JsonValue::Object),
+        YamlValue::Tagged(tagged) => Err(format!(
+            "YAML tagged values are not supported in the bootstrap json bridge (`{}`)",
+            tagged.tag
+        )),
+    }
+}
+
+fn yaml_type_name(value: &YamlValue) -> &'static str {
+    match value {
+        YamlValue::Null => "null",
+        YamlValue::Bool(_) => "bool",
+        YamlValue::Number(_) => "number",
+        YamlValue::String(_) => "string",
+        YamlValue::Sequence(_) => "sequence",
+        YamlValue::Mapping(_) => "mapping",
+        YamlValue::Tagged(_) => "tagged",
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructValue {
     name: String,
@@ -413,6 +459,19 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                 },
                 EnumVariant {
                     name: "Time".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
+                    name: "Yaml".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
                         ty: crate::ast::TypeRef {
@@ -1228,6 +1287,14 @@ fn runtime_toml_error(message: impl Into<String>) -> Value {
     enum_value(
         "RuntimeError",
         "Toml",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
+fn runtime_yaml_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Yaml",
         vec![("message".to_string(), Value::String(message.into()))],
     )
 }
@@ -2929,6 +2996,20 @@ fn eval_expr(
 
             if callee == "toml_parse" {
                 return eval_toml_parse_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "yaml_parse" {
+                return eval_yaml_parse_builtin(
                     args,
                     scopes,
                     functions,
@@ -7544,6 +7625,51 @@ fn eval_toml_parse_builtin(
     })
 }
 
+fn eval_yaml_parse_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `yaml_parse`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `yaml_parse(text)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let text = eval_string_argument(
+        "yaml_parse",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3104",
+    )?;
+    Ok(match serde_yaml::from_str::<YamlValue>(&text) {
+        Ok(value) => match json_from_yaml(value) {
+            Ok(value) => result_ok(Value::Json(value)),
+            Err(message) => result_err(runtime_yaml_error(message)),
+        },
+        Err(error) => result_err(runtime_yaml_error(error.to_string())),
+    })
+}
+
 fn eval_json_stringify_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -9169,6 +9295,16 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_yaml_parse_builtin() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    config = yaml_parse(\"service: alpha\\nport: 7\\nlimits:\\n  workers: 5\")?\n    limits = json_get(config, \"limits\")?\n    workers = json_int(json_get(limits, \"workers\")?)?\n    name = json_string(json_get(config, \"service\")?)?\n    port = json_int(json_get(config, \"port\")?)?\n    return Result.Ok(len(name) + workers + port)\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 17)"));
+    }
+
+    #[test]
     fn evaluates_template_render_with_dict_and_json_contexts() {
         let value = run_source(
             "fn main() -> Result[int, RuntimeError]:\n    context: dict = {\"name\": \"alpha\", \"workers\": 5}\n    left = template_render(\"service {{ name }} has {{workers}} workers\", context)?\n    config = toml_parse(\"name = \\\"beta\\\"\\nport = 7\")?\n    right = template_render(\"{{name}} listens on {{port}}\", config)?\n    assert(left == \"service alpha has 5 workers\", \"expected rendered dict template\")\n    assert(right == \"beta listens on 7\", \"expected rendered json template\")\n    return Result.Ok(len(left) + len(right))\n",
@@ -9565,6 +9701,21 @@ mod tests {
                 .cli_text()
                 .as_deref()
                 .is_some_and(|text| text.contains("RuntimeError.Toml(message:"))
+        );
+    }
+
+    #[test]
+    fn yaml_parse_returns_runtime_errors_for_unsupported_yaml_shapes() {
+        let value = run_source(
+            "fn main() -> Result[json, RuntimeError]:\n    return yaml_parse(\"? [1, 2]\\n: bad\")\n",
+        )
+        .expect("yaml parse should return a runtime error value");
+
+        assert!(
+            value
+                .cli_text()
+                .as_deref()
+                .is_some_and(|text| text.contains("RuntimeError.Yaml(message:"))
         );
     }
 
