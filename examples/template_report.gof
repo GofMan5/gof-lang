@@ -1,0 +1,4 @@
+fn main() -> Result[string, RuntimeError]:
+    config = toml_parse("service = \"alpha\"\nport = 7\nworkers = 5")?
+    report = template_render("service={{service}} port={{port}} workers={{workers}}", config)?
+    return Result.Ok(report)

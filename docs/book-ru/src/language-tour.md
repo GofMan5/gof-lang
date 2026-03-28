@@ -93,6 +93,8 @@ Mutation в `gof` разрешена, но она не является silent d
 - `range(...)`
 - `sleep(...)`
 - `argv()`
+- `read_stdin()`
+- `read_stdin_lines()`
 - `env(...)`
 - `cwd()`
 - `run_process(...)`
@@ -124,6 +126,7 @@ Mutation в `gof` разрешена, но она не является silent d
 - `json_len(...)`
 - `json_string(...)`
 - `json_int(...)`
+- `template_render(...)`
 - `http_get(...)`
 - `http_post(...)`
 

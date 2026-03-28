@@ -20,6 +20,30 @@
 
 Запускает программу через bootstrap execution path.
 
+Теперь у `gof run` есть и script-first watch-режим:
+
+```bash
+gof run --watch program.gof -- --example arg
+```
+
+Текущий контракт watch-режима специально сделан простым и честным:
+
+- initial run стартует сразу
+- одновременно выполняется только один run
+- серия быстрых правок схлопывается через небольшой debounce
+- compile/runtime ошибки не убивают loop
+- loop использует тот же execution path, что и обычный `gof run`
+
+Для executable manifest-backed packages watch-режим отслеживает:
+
+- `src/` корневого пакета
+- корневые `gof.mod` и `gof.lock`
+- `src/` всех locked local dependencies
+- `gof.mod` всех locked local dependencies
+
+Если package graph становится stale, loop показывает текущую проблему
+lockfile/manifest и ждет следующего изменения вместо тихого завершения.
+
 ### `gof check`
 
 С:
@@ -98,6 +122,14 @@ CLI делает runnable host executable.
 - evaluator run
 - backend artifact build
 - bootstrap-native executable build
+
+Что этот срез пока не дает:
+
+- REPL
+- shebang/direct executable script UX
+- packaging/install flows для scripts
+- hot reload
+- incremental compilation reuse внутри watch-режима
 
 ## VS Code editor baseline
 

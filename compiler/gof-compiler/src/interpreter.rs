@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt::{Debug, Formatter};
 use std::fs;
+use std::io::Read;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -525,6 +526,19 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
                     span: Span::new(0, 0, 0),
                 },
                 EnumVariant {
+                    name: "Template".to_string(),
+                    fields: vec![crate::ast::EnumVariantField {
+                        name: "message".to_string(),
+                        ty: crate::ast::TypeRef {
+                            name: "string".to_string(),
+                            args: Vec::new(),
+                            span: Span::new(0, 0, 0),
+                        },
+                        span: Span::new(0, 0, 0),
+                    }],
+                    span: Span::new(0, 0, 0),
+                },
+                EnumVariant {
                     name: "HttpRequest".to_string(),
                     fields: vec![crate::ast::EnumVariantField {
                         name: "message".to_string(),
@@ -673,13 +687,43 @@ enum ChannelReceiveState {
     Cancelled,
 }
 
-#[derive(Clone, Default)]
-struct OutputBuffer(Arc<Mutex<String>>);
+#[derive(Clone, Debug)]
+struct OutputBuffer {
+    stdout: Arc<Mutex<String>>,
+    program_args: Arc<Vec<String>>,
+    stdin: Arc<Mutex<StdinState>>,
+}
+
+#[derive(Debug)]
+enum StdinState {
+    HostPending,
+    Provided(String),
+    Loaded(Result<String, String>),
+}
 
 impl OutputBuffer {
+    fn new(program_args: Vec<String>) -> Self {
+        Self::new_with_optional_stdin(program_args, None)
+    }
+
+    fn new_with_stdin(program_args: Vec<String>, stdin: String) -> Self {
+        Self::new_with_optional_stdin(program_args, Some(stdin))
+    }
+
+    fn new_with_optional_stdin(program_args: Vec<String>, stdin: Option<String>) -> Self {
+        Self {
+            stdout: Arc::new(Mutex::new(String::new())),
+            program_args: Arc::new(program_args),
+            stdin: Arc::new(Mutex::new(match stdin {
+                Some(text) => StdinState::Provided(text),
+                None => StdinState::HostPending,
+            })),
+        }
+    }
+
     fn push_line(&self, line: &str) {
         let mut buffer = self
-            .0
+            .stdout
             .lock()
             .expect("output buffer mutex should not be poisoned");
         buffer.push_str(line);
@@ -687,10 +731,44 @@ impl OutputBuffer {
     }
 
     fn snapshot(&self) -> String {
-        self.0
+        self.stdout
             .lock()
             .expect("output buffer mutex should not be poisoned")
             .clone()
+    }
+
+    fn program_args(&self) -> &[String] {
+        self.program_args.as_ref().as_slice()
+    }
+
+    fn stdin_text(&self) -> Result<String, String> {
+        let mut state = self
+            .stdin
+            .lock()
+            .expect("stdin buffer mutex should not be poisoned");
+        match &*state {
+            StdinState::Loaded(result) => result.clone(),
+            StdinState::Provided(text) => {
+                let text = text.clone();
+                *state = StdinState::Loaded(Ok(text.clone()));
+                Ok(text)
+            }
+            StdinState::HostPending => {
+                let mut text = String::new();
+                let result = std::io::stdin()
+                    .read_to_string(&mut text)
+                    .map(|_| text)
+                    .map_err(|error| error.to_string());
+                *state = StdinState::Loaded(result.clone());
+                result
+            }
+        }
+    }
+}
+
+impl Default for OutputBuffer {
+    fn default() -> Self {
+        Self::new(Vec::new())
     }
 }
 
@@ -1133,6 +1211,14 @@ fn runtime_toml_error(message: impl Into<String>) -> Value {
     )
 }
 
+fn runtime_template_error(message: impl Into<String>) -> Value {
+    enum_value(
+        "RuntimeError",
+        "Template",
+        vec![("message".to_string(), Value::String(message.into()))],
+    )
+}
+
 fn runtime_http_request_error(message: impl Into<String>) -> Value {
     enum_value(
         "RuntimeError",
@@ -1271,6 +1357,21 @@ pub fn run(module: &Module) -> Result<Value, Diagnostics> {
 }
 
 pub fn run_with_output(module: &Module) -> Result<ExecutionResult, Diagnostics> {
+    run_with_output_with_args(module, host_program_args())
+}
+
+pub fn run_with_output_with_args(
+    module: &Module,
+    program_args: Vec<String>,
+) -> Result<ExecutionResult, Diagnostics> {
+    run_with_output_with_args_and_optional_stdin(module, program_args, None)
+}
+
+fn run_with_output_with_args_and_optional_stdin(
+    module: &Module,
+    program_args: Vec<String>,
+    stdin: Option<String>,
+) -> Result<ExecutionResult, Diagnostics> {
     reset_select_arm_rotation();
 
     let functions = Arc::new(
@@ -1309,7 +1410,10 @@ pub fn run_with_output(module: &Module) -> Result<ExecutionResult, Diagnostics> 
         .collect::<HashMap<_, _>>();
     enum_table.extend(builtin_enum_table());
     let enums = Arc::new(enum_table);
-    let output = OutputBuffer::default();
+    let output = match stdin {
+        Some(stdin) => OutputBuffer::new_with_stdin(program_args, stdin),
+        None => OutputBuffer::new(program_args),
+    };
 
     let main = functions.get("main").cloned().ok_or_else(|| {
         Diagnostics(vec![
@@ -2363,7 +2467,15 @@ fn eval_expr(
             }
 
             if callee == "argv" {
-                return eval_argv_builtin(args, source_path, *span);
+                return eval_argv_builtin(args, output, source_path, *span);
+            }
+
+            if callee == "read_stdin" {
+                return eval_read_stdin_builtin(args, output, source_path, *span);
+            }
+
+            if callee == "read_stdin_lines" {
+                return eval_read_stdin_lines_builtin(args, output, source_path, *span);
             }
 
             if callee == "env" {
@@ -2870,6 +2982,20 @@ fn eval_expr(
 
             if callee == "csv_stringify" {
                 return eval_csv_stringify_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "template_render" {
+                return eval_template_render_builtin(
                     args,
                     scopes,
                     functions,
@@ -5185,7 +5311,12 @@ fn eval_assert_builtin(
     }
 }
 
-fn eval_argv_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResult<Value> {
+fn eval_argv_builtin(
+    args: &[Expr],
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
     if !args.is_empty() {
         return eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
@@ -5200,8 +5331,63 @@ fn eval_argv_builtin(args: &[Expr], source_path: &Path, span: Span) -> EvalResul
     }
 
     Ok(Value::List(
-        host_program_args().into_iter().map(Value::String).collect(),
+        output
+            .program_args()
+            .iter()
+            .cloned()
+            .map(Value::String)
+            .collect(),
     ))
+}
+
+fn eval_read_stdin_builtin(
+    args: &[Expr],
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if !args.is_empty() {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `read_stdin`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `read_stdin()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    Ok(match output.stdin_text() {
+        Ok(text) => result_ok(Value::String(text)),
+        Err(error) => result_err(runtime_io_error(error)),
+    })
+}
+
+fn eval_read_stdin_lines_builtin(
+    args: &[Expr],
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if !args.is_empty() {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `read_stdin_lines`",
+                format!("expected 0 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `read_stdin_lines()` without arguments")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    Ok(match output.stdin_text() {
+        Ok(text) => result_ok(Value::List(collect_text_lines(&text))),
+        Err(error) => result_err(runtime_io_error(error)),
+    })
 }
 
 fn eval_env_builtin(
@@ -5820,6 +6006,13 @@ fn eval_string_list_argument(
     Ok(strings)
 }
 
+fn collect_text_lines(contents: &str) -> Vec<Value> {
+    contents
+        .lines()
+        .map(|line| Value::String(line.to_string()))
+        .collect()
+}
+
 fn eval_int_argument(
     builtin_name: &str,
     expr: &Expr,
@@ -6079,12 +6272,7 @@ fn eval_read_lines_builtin(
     };
 
     Ok(match fs::read_to_string(&path_text) {
-        Ok(contents) => result_ok(Value::List(
-            contents
-                .lines()
-                .map(|line| Value::String(line.to_string()))
-                .collect(),
-        )),
+        Ok(contents) => result_ok(Value::List(collect_text_lines(&contents))),
         Err(error) => result_err(runtime_io_error(error.to_string())),
     })
 }
@@ -7780,6 +7968,148 @@ fn eval_csv_stringify_builtin(
     Ok(result_ok(Value::String(csv_text)))
 }
 
+fn eval_template_render_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 2 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `template_render`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `template_render(template, values)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    let template = eval_string_argument(
+        "template_render",
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+        "GOF3103",
+    )?;
+    let values = eval_expr(
+        &args[1],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )?;
+
+    Ok(match render_template_text(&template, &values) {
+        Ok(rendered) => result_ok(Value::String(rendered)),
+        Err(message) => result_err(runtime_template_error(message)),
+    })
+}
+
+fn render_template_text(template: &str, values: &Value) -> Result<String, String> {
+    let mut rendered = String::new();
+    let mut remainder = template;
+
+    while let Some(start) = remainder.find("{{") {
+        rendered.push_str(&remainder[..start]);
+        let placeholder = &remainder[start + 2..];
+        let Some(end) = placeholder.find("}}") else {
+            return Err(
+                "template placeholder starting with `{{` must be closed with `}}`".to_string(),
+            );
+        };
+
+        let key = placeholder[..end].trim();
+        if key.is_empty() {
+            return Err("template placeholders cannot be empty".to_string());
+        }
+        if key.contains('{') || key.contains('}') {
+            return Err(format!(
+                "template placeholder `{key}` cannot contain nested braces"
+            ));
+        }
+
+        rendered.push_str(&template_context_value(values, key)?);
+        remainder = &placeholder[end + 2..];
+    }
+
+    rendered.push_str(remainder);
+    Ok(rendered)
+}
+
+fn template_context_value(values: &Value, key: &str) -> Result<String, String> {
+    match values {
+        Value::Dict(dict) => dict
+            .get(key)
+            .ok_or_else(|| format!("template key `{key}` is missing from the dict context"))
+            .and_then(|value| render_template_value(value, key)),
+        Value::Json(JsonValue::Object(entries)) => entries
+            .get(key)
+            .map(render_json_template_value)
+            .ok_or_else(|| format!("template key `{key}` is missing from the json object")),
+        Value::Json(other) => Err(format!(
+            "template_render expects a top-level json object context, got `{}`",
+            json_template_type_name(other)
+        )),
+        other => Err(format!(
+            "template_render expects `dict[...]` or `json`, got `{}`",
+            value_name(other)
+        )),
+    }
+}
+
+fn render_template_value(value: &Value, key: &str) -> Result<String, String> {
+    match value {
+        Value::String(value) => Ok(value.clone()),
+        Value::Int(value) => Ok(value.to_string()),
+        Value::Bool(value) => Ok(value.to_string()),
+        Value::Json(value) => Ok(render_json_template_value(value)),
+        Value::Struct(_) | Value::Enum(_) | Value::List(_) | Value::Dict(_) => value
+            .cli_text()
+            .ok_or_else(|| format!("template key `{key}` cannot be rendered as text")),
+        Value::Channel(_) | Value::CancelToken(_) | Value::Task(_) | Value::Unit => Err(format!(
+            "template key `{key}` resolves to non-printable `{}`",
+            value_name(value)
+        )),
+    }
+}
+
+fn render_json_template_value(value: &JsonValue) -> String {
+    match value {
+        JsonValue::Null => "null".to_string(),
+        JsonValue::Bool(value) => value.to_string(),
+        JsonValue::Int(value) => value.to_string(),
+        JsonValue::String(value) => value.clone(),
+        JsonValue::Array(_) | JsonValue::Object(_) => value.cli_text(),
+    }
+}
+
+fn json_template_type_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "bool",
+        JsonValue::Int(_) => "int",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
+    }
+}
+
 fn eval_http_get_builtin(
     args: &[Expr],
     scopes: &ScopeStack,
@@ -8096,7 +8426,7 @@ fn condition_span(stmt: &Stmt) -> Span {
 mod tests {
     use super::{
         CancelTokenValue, ChannelHandle, ChannelReceiveState, TaskBoundary, TaskHandle, TaskPanic,
-        Value, result_ok, run, run_with_output,
+        Value, result_ok, run, run_with_output, run_with_output_with_args,
     };
     use crate::ast::parse;
     use crate::cst::CstModule;
@@ -8125,6 +8455,34 @@ mod tests {
         run_with_output(&module)
     }
 
+    fn run_source_with_output_and_args(
+        text: &str,
+        args: &[&str],
+    ) -> Result<super::ExecutionResult, crate::diagnostics::Diagnostics> {
+        let source = SourceFile::new("test.gof", text);
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        run_with_output_with_args(
+            &module,
+            args.iter().map(|value| (*value).to_string()).collect(),
+        )
+    }
+
+    fn run_source_with_output_and_args_and_stdin(
+        text: &str,
+        args: &[&str],
+        stdin: &str,
+    ) -> Result<super::ExecutionResult, crate::diagnostics::Diagnostics> {
+        let source = SourceFile::new("test.gof", text);
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        super::run_with_output_with_args_and_optional_stdin(
+            &module,
+            args.iter().map(|value| (*value).to_string()).collect(),
+            Some(stdin.to_string()),
+        )
+    }
+
     #[test]
     fn evaluates_go_and_await() {
         let value = run_source(
@@ -8132,6 +8490,47 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(41));
+    }
+
+    #[test]
+    fn argv_uses_explicit_program_args_for_the_execution_context() {
+        let result = run_source_with_output_and_args(
+            "fn main() -> int:\n    values = argv()\n    return len(values)\n",
+            &["alpha", "beta", "gamma"],
+        )
+        .expect("program should run");
+
+        assert_eq!(result.value, Value::Int(3));
+    }
+
+    #[test]
+    fn read_stdin_helpers_use_the_explicit_execution_context() {
+        let result = run_source_with_output_and_args_and_stdin(
+            "fn main() -> Result[string, RuntimeError]:\n    text = read_stdin()?\n    lines = read_stdin_lines()?\n    headline = first(lines)?\n    return template_render(\"chars={{chars}} first={{first}} lines={{lines}}\", {\"chars\": to_string(len(text)), \"first\": headline, \"lines\": to_string(len(lines))})\n",
+            &[],
+            "alpha\nbeta\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(
+            result.value.cli_text().as_deref(),
+            Some("Result.Ok(value: chars=11 first=alpha lines=2)")
+        );
+    }
+
+    #[test]
+    fn read_stdin_helpers_return_empty_results_for_empty_input() {
+        let result = run_source_with_output_and_args_and_stdin(
+            "fn main() -> Result[int, RuntimeError]:\n    text = read_stdin()?\n    lines = read_stdin_lines()?\n    return Result.Ok(len(text) + len(lines))\n",
+            &[],
+            "",
+        )
+        .expect("program should run");
+
+        assert_eq!(
+            result.value.cli_text().as_deref(),
+            Some("Result.Ok(value: 0)")
+        );
     }
 
     #[test]
@@ -8643,6 +9042,16 @@ mod tests {
     }
 
     #[test]
+    fn evaluates_template_render_with_dict_and_json_contexts() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    context: dict = {\"name\": \"alpha\", \"workers\": 5}\n    left = template_render(\"service {{ name }} has {{workers}} workers\", context)?\n    config = toml_parse(\"name = \\\"beta\\\"\\nport = 7\")?\n    right = template_render(\"{{name}} listens on {{port}}\", config)?\n    assert(left == \"service alpha has 5 workers\", \"expected rendered dict template\")\n    assert(right == \"beta listens on 7\", \"expected rendered json template\")\n    return Result.Ok(len(left) + len(right))\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 44)"));
+    }
+
+    #[test]
     fn evaluates_dict_view_builtins() {
         let value = run_source(
             "fn main() -> int:\n    metrics: dict = {\"critical\": 5, \"ok\": 7, \"warn\": 2}\n    names = keys(metrics)\n    counts = values(metrics)\n    assert(names[0] == \"critical\", \"expected deterministic order\")\n    mut total = 0\n    for name in names:\n        total = total + len(name)\n    for count in counts:\n        total = total + count\n    return total\n",
@@ -8991,6 +9400,18 @@ mod tests {
     }
 
     #[test]
+    fn template_render_rejects_invalid_context_operands() {
+        let value = run_source(
+            "fn render(values: list) -> Result[string, RuntimeError]:\n    return template_render(\"hello {{name}}\", values)\nfn main() -> Result[string, RuntimeError]:\n    return render([\"gof\"])\n",
+        )
+        .expect("template_render should return a runtime error value");
+
+        assert!(value.cli_text().as_deref().is_some_and(|text| {
+            text.contains("template_render expects `dict[...]` or `json`, got `list`")
+        }));
+    }
+
+    #[test]
     fn csv_parse_returns_runtime_errors_for_malformed_csv() {
         let value = run_source(
             "fn main() -> Result[list[list[string]], RuntimeError]:\n    return csv_parse(\"name,count\\nalpha,2\\nbeta\")\n",
@@ -9017,6 +9438,21 @@ mod tests {
                 .cli_text()
                 .as_deref()
                 .is_some_and(|text| text.contains("RuntimeError.Toml(message:"))
+        );
+    }
+
+    #[test]
+    fn template_render_returns_runtime_errors_for_missing_keys() {
+        let value = run_source(
+            "fn main() -> Result[string, RuntimeError]:\n    return template_render(\"hello {{name}}\", {\"title\": \"gof\"})\n",
+        )
+        .expect("template_render should return a runtime error value");
+
+        assert!(
+            value
+                .cli_text()
+                .as_deref()
+                .is_some_and(|text| text.contains("RuntimeError.Template(message:"))
         );
     }
 

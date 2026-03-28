@@ -90,7 +90,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `len(...)` for lists, strings, and dicts
 - builtin `print(...)` for one printable value
 - builtin `assert(...)` for boolean correctness contracts
-- builtin `argv()`, `env(...)`, `cwd()`, and `run_process(...)` for process and environment access
+- builtin `argv()`, `read_stdin()`, `read_stdin_lines()`, `env(...)`, `cwd()`, and `run_process(...)` for process and environment access
 - builtin `read_file(...)`, `write_file(...)`, `read_lines(...)`, `write_lines(...)`, `exists(...)`, `read_dir(...)`, `mkdir(...)`, and `remove_file(...)` for bootstrap filesystem work
 - builtin `path_join(...)`, `path_dir(...)`, `path_base(...)`, and `path_ext(...)` for explicit string-based path handling
 - builtin `dict()` and `insert(...)` for bootstrap key/value data
@@ -107,6 +107,7 @@ The bootstrap compiler in this repository currently supports:
 - builtin `json_parse(...)`, `json_stringify(...)`, `json_get(...)`, `json_index(...)`, `json_len(...)`, `json_string(...)`, and `json_int(...)` for explicit JSON handling
 - builtin `csv_parse(...)` and `csv_stringify(...)` for explicit CSV handling
 - builtin `toml_parse(...)` for explicit TOML config handling through the bootstrap `json` bridge
+- builtin `template_render(...)` for explicit `{{key}}` text rendering over dict/json automation data
 - builtin `http_get(...)` and `http_post(...)` for bootstrap HTTP work
 
 ## Bootstrap binding rules
@@ -145,7 +146,7 @@ The bootstrap compiler in this repository currently supports:
 - payload enum construction currently requires payload values compatible with the declared payload field types
 - `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
 - `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
-- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
+- `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
 - `match value:` currently requires `value` to resolve to a known enum or `Result`
 - each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
 - `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
@@ -172,7 +173,7 @@ The bootstrap compiler in this repository currently supports:
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
-- `argv()`, `env(name)`, `cwd()`, and `run_process(program, args)` are currently builtins recognized by the compiler and evaluator
+- `argv()`, `read_stdin()`, `read_stdin_lines()`, `env(name)`, `cwd()`, and `run_process(program, args)` are currently builtins recognized by the compiler and evaluator
 - `read_file(path)`, `write_file(path, contents)`, `read_lines(path)`, `write_lines(path, lines)`, `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` are currently builtins recognized by the compiler and evaluator
 - `path_join(left, right)`, `path_dir(path)`, `path_base(path)`, and `path_ext(path)` are currently builtins recognized by the compiler and evaluator
 - `dict()` and `insert(dict, key, value)` are currently builtins recognized by the compiler and evaluator
@@ -188,6 +189,10 @@ The bootstrap compiler in this repository currently supports:
 - `run_process(program, args)` currently requires `(string, list[string])` and returns `Result[json, RuntimeError]`
 - `run_process(program, args)` currently executes the program directly without shell interpolation
 - `run_process(program, args)` currently captures `program`, `args`, `status`, `stdout`, and `stderr` inside the returned JSON object
+- `read_stdin()` currently accepts no arguments and returns `Result[string, RuntimeError]`
+- `read_stdin_lines()` currently accepts no arguments and returns `Result[list[string], RuntimeError]`
+- `read_stdin()` and `read_stdin_lines()` currently share one cached stdin snapshot per program run
+- `read_stdin_lines()` currently follows the same line splitting rules as `read_lines(path)`
 - `dict` currently accepts no arguments and returns an empty dict value
 - `insert` currently accepts `(dict, string, value)` and returns a new dict
 - `keys` currently accepts exactly one dict and returns `list[string]` in deterministic key order
@@ -240,6 +245,9 @@ The bootstrap compiler in this repository currently supports:
 - `csv_stringify` currently accepts exactly one `list[list[string]]` rows value and returns `Result[string, RuntimeError]`
 - `toml_parse` currently accepts exactly one TOML text string and returns `Result[json, RuntimeError]`
 - `toml_parse` currently rejects TOML values outside the bootstrap `json` bridge such as floats and datetimes with `RuntimeError.Toml(message)`
+- `template_render` currently accepts `(string, dict[...])` or `(string, json)` and returns `Result[string, RuntimeError]`
+- `template_render` currently renders explicit `{{key}}` placeholders from dict entries or a top-level JSON object without nested lookup semantics
+- `template_render` currently reports malformed placeholders, missing keys, non-object JSON contexts, and non-printable dict values as `RuntimeError.Template(message)`
 - `http_get` currently accepts exactly one string URL and returns `Result[string, RuntimeError]`
 - `http_post` currently accepts `(url, body)` or `(url, body, content_type)` and returns `Result[string, RuntimeError]`
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types

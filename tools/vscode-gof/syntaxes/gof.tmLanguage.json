@@ -219,7 +219,7 @@
       "patterns": [
         {
           "name": "support.function.builtin.gof",
-          "match": "\\b(?:print|assert|argv|env|cwd|run_process|read_file|write_file|read_lines|write_lines|exists|read_dir|mkdir|remove_file|path_join|path_dir|path_base|path_ext|dict|insert|keys|values|append|first|last|slice|reverse|sort|min|max|contains|trim|split|join|starts_with|ends_with|parse_int|to_string|range|sleep|channel|close|send|recv|cancel_token|cancel|is_cancelled|timeout_token|cancel_after|json_parse|json_stringify|json_get|json_index|json_len|json_string|json_int|toml_parse|csv_parse|csv_stringify|http_get|http_post|await_result)\\b(?=\\s*\\()"
+          "match": "\\b(?:print|assert|argv|read_stdin|read_stdin_lines|env|cwd|run_process|read_file|write_file|read_lines|write_lines|exists|read_dir|mkdir|remove_file|path_join|path_dir|path_base|path_ext|dict|insert|keys|values|append|first|last|slice|reverse|sort|min|max|contains|trim|split|join|starts_with|ends_with|parse_int|to_string|range|sleep|channel|close|send|recv|cancel_token|cancel|is_cancelled|timeout_token|cancel_after|json_parse|json_stringify|json_get|json_index|json_len|json_string|json_int|toml_parse|csv_parse|csv_stringify|template_render|http_get|http_post|await_result)\\b(?=\\s*\\()"
         }
       ]
     },

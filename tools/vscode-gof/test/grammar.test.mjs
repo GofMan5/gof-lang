@@ -128,4 +128,7 @@ test("highlights core gof syntax constructs", async () => {
   expectScope(lines, tokenLines, 33, "csv_stringify", "support.function.builtin.gof");
   expectScope(lines, tokenLines, 36, "# syntax smoke", "comment.line.number-sign.gof");
   expectScope(lines, tokenLines, 39, "run_process", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 42, "template_render", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 45, "read_stdin", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 46, "read_stdin_lines", "support.function.builtin.gof");
 });

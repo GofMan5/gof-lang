@@ -1,10 +1,16 @@
 # Change Log
 
+## 0.2.3
+
+- Added builtin syntax/snippet coverage for `read_stdin()` and `read_stdin_lines()`
+- Kept shell-pipeline stdin helpers aligned with the compiler/runtime stdlib surface
+
 ## 0.2.2
 
 - Added single-flight diagnostics lifecycle so each document keeps only one live compiler check
 - Cancel stale background `gof check --json --stdin` processes during rapid edits, refreshes, and closes
 - Kept compiler-backed diagnostics aligned with the CLI without spawning piles of obsolete checks
+- Extended builtin syntax/snippet coverage for `template_render(...)`
 
 ## 0.2.1
 

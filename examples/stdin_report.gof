@@ -1,0 +1,6 @@
+fn main() -> Result[string, RuntimeError]:
+    text = read_stdin()?
+    lines = read_stdin_lines()?
+    first_line = first(lines)?
+    context = {"chars": to_string(len(text)), "first": first_line, "lines": to_string(len(lines))}
+    return template_render("chars={{chars}} first={{first}} lines={{lines}}", context)

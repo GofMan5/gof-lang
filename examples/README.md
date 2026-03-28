@@ -23,8 +23,10 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `hello_print.gof`: builtin `print(...)` plus normal return value rendering
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
 - `line_io.gof`: line-oriented file I/O with `write_lines(...)`, `read_lines(...)`, and explicit cleanup
+- `stdin_report.gof`: explicit stdin ingestion through `read_stdin()` and `read_stdin_lines()` for shell-style pipelines
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
 - `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers
+- `template_report.gof`: explicit `template_render(...)` over TOML-derived config data for script-friendly text generation
 - `process_capture.gof`: explicit `run_process(...)` orchestration with captured status, stdout, stderr, and argv metadata
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
@@ -72,8 +74,10 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `hello_print.gof` -> prints `gof ready`, `42`, then `7`
 - `io_roundtrip.gof` -> `Result.Ok(value: 6)`
 - `line_io.gof` -> `Result.Ok(value: 19)`
+- `stdin_report.gof` -> `Result.Ok(value: chars=11 first=alpha lines=2)` for stdin `alpha\nbeta\n`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`
+- `template_report.gof` -> `Result.Ok(value: service=alpha port=7 workers=5)`
 - `process_capture.gof` -> `Result.Ok(value: 7)` when `GOF_PROCESS_EXAMPLE` points to a command that exits successfully for `--help`
 - `concurrent_squares.gof` -> `225`
 - `task_result_propagation.gof` -> ``RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)``

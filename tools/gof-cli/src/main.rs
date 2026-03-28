@@ -8,7 +8,7 @@ use gof_compiler::{
         find_package_root, package_library_entry_path, package_main_entry_path,
         write_lockfile_for_directory,
     },
-    run_module_with_output,
+    run_module_with_output, run_module_with_output_and_args,
 };
 use gof_runtime::profile;
 use serde_json::json;
@@ -17,6 +17,8 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+mod watch;
 
 #[derive(Parser)]
 #[command(name = "gof", about = "Bootstrap toolchain for the gof language")]
@@ -43,8 +45,19 @@ enum Command {
 #[derive(Args)]
 struct FileInput {
     input: PathBuf,
+    #[arg(short = 'w', long)]
+    watch: bool,
+    #[arg(long, default_value_t = 150)]
+    debounce_ms: u64,
     #[arg(last = true)]
     args: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RunTarget {
+    entry_path: PathBuf,
+    package_root: Option<PathBuf>,
+    compile_mode: CompileMode,
 }
 
 #[derive(Args)]
@@ -218,18 +231,15 @@ fn check_file(args: CheckArgs) -> Result<()> {
 }
 
 fn run_file(args: FileInput) -> Result<()> {
-    let _program_args = &args.args;
-    let resolved_input = resolve_source_input_path(&args.input)?;
-    ensure_package_lockfile(&resolved_input, "run")?;
-    let source = SourceFile::from_path(&resolved_input)?;
-    let result = run_module_with_output(&source).map_err(|error| render_error(&source, error))?;
-    if !result.stdout.is_empty() {
-        print!("{}", result.stdout);
+    let target = resolve_run_target(&args.input)?;
+    if args.watch {
+        if target.compile_mode != CompileMode::Executable {
+            return Err(render_watch_target_error(&target));
+        }
+        return watch::run_watch_loop(target, args.args, args.debounce_ms);
     }
-    if let Some(rendered) = result.value.cli_text() {
-        println!("{rendered}");
-    }
-    Ok(())
+
+    execute_run_target(&target, &args.args)
 }
 
 fn test_fixtures(args: TestArgs) -> Result<()> {
@@ -327,6 +337,15 @@ fn resolve_source_input_path(input: &Path) -> Result<PathBuf> {
     Ok(input.to_path_buf())
 }
 
+fn resolve_run_target(input: &Path) -> Result<RunTarget> {
+    let resolved_input = resolve_source_input_path(input)?;
+    Ok(RunTarget {
+        package_root: find_package_root(&resolved_input),
+        compile_mode: compile_mode_for_entry_path(&resolved_input),
+        entry_path: normalize_source_path(&resolved_input),
+    })
+}
+
 fn resolve_package_test_input(input: &Path) -> Result<Option<PathBuf>> {
     if input.is_file() {
         return Ok(Some(input.to_path_buf()));
@@ -375,6 +394,24 @@ fn run_package_test(entry_path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn execute_run_target(target: &RunTarget, program_args: &[String]) -> Result<()> {
+    ensure_package_lockfile(&target.entry_path, "run")?;
+    let source = SourceFile::from_path(&target.entry_path)?;
+    let result = run_module_with_output_and_args(&source, program_args)
+        .map_err(|error| render_error(&source, error))?;
+    render_execution_result(&result);
+    Ok(())
+}
+
+fn render_execution_result(result: &gof_compiler::ExecutionResult) {
+    if !result.stdout.is_empty() {
+        print!("{}", result.stdout);
+    }
+    if let Some(rendered) = result.value.cli_text() {
+        println!("{rendered}");
+    }
 }
 
 fn ensure_package_lockfile(source_path: &Path, operation: &str) -> Result<()> {
@@ -529,7 +566,7 @@ fn build_native_host_executable(source: &SourceFile, output: &Path) -> Result<()
     fs::write(project_dir.join("Cargo.toml"), cargo_toml)?;
 
     let runner = format!(
-        "use gof_compiler::{{EmbeddedSourceBundle, run_embedded_bundle_with_output}};\n\nconst EMBEDDED_BUNDLE: &str = {serialized_bundle:?};\n\nfn main() {{\n    let bundle: EmbeddedSourceBundle = serde_json::from_str(EMBEDDED_BUNDLE)\n        .expect(\"embedded source bundle should deserialize\");\n    match run_embedded_bundle_with_output(&bundle) {{\n        Ok(result) => {{\n            if !result.stdout.is_empty() {{\n                print!(\"{{}}\", result.stdout);\n            }}\n            if let Some(rendered) = result.value.cli_text() {{\n                println!(\"{{rendered}}\");\n            }}\n        }}\n        Err(error) => {{\n            let source = bundle\n                .entry_source()\n                .expect(\"embedded source bundle should contain entry source\");\n            eprintln!(\"{{}}\", error.render(&source));\n            std::process::exit(1);\n        }}\n    }}\n}}\n"
+        "use gof_compiler::{{EmbeddedSourceBundle, run_embedded_bundle_with_output_and_args}};\n\nconst EMBEDDED_BUNDLE: &str = {serialized_bundle:?};\n\nfn main() {{\n    let bundle: EmbeddedSourceBundle = serde_json::from_str(EMBEDDED_BUNDLE)\n        .expect(\"embedded source bundle should deserialize\");\n    let program_args = std::env::args().skip(1).collect::<Vec<_>>();\n    match run_embedded_bundle_with_output_and_args(&bundle, &program_args) {{\n        Ok(result) => {{\n            if !result.stdout.is_empty() {{\n                print!(\"{{}}\", result.stdout);\n            }}\n            if let Some(rendered) = result.value.cli_text() {{\n                println!(\"{{rendered}}\");\n            }}\n        }}\n        Err(error) => {{\n            let source = bundle\n                .entry_source()\n                .expect(\"embedded source bundle should contain entry source\");\n            eprintln!(\"{{}}\", error.render(&source));\n            std::process::exit(1);\n        }}\n    }}\n}}\n"
     );
     fs::write(src_dir.join("main.rs"), runner)?;
 
@@ -762,6 +799,13 @@ fn render_package_error_with_operation(error: PackageGraphError, operation: &str
             display_path(&start)
         )),
     }
+}
+
+fn render_watch_target_error(target: &RunTarget) -> anyhow::Error {
+    anyhow!(format!(
+        "error[GOF3102]: `gof run --watch` requires an executable target\n  note: `{}` resolves to a library entrypoint\n  help: watch a single-file script or a package with `src/main.gof`",
+        display_path(&target.entry_path)
+    ))
 }
 
 fn package_error_code(error: &PackageGraphError) -> &'static str {

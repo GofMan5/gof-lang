@@ -37,3 +37,12 @@ fn encode_rows(rows: list[list[string]]) -> Result[string, RuntimeError]:
 
 fn spawn_tool(path: string) -> Result[json, RuntimeError]:
     return run_process(path, ["--help"])
+
+fn render_notice(data: json) -> Result[string, RuntimeError]:
+    return template_render("{{name}}", data)
+
+fn consume_stdin() -> Result[list[string], RuntimeError]:
+    text = read_stdin()?
+    lines = read_stdin_lines()?
+    assert(len(text) >= len(lines), "stdin text should be at least as long as its line count")
+    return Result.Ok(lines)

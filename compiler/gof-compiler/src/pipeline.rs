@@ -4,7 +4,10 @@ use crate::cst::CstModule;
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::formatter::format_module;
 use crate::hir::{HirModule, lower as lower_hir};
-use crate::interpreter::{ExecutionResult, Value, run_with_output as run_interpreter_with_output};
+use crate::interpreter::{
+    ExecutionResult, Value, run_with_output as run_interpreter_with_output,
+    run_with_output_with_args as run_interpreter_with_output_with_args,
+};
 use crate::mir::{MirModule, lower as lower_mir};
 use crate::module_graph::{load_module_graph_with_provider, parse_single_source};
 use crate::package::find_package_context_for_source;
@@ -17,7 +20,7 @@ use crate::ssa::{SsaModule, lower as lower_ssa};
 use crate::typed_hir::{TypedModule, lower as lower_typed};
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {
     Library,
     Executable,
@@ -119,6 +122,14 @@ pub fn run_module_with_output(source: &SourceFile) -> Result<ExecutionResult, Di
     run_interpreter_with_output(&compiled.ast)
 }
 
+pub fn run_module_with_output_and_args(
+    source: &SourceFile,
+    program_args: &[String],
+) -> Result<ExecutionResult, Diagnostics> {
+    let compiled = compile_source(source, CompileMode::Executable)?;
+    run_interpreter_with_output_with_args(&compiled.ast, program_args.to_vec())
+}
+
 pub fn run_embedded_bundle_with_output(
     bundle: &EmbeddedSourceBundle,
 ) -> Result<ExecutionResult, Diagnostics> {
@@ -128,6 +139,18 @@ pub fn run_embedded_bundle_with_output(
         .map_err(|error| package_bundle_diagnostic(bundle, error))?;
     let compiled = compile_source_with_provider(&entry_source, CompileMode::Executable, &provider)?;
     run_interpreter_with_output(&compiled.ast)
+}
+
+pub fn run_embedded_bundle_with_output_and_args(
+    bundle: &EmbeddedSourceBundle,
+    program_args: &[String],
+) -> Result<ExecutionResult, Diagnostics> {
+    let provider = EmbeddedSourceProvider::new(bundle.clone());
+    let entry_source = bundle
+        .entry_source()
+        .map_err(|error| package_bundle_diagnostic(bundle, error))?;
+    let compiled = compile_source_with_provider(&entry_source, CompileMode::Executable, &provider)?;
+    run_interpreter_with_output_with_args(&compiled.ast, program_args.to_vec())
 }
 
 fn package_manifest_diagnostic(
@@ -1081,6 +1104,48 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_stdin_builtins() {
+        let source = SourceFile::new(
+            "stdin_report.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    text = read_stdin()?\n    lines = read_stdin_lines()?\n    return Result.Ok(len(text) + len(lines))\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected stdin text bind, got {other:?}"),
+        }
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+            }
+            other => panic!("expected stdin lines bind, got {other:?}"),
+        }
+
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "read_stdin"
+                ))
+        );
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "read_stdin_lines"
+                ))
+        );
+    }
+
+    #[test]
     fn pipeline_supports_csv_builtins() {
         let source = SourceFile::new(
             "csv_inventory.gof",
@@ -1147,6 +1212,32 @@ mod tests {
                 .any(|value| matches!(
                     &value.instruction,
                     SsaInstruction::Call { callee, .. } if callee == "toml_parse"
+                ))
+        );
+    }
+
+    #[test]
+    fn pipeline_supports_template_render_builtin() {
+        let source = SourceFile::new(
+            "template_report.gof",
+            "fn main() -> Result[int, RuntimeError]:\n    config = toml_parse(\"name = \\\"alpha\\\"\\nport = 7\")?\n    rendered = template_render(\"{{name}} listens on {{port}}\", config)?\n    return Result.Ok(len(rendered))\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        match &compiled.typed_hir.functions[0].body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected template_render bind, got {other:?}"),
+        }
+        assert!(
+            compiled.ssa.functions[0]
+                .values
+                .iter()
+                .any(|value| matches!(
+                    &value.instruction,
+                    SsaInstruction::Call { callee, .. } if callee == "template_render"
                 ))
         );
     }

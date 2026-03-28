@@ -20,6 +20,31 @@ language easy to operate, not just nice to read.
 
 Runs the source program through the bootstrap execution path.
 
+There is now also a script-first watch mode:
+
+```bash
+gof run --watch program.gof -- --example arg
+```
+
+The current watch contract is intentionally simple and honest:
+
+- initial run starts immediately
+- only one run is active at a time
+- rapid edits are batched through a small debounce window
+- compile/runtime failures do not kill the loop
+- the loop keeps using the same execution path as normal `gof run`
+
+For executable manifest-backed packages, watch mode tracks:
+
+- the root package `src/`
+- the root `gof.mod`
+- the root `gof.lock`
+- every locked local dependency `src/`
+- every locked local dependency `gof.mod`
+
+If the package graph becomes stale, the loop reports the current lockfile or
+manifest problem and waits for the next change instead of silently exiting.
+
 ### `gof check`
 
 With:
@@ -102,6 +127,14 @@ That is why this book keeps distinguishing:
 - bootstrap-native executable build
 
 Those are different things, and a serious language should teach that difference clearly.
+
+What this slice still does not provide:
+
+- REPL
+- shebang or direct executable script UX
+- script packaging/install flows
+- hot reload
+- incremental compilation reuse inside watch mode
 
 ## VS Code editor baseline
 

@@ -36,6 +36,8 @@ fn main() -> Result[int, RuntimeError]:
 Current operational baseline is intentionally explicit:
 
 - `argv()` returns CLI arguments
+- `read_stdin()` reads one cached stdin snapshot as text
+- `read_stdin_lines()` exposes the same stdin snapshot through explicit line splitting
 - `env(name)` reads one environment variable
 - `cwd()` returns the current working directory
 - `run_process(program, args)` executes a program directly without shell interpolation and returns captured `program`, `args`, `status`, `stdout`, and `stderr` inside `Result[json, RuntimeError]`
@@ -62,6 +64,24 @@ fn main() -> Result[int, RuntimeError]:
 - it does not hide quoting or escaping rules
 - it keeps argv shape explicit through `list[string]`
 - it returns captured output as data instead of printing it implicitly
+
+Shell-style stdin ingestion stays equally explicit:
+
+```gof
+fn main() -> Result[string, RuntimeError]:
+    text = read_stdin()?
+    lines = read_stdin_lines()?
+    first_line = first(lines)?
+    return template_render("chars={{chars}} first={{first}} lines={{lines}}", {
+        "chars": len(text),
+        "first": first_line,
+        "lines": len(lines),
+    })
+```
+
+- `read_stdin()` and `read_stdin_lines()` share one cached stdin snapshot per run
+- both helpers keep stdin access inside explicit `Result` flow
+- `read_stdin_lines()` follows the same line semantics as `read_lines(path)`
 
 ## Collection helpers
 
@@ -151,7 +171,7 @@ fn notify(base: string) -> Result[string, RuntimeError]:
     return Result.Ok(status)
 ```
 
-Current JSON, CSV, TOML, and HTTP rules:
+Current JSON, CSV, TOML, templating, and HTTP rules:
 
 - `json_parse(text)` returns `Result[json, RuntimeError]`
 - `json_get(value, key)` and `json_index(value, index)` keep JSON traversal explicit
@@ -161,10 +181,26 @@ Current JSON, CSV, TOML, and HTTP rules:
 - malformed CSV text or failed serialization surface as `RuntimeError.Csv(message)`
 - `toml_parse(text)` returns `Result[json, RuntimeError]`
 - unsupported TOML scalars outside the bootstrap `json` bridge surface as `RuntimeError.Toml(message)`
+- `template_render(template, values)` returns `Result[string, RuntimeError]`
+- `template_render(...)` accepts either `dict[...]` values or a top-level `json` object
+- `template_render(...)` renders explicit `{{key}}` placeholders and reports malformed placeholders or missing keys as `RuntimeError.Template(message)`
 - `http_get(url)` is the current bootstrap HTTP read path
 - `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
 - `sleep(milliseconds)` makes retry and backoff intent explicit instead of hiding it in framework magic
 - request failures and non-success HTTP statuses become `RuntimeError` values
+
+```gof
+fn main() -> Result[string, RuntimeError]:
+    config = toml_parse("service = \"alpha\"\nport = 7")?
+    return template_render("{{service}} listens on {{port}}", config)
+```
+
+`template_render(...)` is intentionally narrow:
+
+- it is explicit text expansion, not a full template engine
+- it resolves only top-level keys
+- it keeps missing-data failures explicit through `RuntimeError.Template(...)`
+- it works well with `dict[...]` values and TOML/JSON-driven automation data without inventing a framework layer
 
 That slice is intentionally narrow, but it is already enough for a long-polling
 Telegram bot baseline.

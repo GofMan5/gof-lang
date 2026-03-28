@@ -45,6 +45,7 @@ After installation, open a new shell and use `gof` directly. Rust is not require
 
 ```bash
 gof run examples/geometry.gof          # run a program
+gof run --watch examples/geometry.gof  # rerun on edits
 gof check examples/geometry.gof        # compile-only validation
 gof mod resolve --dir examples/package_app
 gof build app.gof --native             # build a native executable
@@ -62,12 +63,13 @@ gof test tests/fixtures                # run conformance suite
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
-| `print`, `assert`, `argv`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
-| JSON, CSV, and TOML helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
+| `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `range`, `sleep(...)` | stable |
+| JSON, CSV, TOML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` | bootstrap |
 | Same-directory imports plus manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | `gof check --json [--stdin]` | stable compiler-backed diagnostics contract |
+| `gof run --watch [--debounce-ms] <target> [-- ...args]` | bootstrap serial edit-run loop for scripts and executable packages |
 | Formatter, conformance tests | stable |
 
 See the [language spec](spec/language-v1.md) for the full contract.
@@ -75,6 +77,17 @@ See the [language spec](spec/language-v1.md) for the full contract.
 Manifest-backed packages now require a committed, fresh `gof.lock` for `gof run`,
 `gof build`, and package-aware `gof test`. Refresh it explicitly with
 `gof mod resolve --dir <package-root>`.
+
+`gof run --watch` now gives a script-first fast edit-run loop for single-file
+scripts and executable packages. It keeps exactly one run in flight, batches
+rapid edits with a small debounce window, and reuses the same execution path as
+normal `gof run` so compile/runtime failures stay visible instead of being
+hidden behind watch-specific shortcuts.
+
+For manifest-backed packages, watch mode always monitors the root package and
+refreshes dependency watch roots from the current fresh `gof.lock` graph. If
+the package graph becomes stale, the loop reports the package error and waits
+for the next change instead of exiting.
 
 Package-aware `gof test` is intentionally split today:
 
@@ -97,6 +110,15 @@ The automation stdlib now also has an explicit process orchestration baseline
 through `run_process(program, args)`, which executes a program directly without
 shell interpolation and returns captured `status`, `stdout`, `stderr`, and
 argv metadata inside a `Result[json, RuntimeError]` report.
+
+Shell-oriented scripts can now read process input explicitly through
+`read_stdin()` and `read_stdin_lines()`, which cache one stdin snapshot per run
+and keep shell pipeline data flow inside normal `Result` contracts.
+
+The script/data-wrangling slice now also has an explicit templating baseline
+through `template_render(template, values)`, which expands `{{key}}`
+placeholders from either `dict[...]` values or a top-level `json` object
+without introducing hidden framework state into the bootstrap runtime.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

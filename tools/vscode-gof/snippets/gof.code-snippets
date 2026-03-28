@@ -72,5 +72,22 @@
       "${5:stdout} = json_string(json_get(${1:report}, \"stdout\")?)?"
     ],
     "description": "Run a process explicitly and inspect the captured JSON report"
+  },
+  "Template Render": {
+    "prefix": "goftmpl",
+    "body": [
+      "${1:context}: dict = {\"name\": ${2:\"gof\"}}",
+      "${3:rendered} = template_render(${4:\"hello {{name}}\"}, ${1:context})?"
+    ],
+    "description": "Render explicit {{key}} placeholders from dict/json automation data"
+  },
+  "Stdin Report": {
+    "prefix": "gofstdin",
+    "body": [
+      "${1:text} = read_stdin()?",
+      "${2:lines} = read_stdin_lines()?",
+      "${3:first_line} = first(${2:lines})?"
+    ],
+    "description": "Read one cached stdin snapshot as text and lines"
   }
 }

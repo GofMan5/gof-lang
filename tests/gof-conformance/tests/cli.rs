@@ -4,9 +4,10 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
-use std::process::Command as ProcessCommand;
-use std::sync::{Arc, Mutex};
+use std::process::{Child, Command as ProcessCommand, Stdio};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
+use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 fn gof_command() -> Command {
@@ -15,6 +16,151 @@ fn gof_command() -> Command {
         .current_dir(gof_conformance::workspace_root())
         .args(["run", "-q", "-p", "gof-cli", "--bin", "gof", "--"]);
     command
+}
+
+fn gof_binary_path() -> &'static Path {
+    static GOF_BINARY: OnceLock<std::path::PathBuf> = OnceLock::new();
+    GOF_BINARY.get_or_init(|| {
+        let status = ProcessCommand::new("cargo")
+            .current_dir(gof_conformance::workspace_root())
+            .args(["build", "-q", "-p", "gof-cli", "--bin", "gof"])
+            .status()
+            .expect("cargo build for gof binary should run");
+        assert!(status.success(), "gof binary build should succeed");
+
+        let mut path = gof_conformance::workspace_root()
+            .join("target")
+            .join("debug")
+            .join("gof");
+        if cfg!(windows) {
+            path.set_extension("exe");
+        }
+        path
+    })
+}
+
+struct LiveOutputProcess {
+    child: Child,
+    stdout: Arc<Mutex<String>>,
+    stderr: Arc<Mutex<String>>,
+    stdout_thread: Option<thread::JoinHandle<()>>,
+    stderr_thread: Option<thread::JoinHandle<()>>,
+}
+
+impl LiveOutputProcess {
+    fn spawn<I, S>(args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<std::ffi::OsStr>,
+    {
+        let mut child = ProcessCommand::new(gof_binary_path())
+            .current_dir(gof_conformance::workspace_root())
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("gof process should spawn");
+
+        let stdout = Arc::new(Mutex::new(String::new()));
+        let stderr = Arc::new(Mutex::new(String::new()));
+        let stdout_thread = Some(spawn_output_collector(
+            child.stdout.take().expect("stdout pipe should exist"),
+            stdout.clone(),
+        ));
+        let stderr_thread = Some(spawn_output_collector(
+            child.stderr.take().expect("stderr pipe should exist"),
+            stderr.clone(),
+        ));
+
+        Self {
+            child,
+            stdout,
+            stderr,
+            stdout_thread,
+            stderr_thread,
+        }
+    }
+
+    fn wait_for_stdout(&self, needle: &str, timeout: Duration) {
+        self.wait_for_buffer(&self.stdout, needle, timeout);
+    }
+
+    fn wait_for_stderr(&self, needle: &str, timeout: Duration) {
+        self.wait_for_buffer(&self.stderr, needle, timeout);
+    }
+
+    fn wait_for_buffer(&self, buffer: &Arc<Mutex<String>>, needle: &str, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let snapshot = buffer
+                .lock()
+                .expect("buffer mutex should not be poisoned")
+                .clone();
+            if snapshot.contains(needle) {
+                return;
+            }
+            if Instant::now() >= deadline {
+                panic!(
+                    "timed out waiting for {:?}\nstdout:\n{}\nstderr:\n{}",
+                    needle,
+                    self.stdout
+                        .lock()
+                        .expect("stdout mutex should not be poisoned"),
+                    self.stderr
+                        .lock()
+                        .expect("stderr mutex should not be poisoned")
+                );
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn terminate(&mut self) {
+        if self
+            .child
+            .try_wait()
+            .expect("child status should be readable")
+            .is_none()
+        {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+        if let Some(handle) = self.stdout_thread.take() {
+            let _ = handle.join();
+        }
+        if let Some(handle) = self.stderr_thread.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for LiveOutputProcess {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+fn spawn_output_collector<R>(mut reader: R, target: Arc<Mutex<String>>) -> thread::JoinHandle<()>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut chunk = [0u8; 2048];
+        loop {
+            match reader.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(read) => {
+                    let text = String::from_utf8_lossy(&chunk[..read]);
+                    target
+                        .lock()
+                        .expect("collector mutex should not be poisoned")
+                        .push_str(&text);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    })
 }
 
 fn normalize_path_for_assert(path: &Path) -> String {
@@ -100,6 +246,10 @@ fn write_library_package(root: &Path) -> std::path::PathBuf {
     )
     .expect("library source should exist");
     package_root
+}
+
+fn write_watch_script(path: &Path, body: &str) {
+    fs::write(path, body).expect("watch script should be written");
 }
 
 #[test]
@@ -463,6 +613,178 @@ fn gof_run_requires_lockfile_for_manifest_backed_packages() {
 }
 
 #[test]
+fn gof_run_watch_reruns_single_file_scripts_after_edits() {
+    let temp = tempdir().expect("tempdir should exist");
+    let script = temp.path().join("watch_single.gof");
+    write_watch_script(&script, "fn main() -> int:\n    return 1\n");
+
+    let process = LiveOutputProcess::spawn([
+        "run",
+        "--watch",
+        "--debounce-ms",
+        "50",
+        script.to_str().expect("script path should be valid utf-8"),
+    ]);
+    process.wait_for_stderr("[watch] watching for changes", Duration::from_secs(30));
+    process.wait_for_stdout("1", Duration::from_secs(30));
+
+    write_watch_script(&script, "fn main() -> int:\n    return 2\n");
+
+    process.wait_for_stderr(
+        "[watch] change detected; rerunning",
+        Duration::from_secs(30),
+    );
+    process.wait_for_stdout("2", Duration::from_secs(30));
+}
+
+#[test]
+fn gof_run_watch_preserves_trailing_args_across_reruns() {
+    let temp = tempdir().expect("tempdir should exist");
+    let script = temp.path().join("watch_args.gof");
+    write_watch_script(
+        &script,
+        "fn main() -> int:\n    values = argv()\n    return len(values)\n",
+    );
+
+    let process = LiveOutputProcess::spawn([
+        "run",
+        "--watch",
+        "--debounce-ms",
+        "50",
+        script.to_str().expect("script path should be valid utf-8"),
+        "--",
+        "alpha",
+        "beta",
+    ]);
+    process.wait_for_stdout("2", Duration::from_secs(30));
+
+    write_watch_script(
+        &script,
+        "fn main() -> int:\n    values = argv()\n    return len(values) + 1\n",
+    );
+
+    process.wait_for_stdout("3", Duration::from_secs(30));
+}
+
+#[test]
+fn gof_run_watch_keeps_running_across_runtime_failures() {
+    let temp = tempdir().expect("tempdir should exist");
+    let script = temp.path().join("watch_fail.gof");
+    write_watch_script(&script, "fn main() -> int:\n    return 1 / 0\n");
+
+    let process = LiveOutputProcess::spawn([
+        "run",
+        "--watch",
+        "--debounce-ms",
+        "50",
+        script.to_str().expect("script path should be valid utf-8"),
+    ]);
+    process.wait_for_stderr("GOF3068", Duration::from_secs(30));
+    process.wait_for_stderr(
+        "[watch] run failed; waiting for changes",
+        Duration::from_secs(30),
+    );
+
+    write_watch_script(&script, "fn main() -> int:\n    return 7\n");
+
+    process.wait_for_stdout("7", Duration::from_secs(30));
+}
+
+#[test]
+fn gof_run_watch_tracks_locked_local_package_dependencies() {
+    let temp = tempdir().expect("tempdir should exist");
+    let (app_root, math_root) = write_local_package_pair(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success();
+
+    let process = LiveOutputProcess::spawn([
+        "run",
+        "--watch",
+        "--debounce-ms",
+        "50",
+        app_root
+            .to_str()
+            .expect("package path should be valid utf-8"),
+    ]);
+    process.wait_for_stdout("90", Duration::from_secs(30));
+
+    fs::write(
+        math_root.join("src").join("lib.gof"),
+        "fn square(value: int) -> int:\n    return value * value * value\n",
+    )
+    .expect("dependency source should update");
+
+    process.wait_for_stdout("756", Duration::from_secs(30));
+}
+
+#[test]
+fn gof_run_watch_reports_stale_lockfiles_without_stopping() {
+    let temp = tempdir().expect("tempdir should exist");
+    let (app_root, _) = write_local_package_pair(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success();
+
+    let process = LiveOutputProcess::spawn([
+        "run",
+        "--watch",
+        "--debounce-ms",
+        "50",
+        app_root
+            .to_str()
+            .expect("package path should be valid utf-8"),
+    ]);
+    process.wait_for_stdout("90", Duration::from_secs(30));
+
+    fs::write(
+        app_root.join("gof.mod"),
+        "module = \"example/package_app\"\nedition = \"2027\"\n\n[dependencies]\npackage_math = { path = \"../package_math\" }\n",
+    )
+    .expect("manifest should update");
+    process.wait_for_stderr("GOF3091", Duration::from_secs(30));
+    process.wait_for_stderr(
+        "[watch] run failed; waiting for changes",
+        Duration::from_secs(30),
+    );
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .success();
+
+    fs::write(
+        app_root.join("src").join("main.gof"),
+        "import package_math\n\nfn main() -> int:\n    return square(9) + square(3) + 1\n",
+    )
+    .expect("main source should update after lock refresh");
+
+    process.wait_for_stdout("91", Duration::from_secs(30));
+}
+
+#[test]
+fn gof_run_watch_rejects_library_targets() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_library_package(temp.path());
+
+    gof_command()
+        .arg("run")
+        .arg("--watch")
+        .arg(package_root.join("src").join("lib.gof"))
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3102"))
+        .stderr(predicate::str::contains("executable target"));
+}
+
+#[test]
 fn gof_run_rejects_stale_package_lockfiles() {
     let temp = tempdir().expect("tempdir should exist");
     let (app_root, _) = write_local_package_pair(temp.path());
@@ -657,6 +979,23 @@ fn gof_run_executes_line_io_example() {
 }
 
 #[test]
+fn gof_run_executes_stdin_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("stdin_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .write_stdin("alpha\nbeta\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Result.Ok(value: chars=11 first=alpha lines=2)",
+        ));
+}
+
+#[test]
 fn gof_run_executes_csv_inventory_example() {
     let example = gof_conformance::workspace_root()
         .join("examples")
@@ -682,6 +1021,22 @@ fn gof_run_executes_config_report_example() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Result.Ok(value: 17)"));
+}
+
+#[test]
+fn gof_run_executes_template_report_example() {
+    let example = gof_conformance::workspace_root()
+        .join("examples")
+        .join("template_report.gof");
+
+    gof_command()
+        .arg("run")
+        .arg(example)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Result.Ok(value: service=alpha port=7 workers=5)",
+        ));
 }
 
 #[test]

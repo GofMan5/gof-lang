@@ -418,6 +418,13 @@ fn builtin_enum_signatures() -> HashMap<String, EnumSignature> {
                     }],
                 },
                 EnumVariantSignature {
+                    name: "Template".to_string(),
+                    fields: vec![EnumVariantFieldSignature {
+                        name: "message".to_string(),
+                        ty: Type::String,
+                    }],
+                },
+                EnumVariantSignature {
                     name: "HttpRequest".to_string(),
                     fields: vec![EnumVariantFieldSignature {
                         name: "message".to_string(),
@@ -534,6 +541,8 @@ enum CallKind {
     BuiltinSleep,
     BuiltinAssert,
     BuiltinArgv,
+    BuiltinReadStdin,
+    BuiltinReadStdinLines,
     BuiltinEnv,
     BuiltinCwd,
     BuiltinRunProcess,
@@ -573,6 +582,7 @@ enum CallKind {
     BuiltinTomlParse,
     BuiltinCsvParse,
     BuiltinCsvStringify,
+    BuiltinTemplateRender,
     BuiltinHttpGet,
     BuiltinHttpPost,
     Function,
@@ -2211,6 +2221,8 @@ fn lower_expr(
                     | CallKind::BuiltinSleep
                     | CallKind::BuiltinAssert
                     | CallKind::BuiltinArgv
+                    | CallKind::BuiltinReadStdin
+                    | CallKind::BuiltinReadStdinLines
                     | CallKind::BuiltinEnv
                     | CallKind::BuiltinCwd
                     | CallKind::BuiltinRunProcess
@@ -2250,6 +2262,7 @@ fn lower_expr(
                     | CallKind::BuiltinTomlParse
                     | CallKind::BuiltinCsvParse
                     | CallKind::BuiltinCsvStringify
+                    | CallKind::BuiltinTemplateRender
                     | CallKind::BuiltinHttpGet
                     | CallKind::BuiltinHttpPost
                     | CallKind::Enum
@@ -2860,6 +2873,12 @@ fn validate_call(
         CallKind::BuiltinArgv => {
             validate_no_argument_call("argv", args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinReadStdin => {
+            validate_no_argument_call("read_stdin", args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinReadStdinLines => {
+            validate_no_argument_call("read_stdin_lines", args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinEnv => {
             validate_env_call(args, span, diagnostics, source_path);
         }
@@ -2994,6 +3013,9 @@ fn validate_call(
         }
         CallKind::BuiltinCsvStringify => {
             validate_csv_stringify_call(args, span, diagnostics, source_path);
+        }
+        CallKind::BuiltinTemplateRender => {
+            validate_template_render_call(args, span, diagnostics, source_path);
         }
         CallKind::BuiltinHttpGet => {
             validate_single_string_argument_call("http_get", args, span, diagnostics, source_path);
@@ -3504,6 +3526,10 @@ fn resolve_call_kind(
         CallKind::BuiltinAssert
     } else if callee == "argv" {
         CallKind::BuiltinArgv
+    } else if callee == "read_stdin" {
+        CallKind::BuiltinReadStdin
+    } else if callee == "read_stdin_lines" {
+        CallKind::BuiltinReadStdinLines
     } else if callee == "env" {
         CallKind::BuiltinEnv
     } else if callee == "cwd" {
@@ -3582,6 +3608,8 @@ fn resolve_call_kind(
         CallKind::BuiltinCsvParse
     } else if callee == "csv_stringify" {
         CallKind::BuiltinCsvStringify
+    } else if callee == "template_render" {
+        CallKind::BuiltinTemplateRender
     } else if callee == "http_get" {
         CallKind::BuiltinHttpGet
     } else if callee == "http_post" {
@@ -3627,6 +3655,13 @@ fn call_return_type(
         CallKind::BuiltinSleep => Type::Unit,
         CallKind::BuiltinAssert => Type::Unit,
         CallKind::BuiltinArgv => Type::list(Type::String),
+        CallKind::BuiltinReadStdin => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinReadStdinLines => Type::result(
+            Type::list(Type::String),
+            Type::Enum("RuntimeError".to_string()),
+        ),
         CallKind::BuiltinEnv => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
         CallKind::BuiltinCwd => Type::result(Type::String, Type::Enum("RuntimeError".to_string())),
         CallKind::BuiltinRunProcess => {
@@ -3700,6 +3735,9 @@ fn call_return_type(
             Type::Enum("RuntimeError".to_string()),
         ),
         CallKind::BuiltinCsvStringify => {
+            Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
+        }
+        CallKind::BuiltinTemplateRender => {
             Type::result(Type::String, Type::Enum("RuntimeError".to_string()))
         }
         CallKind::BuiltinHttpGet => {
@@ -6352,6 +6390,56 @@ fn validate_csv_stringify_call(
     }
 }
 
+fn validate_template_render_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `template_render`",
+                format!("expected 2 arguments, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `template_render(template, values)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::String | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3103",
+                "`template_render` requires a string template as its first argument",
+                format!("this template resolves to `{}`", args[0].ty.display_name()),
+                args[0].span,
+            )
+            .with_fix_it("pass a string template like `\"hello {{name}}\"`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    if !matches!(args[1].ty, Type::Dict(_) | Type::Json | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3103",
+                "`template_render` requires `dict[...]` or `json` values as its second argument",
+                format!(
+                    "this values argument resolves to `{}`",
+                    args[1].ty.display_name()
+                ),
+                args[1].span,
+            )
+            .with_fix_it("pass a dict or a top-level json object as the template context")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_http_post_call(
     args: &[TypedExpr],
     span: Span,
@@ -7814,6 +7902,27 @@ mod tests {
                 Box::new(Type::Enum("RuntimeError".to_string()))
             )
         );
+    }
+
+    #[test]
+    fn supports_stdin_builtins() {
+        let module = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    text = read_stdin()?\n    lines = read_stdin_lines()?\n    assert(len(text) >= len(lines), \"expected input text to be at least as large as its line count\")\n    return Result.Ok(len(text) + len(lines))\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected stdin text bind, got {other:?}"),
+        }
+        match &module.functions[0].body[1] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::List(Box::new(Type::String)));
+            }
+            other => panic!("expected stdin lines bind, got {other:?}"),
+        }
     }
 
     #[test]

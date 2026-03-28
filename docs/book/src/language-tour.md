@@ -93,6 +93,8 @@ Today the bootstrap language surface includes:
 - `range(...)`
 - `sleep(...)`
 - `argv()`
+- `read_stdin()`
+- `read_stdin_lines()`
 - `env(...)`
 - `cwd()`
 - `run_process(...)`
@@ -124,6 +126,7 @@ Today the bootstrap language surface includes:
 - `json_len(...)`
 - `json_string(...)`
 - `json_int(...)`
+- `template_render(...)`
 - `http_get(...)`
 - `http_post(...)`
 
