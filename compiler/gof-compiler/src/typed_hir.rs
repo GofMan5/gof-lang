@@ -540,6 +540,7 @@ enum CallKind {
     BuiltinClose,
     BuiltinSend,
     BuiltinRecv,
+    BuiltinAwaitResult,
     BuiltinCancelToken,
     BuiltinCancel,
     BuiltinIsCancelled,
@@ -2210,6 +2211,7 @@ fn lower_expr(
                     | CallKind::BuiltinClose
                     | CallKind::BuiltinSend
                     | CallKind::BuiltinRecv
+                    | CallKind::BuiltinAwaitResult
                     | CallKind::BuiltinCancelToken
                     | CallKind::BuiltinCancel
                     | CallKind::BuiltinIsCancelled
@@ -2904,6 +2906,9 @@ fn validate_call(
         CallKind::BuiltinRecv => {
             validate_recv_call(args, span, diagnostics, source_path);
         }
+        CallKind::BuiltinAwaitResult => {
+            validate_await_result_call(args, span, diagnostics, source_path);
+        }
         CallKind::BuiltinCancelToken => {
             validate_no_argument_call("cancel_token", args, span, diagnostics, source_path);
         }
@@ -3495,6 +3500,8 @@ fn resolve_call_kind(
         CallKind::BuiltinSend
     } else if callee == "recv" {
         CallKind::BuiltinRecv
+    } else if callee == "await_result" {
+        CallKind::BuiltinAwaitResult
     } else if callee == "cancel_token" {
         CallKind::BuiltinCancelToken
     } else if callee == "cancel" {
@@ -3593,6 +3600,10 @@ fn call_return_type(
         CallKind::BuiltinSend => Type::result(Type::Unit, Type::Enum("RuntimeError".to_string())),
         CallKind::BuiltinRecv => Type::result(
             infer_recv_return_type(args),
+            Type::Enum("RuntimeError".to_string()),
+        ),
+        CallKind::BuiltinAwaitResult => Type::result(
+            infer_await_result_return_type(args),
             Type::Enum("RuntimeError".to_string()),
         ),
         CallKind::BuiltinCancelToken => Type::CancelToken,
@@ -5886,6 +5897,40 @@ fn validate_cancel_after_call(
     );
 }
 
+fn validate_await_result_call(
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `await_result`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `await_result(task)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return;
+    }
+
+    if !matches!(args[0].ty, Type::Task(_) | Type::Unknown) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3009",
+                "`await_result` requires a task value",
+                "only values produced by `go` can currently be joined recoverably in the bootstrap compiler",
+                args[0].span,
+            )
+            .with_fix_it("pass a value produced by `go`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
 fn validate_json_stringify_call(
     args: &[TypedExpr],
     span: Span,
@@ -6716,6 +6761,18 @@ fn infer_recv_return_type(args: &[TypedExpr]) -> Type {
     }
 }
 
+fn infer_await_result_return_type(args: &[TypedExpr]) -> Type {
+    if args.len() != 1 {
+        return Type::Unknown;
+    }
+
+    match &args[0].ty {
+        Type::Task(inner) => inner.as_ref().clone(),
+        Type::Unknown => Type::Unknown,
+        _ => Type::Unknown,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelectOperationKind {
     Recv,
@@ -7173,6 +7230,31 @@ mod tests {
     }
 
     #[test]
+    fn supports_await_result_builtin_for_task_values() {
+        let module = lower_source(
+            "fn lucky() -> int:\n    return 7\nfn main() -> Result[int, RuntimeError]:\n    task = go lucky()\n    return await_result(task)\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(
+            module.functions[1].return_type,
+            Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+        );
+        match &module.functions[1].body[1] {
+            TypedStmt::Return(expr) => {
+                assert_eq!(
+                    expr.ty,
+                    Type::result(Type::Int, Type::Enum("RuntimeError".to_string()))
+                );
+                assert!(
+                    matches!(&expr.kind, TypedExprKind::Call { callee, .. } if callee == "await_result")
+                );
+            }
+            other => panic!("expected await_result return, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn supports_parameterized_builtin_type_annotations() {
         let module = lower_source(
             "fn first(values: list[int]) -> int:\n    return values[0]\nfn main() -> Result[dict[int], RuntimeError]:\n    ch: channel[int] = channel()\n    send(ch, first([7, 9]))?\n    return Result.Ok({\"ok\": recv(ch)?})\n",
@@ -7570,6 +7652,15 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3094"]);
+    }
+
+    #[test]
+    fn rejects_await_result_on_non_task_values() {
+        let diagnostics =
+            lower_source("fn main() -> Result[int, RuntimeError]:\n    return await_result(42)\n")
+                .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3009"]);
     }
 
     #[test]

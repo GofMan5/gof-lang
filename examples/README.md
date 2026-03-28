@@ -24,6 +24,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
 - `concurrent_squares.gof`: `go`, `await`, simple task-based concurrency
 - `task_result_propagation.gof`: `go`, `await`, and task-boundary `Result[..., RuntimeError]` error preservation
+- `await_result.gof`: explicit recoverable task joins for plain `task[T]` values
 - `channel_select.gof`: channels, `Result`-based `send`/`recv`, and `select`
 - `channel_capacity.gof`: explicit rendezvous and bounded channel capacities without leaving the typed channel model
 - `select_round_robin.gof`: deterministic round-robin `select` arm rotation when multiple receives are ready

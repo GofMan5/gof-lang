@@ -22,11 +22,23 @@ Current rules:
 - `go` currently spawns a top-level named function call
 - the result is a task value
 - `await` waits for that task value
+- `await_result(task)` joins any task as `Result[T, RuntimeError]` without changing the existing plain-`await` contract
 - when the spawned function explicitly declares `-> Result[..., RuntimeError]`,
   task-boundary evaluator failures now come back as
   `Result.Err(RuntimeError.TaskFailed(...))` or
   `Result.Err(RuntimeError.TaskPanicked(...))` instead of tearing down the
   caller immediately
+
+If you want recoverable joins for a plain `task[T]` today, use `await_result(task)`:
+
+```gof
+fn lucky() -> int:
+    return 7
+
+fn main() -> Result[int, RuntimeError]:
+    job: task[int] = go lucky()
+    return await_result(job)
+```
 
 The mental model is:
 
@@ -116,7 +128,7 @@ This is a real concurrency baseline, but not the final story.
 Still missing:
 
 - production-grade fairness guarantees beyond the current round-robin polling baseline
-- task panic and `Result` propagation hardening for plain `task[T]` joins
+- automatic task panic and boundary-failure preservation for plain `await task` joins without opting into `await_result(task)`
 - deadline/context propagation beyond timeout-backed token baselines
 - production scheduler hardening
 

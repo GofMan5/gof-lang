@@ -1,0 +1,28 @@
+fn lucky() -> int:
+    return 36
+
+fn broken() -> int:
+    return 1 / 0
+
+fn main() -> string:
+    ok_job: task[int] = go lucky()
+    bad_job: task[int] = go broken()
+
+    ok = await_result(ok_job)
+    bad = await_result(bad_job)
+
+    mut ok_text = ""
+    match ok:
+        Result.Ok(value):
+            ok_text = to_string(value)
+        Result.Err(error):
+            ok_text = to_string(error)
+
+    mut bad_text = ""
+    match bad:
+        Result.Ok(value):
+            bad_text = to_string(value)
+        Result.Err(error):
+            bad_text = to_string(error)
+
+    return ok_text + " | " + bad_text

@@ -251,6 +251,7 @@ Hard sequencing rule:
 - `[x]` CP-M5-3b: token-based cooperative cancellation baseline for channel waits
 - `[x]` CP-M5-3c: `await` preserves task-boundary failures inside `Result[..., RuntimeError]`
 - `[x]` CP-M5-3d: timeout-backed cancellation token baseline for blocking channel ops
+- `[x]` CP-M5-3e: `await_result(task)` provides an explicit recoverable join path for plain `task[T]`
 - Exit criteria:
 - concurrency is useful, typed, testable, and benchmarked
 - no hidden global lock or accidental shared mutable-state semantics

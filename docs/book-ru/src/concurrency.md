@@ -21,10 +21,22 @@ fn main() -> int:
 - `go` спавнит top-level named function call
 - результат — task value
 - `await` ждет этот task value
+- `await_result(task)` делает recoverable join для любого task как `Result[T, RuntimeError]`, не меняя обычный контракт `await`
 - если spawned-функция явно объявлена как `-> Result[..., RuntimeError]`,
   task-boundary evaluator failures теперь возвращаются как
   `Result.Err(RuntimeError.TaskFailed(...))` или
   `Result.Err(RuntimeError.TaskPanicked(...))`, а не ломают caller сразу
+
+Если для plain `task[T]` нужен recoverable join уже сейчас, используй `await_result(task)`:
+
+```gof
+fn lucky() -> int:
+    return 7
+
+fn main() -> Result[int, RuntimeError]:
+    job: task[int] = go lucky()
+    return await_result(job)
+```
 
 Ментальная модель такая:
 
@@ -114,7 +126,7 @@ fn main() -> bool:
 Еще не хватает:
 
 - production-grade fairness гарантий сверх текущего round-robin polling baseline
-- жесткого story для plain `task[T]` joins при task panic и boundary failures
+- автоматического сохранения task panic и boundary failures для plain `await task` joins без явного `await_result(task)`
 - deadline/context propagation сверх timeout-backed token baseline
 - production scheduler hardening
 

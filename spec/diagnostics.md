@@ -27,7 +27,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3006`: duplicate local binding in function scope
 - `GOF3007`: non-boolean control-flow condition
 - `GOF3008`: invalid `go` spawn target
-- `GOF3009`: invalid `await` operand
+- `GOF3009`: invalid task join operand (`await` / `await_result`)
 - `GOF3010`: spawned task panicked before producing a value
 - `GOF3011`: incompatible return types inside one function
 - `GOF3012`: unknown builtin type annotation

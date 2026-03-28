@@ -56,6 +56,7 @@ The bootstrap compiler in this repository currently supports:
 - `continue`
 - `go` for spawning top-level named function calls
 - `await` for waiting on task values
+- `await_result(task)` for explicit recoverable task joins
 - module-level inference of function return types when they can be derived from return expressions
 - local bindings through `name = expr`
 - typed local bindings through `name: type = expr`
@@ -236,7 +237,9 @@ The bootstrap compiler in this repository currently supports:
 - `go` currently accepts only `go some_function(...)`
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
+- `await_result(task)` currently accepts only task values produced by `go` and returns `Result[value, RuntimeError]`
 - when a spawned function explicitly declares `Result[..., RuntimeError]`, task-boundary evaluator failures surface at `await` as `Result.Err(RuntimeError.TaskFailed(...))` and panics surface as `Result.Err(RuntimeError.TaskPanicked(...))`
+- `await_result(task)` currently preserves task-boundary evaluator failures for any task as `Result.Err(RuntimeError.TaskFailed(...))` and task panics as `Result.Err(RuntimeError.TaskPanicked(...))`
 - `channel()` currently creates a bootstrap channel value backed by the unbounded runtime queue model
 - `channel(0)` currently creates a rendezvous channel baseline that blocks `send(...)` until a receiver takes the value
 - `channel(n)` for `n > 0` currently creates a bounded channel baseline that blocks `send(...)` while the buffer is full
@@ -258,7 +261,7 @@ The bootstrap compiler in this repository currently supports:
 - `select` executes its `default:` arm immediately when no send/receive arm is ready during the current polling pass
 - `select` currently rotates its polling start arm in a deterministic round-robin baseline when multiple send/receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
 - channels currently expose an explicit capacity baseline only through `channel(capacity)`; richer buffering policies are still future work
-- most operational bootstrap builtins now return `Result[..., RuntimeError]`; task joins with explicit `Result[..., RuntimeError]` contracts also preserve task-boundary failures as runtime errors, while runtime diagnostics remain for invariant failures, assertion failures, bad helper contracts, plain `task[T]` joins, and a small set of bootstrap evaluator gaps
+- most operational bootstrap builtins now return `Result[..., RuntimeError]`; `await_result(task)` gives an explicit recoverable join path for plain tasks, `await` also preserves task-boundary failures for tasks with explicit `Result[..., RuntimeError]` contracts, while runtime diagnostics still remain for invariant failures, assertion failures, bad helper contracts, plain `await task` joins, and a small set of bootstrap evaluator gaps
 - control-flow conditions must evaluate to `bool`
 - `for binding in iterable:` currently supports lists, strings, and dicts
 - list iteration currently yields list elements in order

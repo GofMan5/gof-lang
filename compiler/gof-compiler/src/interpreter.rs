@@ -551,6 +551,10 @@ impl TaskValue {
     fn await_value(&self) -> Result<Value, Diagnostics> {
         self.0.await_value()
     }
+
+    fn await_result_value(&self) -> Value {
+        self.0.await_result_value()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -651,7 +655,7 @@ impl TaskHandle {
         self.store(TaskOutcome::Panic(panic));
     }
 
-    fn await_value(&self) -> Result<Value, Diagnostics> {
+    fn wait_outcome(&self) -> TaskOutcome {
         let (lock, ready) = &*self.result;
         let mut slot = lock
             .lock()
@@ -661,11 +665,13 @@ impl TaskHandle {
                 .wait(slot)
                 .expect("task result wait should not be poisoned");
         }
-        match slot
-            .as_ref()
+        slot.as_ref()
             .expect("task result should exist after wait")
             .clone()
-        {
+    }
+
+    fn await_value(&self) -> Result<Value, Diagnostics> {
+        match self.wait_outcome() {
             TaskOutcome::Value(value) => Ok(value),
             TaskOutcome::Diagnostics(diagnostics) => match self.boundary {
                 TaskBoundary::Direct => Err(diagnostics),
@@ -679,6 +685,18 @@ impl TaskHandle {
                     &panic.function_name,
                 ))),
             },
+        }
+    }
+
+    fn await_result_value(&self) -> Value {
+        match self.wait_outcome() {
+            TaskOutcome::Value(value) => result_ok(value),
+            TaskOutcome::Diagnostics(diagnostics) => result_err(runtime_task_failed_error(
+                task_failure_message(&diagnostics),
+            )),
+            TaskOutcome::Panic(panic) => {
+                result_err(runtime_task_panicked_error(&panic.function_name))
+            }
         }
     }
 }
@@ -2557,6 +2575,20 @@ fn eval_expr(
 
             if callee == "cancel_after" {
                 return eval_cancel_after_builtin(
+                    args,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                    *span,
+                );
+            }
+
+            if callee == "await_result" {
+                return eval_await_result_builtin(
                     args,
                     scopes,
                     functions,
@@ -6553,6 +6585,54 @@ fn eval_cancel_after_builtin(
     Ok(Value::Unit)
 }
 
+fn eval_await_result_builtin(
+    args: &[Expr],
+    scopes: &ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+    span: Span,
+) -> EvalResult<Value> {
+    if args.len() != 1 {
+        return eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3005",
+                "wrong number of arguments for `await_result`",
+                format!("expected 1 argument, got {}", args.len()),
+                span,
+            )
+            .with_fix_it("call `await_result(task)`")
+            .with_source_path(source_path.to_path_buf()),
+        ]));
+    }
+
+    match eval_expr(
+        &args[0],
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    )? {
+        Value::Task(task) => Ok(task.await_result_value()),
+        _ => eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3009",
+                "`await_result` requires a task value",
+                "only values produced by `go` can currently be joined recoverably in the bootstrap evaluator",
+                span,
+            )
+            .with_fix_it("pass a value produced by `go`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
 fn eval_cancel_token_argument(
     expr: &Expr,
     scopes: &ScopeStack,
@@ -7422,6 +7502,55 @@ mod tests {
             .expect_err("direct task panic should still be a diagnostic");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3010"]);
+    }
+
+    #[test]
+    fn await_result_wraps_successful_plain_tasks() {
+        let value = run_source(
+            "fn lucky() -> int:\n    return 21\nfn main() -> int:\n    task = go lucky()\n    outcome = await_result(task)\n    match outcome:\n        Result.Ok(value):\n            return value * 2\n        Result.Err(_):\n            return 0\n",
+        )
+        .expect("await_result should preserve successful task values");
+
+        assert_eq!(value, Value::Int(42));
+    }
+
+    #[test]
+    fn await_result_converts_plain_task_failures_into_runtime_errors() {
+        let value = run_source(
+            "fn broken() -> int:\n    return 1 / 0\nfn main() -> string:\n    task = go broken()\n    outcome = await_result(task)\n    match outcome:\n        Result.Ok(value):\n            return to_string(value)\n        Result.Err(error):\n            return to_string(error)\n",
+        )
+        .expect("await_result should capture plain task failures");
+
+        assert_eq!(
+            value.cli_text().as_deref(),
+            Some("RuntimeError.TaskFailed(message: GOF3068: `/` by zero is not allowed)")
+        );
+    }
+
+    #[test]
+    fn await_result_converts_panics_into_runtime_errors() {
+        let task = TaskHandle::new(TaskBoundary::Direct);
+        task.store_panic(TaskPanic {
+            function_name: "worker".to_string(),
+            source_path: PathBuf::from("worker.gof"),
+            span: Span::new(1, 1, 1),
+        });
+
+        let value = task.await_result_value();
+
+        assert_eq!(
+            value.cli_text().as_deref(),
+            Some("Result.Err(error: RuntimeError.TaskPanicked(task: worker))")
+        );
+    }
+
+    #[test]
+    fn rejects_await_result_on_non_task() {
+        let diagnostics =
+            run_source("fn main() -> Result[int, RuntimeError]:\n    return await_result(42)\n")
+                .expect_err("await_result should reject non-task operands");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3009"]);
     }
 
     #[test]

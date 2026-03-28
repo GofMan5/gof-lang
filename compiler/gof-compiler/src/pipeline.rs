@@ -138,6 +138,36 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_await_result_builtin() {
+        let source = SourceFile::new(
+            "await_result.gof",
+            "fn lucky() -> int:\n    return 7\nfn main() -> Result[int, RuntimeError]:\n    task = go lucky()\n    return await_result(task)\n",
+        );
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+
+        assert_eq!(
+            compiled.typed_hir.functions[1].return_type,
+            Type::Result(
+                Box::new(Type::Int),
+                Box::new(Type::Enum("RuntimeError".to_string())),
+            )
+        );
+        match &compiled.typed_hir.functions[1].body[1] {
+            crate::typed_hir::TypedStmt::Return(expr) => {
+                assert_eq!(
+                    expr.ty,
+                    Type::Result(
+                        Box::new(Type::Int),
+                        Box::new(Type::Enum("RuntimeError".to_string())),
+                    )
+                );
+            }
+            other => panic!("expected return statement, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pipeline_preserves_explicit_return_contracts() {
         let source = SourceFile::new(
             "typed.gof",
