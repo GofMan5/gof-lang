@@ -155,6 +155,7 @@ The bootstrap compiler in this repository currently supports:
 - manifest-backed `gof run`, `gof build`, and package-aware `gof test` require a fresh `gof.lock`
 - manifest-backed `gof test` currently executes `src/main.gof` package targets as compile plus execute smoke
 - manifest-backed `gof test` currently keeps `src/lib.gof` package targets compile-only until a dedicated language test surface exists
+- explicit package-root `gof test` inputs currently keep the manifest-backed package target in scope even when the same package also contains internal `tests/` targets or fixtures
 - import cycles are rejected during module graph loading
 - duplicate top-level function names across the module graph are rejected
 - duplicate struct names across the module graph are rejected

@@ -1750,14 +1750,9 @@ fn collect_targets(
     }
 
     if input.is_dir() {
-        let before_language = language_candidates.len();
-        let before_fixtures = fixture_targets.len();
         collect_dir_targets(input, language_candidates, fixture_targets, include_ignored)?;
-        if language_candidates.len() == before_language && fixture_targets.len() == before_fixtures
-        {
-            if let Some(entry_path) = crate::resolve_package_test_input(input)? {
-                package_targets.insert(normalize_source_path(&entry_path));
-            }
+        if let Some(entry_path) = crate::resolve_package_test_input(input)? {
+            package_targets.insert(normalize_source_path(&entry_path));
         }
         return Ok(());
     }

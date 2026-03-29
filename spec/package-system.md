@@ -93,6 +93,7 @@ path = "../mathlib"
 - stale or missing lockfiles must be repaired by rerunning `gof mod resolve`
 - package-aware `gof test` executes manifest-backed `src/main.gof` targets as compile plus execute smoke
 - package-aware `gof test` keeps manifest-backed `src/lib.gof` targets compile-only until the language grows a dedicated test surface
+- explicit package-root `gof test` inputs keep that package target in scope even when the package also contains internal `tests/` targets or fixtures
 
 ## Bootstrap-native executable contract
 

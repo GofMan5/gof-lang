@@ -14,6 +14,8 @@ Delivered in shipped slices:
   - `tests/**/*.gof`
   - existing repo fixtures/runtime harness paths
 - `gof test [paths...]`
+- explicit package-root inputs keep the package target even when the same
+  package also contains internal `tests/` targets or fixtures
 - `--filter`
 - `--exact`
 - `--list`

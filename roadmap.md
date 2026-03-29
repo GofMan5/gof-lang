@@ -478,7 +478,7 @@ Hard sequencing rule:
 
 7. `[~]` Execute Phase 1 before widening the front:
 - `[x]` finish package identity and deterministic local package workflow
-- `[x]` make package-aware `gof test` honest for executable package targets while keeping library targets compile-only
+- `[x]` make package-aware `gof test` honest for executable package targets while keeping library targets compile-only, including explicit package roots that also contain internal tests
 - `[x]` make language-level `gof test` discovery, snapshots, and shipped `testing` helpers real enough for repo and user code
 - build script-first UX and richer automation/data stdlib
 - ship reference apps that make the Python/Node replacement story concrete

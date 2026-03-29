@@ -2177,6 +2177,62 @@ fn gof_test_discovers_language_level_tests_and_updates_snapshots() {
         .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
 }
 
+
+#[test]
+fn gof_test_runs_explicit_executable_package_roots_alongside_internal_tests() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_executable_package(temp.path());
+    let tests_root = package_root.join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("smoke_test.gof"),
+        "import testing\n\ntest fn package_test(t: TestContext):\n    t.true(true, \"expected package-local test\")\n",
+    )
+    .expect("package-local test should exist");
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("test")
+        .arg(&package_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/main.gof"))
+        .stdout(predicate::str::contains("tests/smoke_test.gof::package_test"))
+        .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
+}
+
+#[test]
+fn gof_test_runs_explicit_library_package_roots_alongside_internal_tests() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_library_package(temp.path());
+    let tests_root = package_root.join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("smoke_test.gof"),
+        "import testing\n\ntest fn package_test(t: TestContext):\n    t.true(true, \"expected package-local test\")\n",
+    )
+    .expect("package-local test should exist");
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("test")
+        .arg(&package_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("src/lib.gof"))
+        .stdout(predicate::str::contains("tests/smoke_test.gof::package_test"))
+        .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
+}
 #[test]
 fn gof_test_lists_language_level_tests() {
     let temp = tempdir().expect("tempdir should exist");

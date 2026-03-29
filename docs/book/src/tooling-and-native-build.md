@@ -71,6 +71,10 @@ Today package-aware `gof test` has an explicit split contract:
 - executable package targets (`src/main.gof`) run compile plus execute smoke
 - library package targets (`src/lib.gof`) currently stay compile-only
 
+When the CLI receives an explicit package root, it keeps that package target in
+the run even if the package also contains internal `tests/` targets or
+fixtures.
+
 That keeps the command honest for runnable packages without pretending the
 language already has a dedicated in-language test surface for libraries.
 

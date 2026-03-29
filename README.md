@@ -213,6 +213,10 @@ Package-aware `gof test` is intentionally split today:
 - executable package targets (`src/main.gof`) perform compile plus execute smoke
 - library package targets (`src/lib.gof`) currently perform compile-only validation
 
+When you point `gof test` at an explicit package root, that package target now
+still runs even if the package also contains internal `tests/` targets or
+fixtures.
+
 `select` now rotates its polling start arm in a deterministic round-robin
 baseline when multiple send/receive arms are already ready, but scheduler-level
 fairness is still a roadmap item rather than a finished guarantee.
