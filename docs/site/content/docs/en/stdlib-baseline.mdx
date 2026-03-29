@@ -1,0 +1,228 @@
+---
+title: Standard Library Baseline
+description: The shipped stdlib surface — output, file I/O, collections, JSON, HTTP, and the explicit-by-design philosophy.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The current standard-library surface is deliberately small.
+
+That is not because the language wants to stay tiny. It is because the project
+does not want to teach unstable semantics as if they were settled.
+
+The shipped stdlib now also has a real import-delivery path. These module names
+are reserved and resolve through `stdlib/`:
+
+- `bytes`
+- `io`
+- `time`
+- `net`
+- `http`
+
+That does not mean their final API surface is finished. It means the language
+now has a real place to grow typed networking and stream primitives without
+stretching bootstrap builtins forever.
+
+## Shipped bytes, stream, deadline, and TCP foundation
+
+The current shipped stdlib foundation is intentionally explicit and small:
+
+- `bytes` — `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
+- `io` — `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
+- `time` — `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
+- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+
+These are shipped stdlib APIs, not forever-builtins. Internally they still use
+bootstrap bridge hooks, but user code learns them through normal imports.
+
+```gof
+import bytes
+import io
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    payload = bytes_from_string("hello")
+    deadline = deadline_after(1000)?
+    mut writer = open_write_stream("roundtrip.txt")?
+    writer = writer.with_deadline(deadline)
+    writer.write_all(payload)?
+    writer.flush()?
+    writer.close()?
+
+    mut reader = open_read_stream("roundtrip.txt")?
+    reader = reader.with_deadline(deadline)
+    text = reader.read_all()?.to_string()?
+    reader.close()?
+    return Result.Ok(len(text))
+```
+
+```gof
+import bytes
+import net
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    deadline = deadline_after(1000)?
+    listener = listen_tcp("127.0.0.1:0")?.with_deadline(deadline)
+    address = listener.local_addr()?
+    client = connect_tcp_with_control(address.text(), deadline, timeout_token(1000))?
+    client.write_all(bytes_from_string("ping"))?
+    return Result.Ok(address.port() + bytes_len(bytes_from_string("ping")))
+```
+
+<Callout type="info">
+  Blocking I/O returns `Result[..., RuntimeError]` instead of hiding failure in ambient runtime state.
+  Deadlines and cancellation are explicit wrappers on stream and listener values.
+</Callout>
+
+Current network-oriented runtime errors now also distinguish:
+
+- `RuntimeError.Utf8(message)`
+- `RuntimeError.NetDns(message)`
+- `RuntimeError.NetConnect(message)`
+- `RuntimeError.NetTimeout(message)`
+- `RuntimeError.NetTls(message)`
+- `RuntimeError.NetProxy(message)`
+- `RuntimeError.NetProtocol(message)`
+- `RuntimeError.NetReset(message)`
+- `RuntimeError.NetClosed`
+
+## Output and correctness checks
+
+```gof
+print("ready")
+assert(true, "must stay true")
+```
+
+`print(...)` is the current explicit output primitive.
+
+`assert(...)` is important during bootstrap because it gives examples and tests an
+in-language correctness tool without pretending a full testing framework already exists.
+
+Current `assert` rules:
+
+- `assert(condition)` checks a boolean
+- `assert(condition, "message")` adds a message
+- failed assertions become diagnostics in the bootstrap runtime
+
+## Process, filesystem, and paths
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    root = cwd()?
+    path = path_join(root, "target/demo.txt")
+    write_file(path, "gof")?
+    return Result.Ok(len(read_file(path)?))
+```
+
+Current operational baseline is intentionally explicit:
+
+- `argv()` returns CLI arguments
+- `read_stdin()` reads one cached stdin snapshot as text
+- `read_stdin_lines()` exposes the same stdin snapshot through explicit line splitting
+- `unix_seconds()` and `unix_millis()` expose the current Unix wall clock through explicit `Result`
+- `env(name)` reads one environment variable
+- `cwd()` returns the current working directory
+- `run_process(program, args)` executes a program directly without shell interpolation and returns captured `program`, `args`, `status`, `stdout`, and `stderr` inside `Result[json, RuntimeError]`
+- `read_file(path)` and `write_file(path, contents)` use `Result`
+- `read_lines(path)` and `write_lines(path, lines)` keep line-oriented file automation explicit
+- `exists(path)`, `read_dir(path)`, `mkdir(path)`, and `remove_file(path)` stay string-based
+- path helpers stay explicit through `path_join`, `path_dir`, `path_base`, and `path_ext`
+
+## Collection helpers
+
+For lists:
+
+```gof
+values = [1, 2]
+values = append(values, 3)
+has_three = contains(values, 3)
+window = slice(values, 0, 2)
+ordered = sort(reverse(values))
+```
+
+For dicts:
+
+```gof
+store: dict = {"critical": 5, "ok": 7}
+names = keys(store)
+counts = values(store)
+present = contains(store, "ok")
+```
+
+For strings:
+
+```gof
+line = trim("  gof,lang  ")
+parts = split(line, ",")
+merged = join(parts, "-")
+has_prefix = starts_with(merged, "gof")
+has_suffix = ends_with(merged, "lang")
+```
+
+These helpers are teaching an important `gof` habit:
+
+- helper calls should be explicit
+- data-shape changes should be visible
+- the language should avoid surprising hidden work
+
+## Sequence helpers
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    values = [7, 1, 5, 3]
+    head = first(values)?
+    tail = last(values)?
+    middle = slice(values, 1, 3)?
+    reversed = reverse(values)
+    ordered = sort(values)
+    smallest = min(values)?
+    loudest = max(["warn", "critical", "ok"])?
+    return Result.Ok(head + tail + len(middle) + len(reversed) + len(ordered) + smallest + len(loudest))
+```
+
+Current sequence-helper rules:
+
+- `first(list)` and `last(list)` return `Result[element, RuntimeError]`
+- `slice(list, start, end)` returns `Result[list[element], RuntimeError]`
+- `reverse(list)` returns a new reversed list
+- `sort(list)` returns a new deterministically sorted list
+- `min(list)` and `max(list)` return `Result[element, RuntimeError]`
+
+## JSON, CSV, TOML, YAML, base64, HTTP, and explicit retry delays
+
+```gof
+import http
+
+fn notify(base: string) -> Result[int, RuntimeError]:
+    sleep(0)
+    headers: dict[string] = {"Accept": "application/json", "Content-Type": "application/json"}
+    report = http_request("POST", base + "/notify", "{\"text\":\"pong\"}", headers, 1500)?
+    return response_status(report)
+```
+
+Current rules:
+
+- `json_parse(text)` returns `Result[json, RuntimeError]`
+- `json_get(value, key)` and `json_index(value, index)` keep JSON traversal explicit
+- `csv_parse(text)` returns `Result[list[list[string]], RuntimeError]`
+- `csv_stringify(rows)` returns `Result[string, RuntimeError]`
+- `toml_parse(text)` returns `Result[json, RuntimeError]`
+- `yaml_parse(text)` returns `Result[json, RuntimeError]`
+- `base64_encode(text)` returns an encoded `string`
+- `base64_decode(text)` returns `Result[string, RuntimeError]`
+- `template_render(template, values)` returns `Result[string, RuntimeError]`
+- `http_request(method, url[, body[, headers[, timeout_ms]]])` returns `Result[json, RuntimeError]`
+- `import http` now exposes typed response helpers such as `response_status(...)`, `response_body(...)`, `response_headers(...)`
+- `http_get(url)` is the current bootstrap HTTP read path
+- `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
+- `sleep(milliseconds)` makes retry and backoff intent explicit
+
+## Conversion helpers
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    parsed = parse_int(trim(" 41 "))?
+    rendered = "gof-" + to_string(parsed + 1)
+    return Result.Ok(parsed + len(rendered))
+```

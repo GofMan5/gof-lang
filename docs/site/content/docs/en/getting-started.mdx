@@ -1,0 +1,127 @@
+---
+title: Getting Started
+description: The shortest reliable path from zero to a running gof program.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+## Choose your starting point
+
+<Tabs items={["Released binary", "From repository"]}>
+  <Tab value="Released binary">
+    If you want the latest released toolchain:
+
+    **Unix-like systems:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.sh | bash
+    ```
+
+    **Windows PowerShell:**
+    ```powershell
+    irm https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.ps1 | iex
+    ```
+
+    This is the right path if you want to try the language as a user.
+  </Tab>
+  <Tab value="From repository">
+    If you are developing the language itself or want the freshest bootstrap state:
+
+    ```bash
+    cargo run -q -p gof-cli --bin gof -- run examples/hello_print.gof
+    ```
+
+    This is the right path if you want to inspect compiler behavior, examples, and tests.
+
+    If you only want to write and run `gof` programs, do not stay on the Rust path.
+    Install `gof`, put it on `PATH`, and use the normal CLI directly.
+  </Tab>
+</Tabs>
+
+## Your first program
+
+Write this:
+
+```gof
+fn main() -> int:
+    print("hello from gof")
+    return 42
+```
+
+Save it as `hello.gof` and run:
+
+```bash
+gof run hello.gof
+```
+
+### What happens
+
+- `print("hello from gof")` writes text to standard output
+- `return 42` becomes the final displayed program value in the bootstrap CLI path
+
+That split is intentional. `print` is side effect. `return` is program result.
+
+## The first commands you should actually know
+
+Format a file:
+
+```bash
+gof fmt hello.gof
+```
+
+Check whether formatting is already correct:
+
+```bash
+gof fmt hello.gof --check
+```
+
+Run the fixture suite:
+
+```bash
+gof test tests/fixtures
+```
+
+Build the backend artifact:
+
+```bash
+gof build hello.gof
+```
+
+Build a bootstrap-native executable:
+
+```bash
+gof build hello.gof --native
+```
+
+If you are hacking on `gof` from the repository before installing it, prefix the
+same commands with:
+
+```bash
+cargo run -q -p gof-cli --bin gof --
+```
+
+## Understand the two build modes correctly
+
+This is one of the easiest places to learn the wrong thing, so be precise:
+
+- `gof run` executes through the bootstrap evaluator
+- `gof build` emits the structured backend artifact by default
+- `gof build --native` emits a real host executable
+
+<Callout type="warn">
+  `--native` is still a bootstrap-native path. It does not mean the project already
+  has final direct code generation.
+</Callout>
+
+That distinction matters because the language is intentionally being honest about its stage.
+
+## A good first study sequence
+
+After you can `gof run` any example:
+
+1. read the [Language Tour](/docs/language-tour) to build the mental model
+2. explore [Types and Data](/docs/types-and-data) for the current type surface
+3. follow [Control Flow](/docs/control-flow) for branching, matching, and error propagation
+4. visit [Concurrency](/docs/concurrency) when you are ready for tasks, channels, and `select`
+5. check [Testing](/docs/testing) for the shipped testing platform baseline
+6. use the `examples/` folder as a working reference for real programs

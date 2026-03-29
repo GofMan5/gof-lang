@@ -4,8 +4,8 @@
   <p>Build automation, services, and systems-oriented tooling without runtime chaos, semantic mud, or fake ergonomics.</p>
 
   <p>
-    <a href="https://gofman5.github.io/gof-lang/"><img alt="Docs" src="https://img.shields.io/badge/docs-gof_book-0f172a?style=for-the-badge&logo=gitbook&logoColor=white"></a>
-    <a href="https://gofman5.github.io/gof-lang/ru/"><img alt="Docs RU" src="https://img.shields.io/badge/docs-ru_book-1d4ed8?style=for-the-badge&logo=gitbook&logoColor=white"></a>
+    <a href="https://gofman5.github.io/gof-lang/en/docs"><img alt="Docs" src="https://img.shields.io/badge/docs-gof_docs-0f172a?style=for-the-badge&logo=gitbook&logoColor=white"></a>
+    <a href="https://gofman5.github.io/gof-lang/ru/docs"><img alt="Docs RU" src="https://img.shields.io/badge/docs-ru_docs-1d4ed8?style=for-the-badge&logo=gitbook&logoColor=white"></a>
     <a href="spec/language-v1.md"><img alt="Spec" src="https://img.shields.io/badge/spec-language_v1-111827?style=for-the-badge&logo=readthedocs&logoColor=white"></a>
     <a href="https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language"><img alt="VS Code Extension" src="https://img.shields.io/badge/VS_Code-extension-0098ff?style=for-the-badge&logo=visualstudiocode&logoColor=white"></a>
     <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/license-MIT-22c55e?style=for-the-badge"></a>
@@ -162,8 +162,8 @@ The current shipped testing contract is still explicit and intentionally narrow:
 - `gof test` exits `10` for discovered target failures and `11` for harness
   failures such as invalid inputs or discovery/reporting errors
 - when `gof test --docs` targets the repository root, canonical docs discovery
-  is scoped to `README.md`, `docs/book/src/**/*.md`, and
-  `docs/book-ru/src/**/*.md`
+  is scoped to `README.md`, `docs/site/content/docs/en/**/*.mdx`, and
+  `docs/site/content/docs/ru/**/*.mdx`
 - `gof test --include-ignored` opt-ins to discovery inside normally skipped
   support/cache/vendor-style directories instead of treating them as part of
   the default contract
@@ -291,8 +291,8 @@ Channels now also have an explicit capacity baseline:
 
 | | |
 |---|---|
-| **[The gof Book](https://gofman5.github.io/gof-lang/)** | Learning path - start here |
-| **[The gof Book (RU)](https://gofman5.github.io/gof-lang/ru/)** | Russian edition |
+| **[gof Docs](https://gofman5.github.io/gof-lang/en/docs)** | Learning path - start here |
+| **[gof Docs (RU)](https://gofman5.github.io/gof-lang/ru/docs)** | Russian edition |
 | **[VS Code Extension](https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language)** | Install `gof Programming Language` from the Marketplace |
 | [Examples](examples/) | Runnable programs |
 | [Detailed plans](plans/roadmap/00-index.md) | Ordered implementation plans by area |
@@ -317,11 +317,12 @@ cargo test --workspace                 # run all tests
 cargo run -p gof-cli -- run app.gof    # developer fallback without installing gof
 ```
 
-Preview the books locally:
+Preview the docs locally:
 
 ```bash
-mdbook build docs/book
-mdbook build docs/book-ru
+cd docs/site
+npm install
+npm run dev
 ```
 
 Build the VS Code extension locally:
@@ -352,8 +353,7 @@ benchmarks/  benchmark harness
 spec/        language and diagnostics contracts
 rfcs/        language proposals
 adrs/        architecture decisions
-docs/book/   English book
-docs/book-ru/ Russian book
+docs/site/   Documentation site (Fumadocs + Next.js, EN + RU)
 examples/    runnable .gof programs
 ```
 

@@ -1,0 +1,237 @@
+---
+title: Types and Data
+description: How data is modeled in the current bootstrap subset and what is still intentionally missing.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Builtin scalar values
+
+Today the core scalar values are:
+
+- `int`
+- `string`
+- `bool`
+- `json`
+
+There is also `unit`, which represents "no meaningful value", and runtime-level
+values such as tasks, channels, and cancellation tokens that appear through
+specific language features.
+
+When you need explicit type contracts on built-in containers and async values,
+the current bootstrap surface supports parameterized annotations such as:
+
+- `list[int]`
+- `dict[int]`
+- `channel[int]`
+- `task[int]`
+- `Result[int, RuntimeError]`
+
+## Lists
+
+Lists are the first built-in sequential container.
+
+```gof
+values: list[int] = [10, 20, 30]
+return values[0] + len(values)
+```
+
+Current list rules:
+
+- lists are currently homogeneous once the type layer can determine element type
+- indexing requires an integer index
+- negative indexing is not supported
+- out-of-bounds access is rejected at runtime in the bootstrap evaluator
+- `append(list, value)` returns a new list
+- `first(list)` and `last(list)` return `Result[element, RuntimeError]`
+- `slice(list, start, end)` returns `Result[list[element], RuntimeError]`
+- `reverse(list)` returns a new reversed list
+- `sort(list)` returns a new deterministically sorted list for `list[int]` and `list[string]`
+- `min(list)` and `max(list)` return `Result[element, RuntimeError]` for `list[int]` and `list[string]`
+
+<Callout type="info">
+  List helpers are explicit value construction, not invisible mutation.
+</Callout>
+
+## Dicts
+
+The current dict baseline is explicit, immutable-friendly, and now has literal
+syntax for the common case:
+
+```gof
+store: dict[int] = {"ok": 7, "warn": 2}
+return store["ok"] + len(store)
+```
+
+When you need to build a new dict step by step, `insert(...)` is still the
+honest tool:
+
+```gof
+base: dict[int] = {"ok": 7}
+next = insert(base, "warn", 2)
+return next["warn"]
+```
+
+Current dict rules:
+
+- keys currently must resolve to `string`
+- literal values currently must stay type-compatible
+- `dict()` creates an empty dict when you want to start from nothing
+- `insert(dict, key, value)` returns a new dict
+- `keys(dict)` returns `list[string]` in deterministic key order
+- `values(dict)` returns values in the same deterministic key order
+- indexing requires an existing key
+- `contains(dict, "key")` checks key membership
+- `len(dict)` returns entry count
+
+## Numeric expressions
+
+The bootstrap numeric surface now supports:
+
+```gof
+value = -(8 + 2) / 5
+rest = value % 2
+```
+
+Current rules:
+
+- unary `-` requires an `int`
+- `/` and `%` are integer-only
+- division and modulo by zero are rejected at runtime
+
+## Comparisons
+
+Comparison is now split into two explicit contracts:
+
+- equality through `==` and `!=`
+- ordering through `<`, `<=`, `>`, and `>=`
+
+Current rules:
+
+- equality works for `int`, `string`, `bool`, `json`, `unit`, `list[T]`, `dict[T]`, same-type `struct`, same-type `enum`, and compatible `Result[T, E]` values when their nested members are also equality-comparable
+- ordering works only for `int` and `string`
+- string ordering is lexicographic
+- channels, tasks, and cancellation tokens are not comparable, even when nested inside larger values
+
+## Structs
+
+Structs are the current user-defined aggregate type.
+
+```gof
+struct Point:
+    x: int
+    y: int
+
+fn total(point: Point) -> int:
+    return point.x + point.y
+```
+
+Current struct rules:
+
+- fields are declared in the type
+- constructor calls use declaration order
+- field access requires a real struct value
+- unknown fields are rejected
+
+Structs are how you model data that has named parts and stable shape.
+
+## Enums
+
+Enums are the current way to model finite state, and they now support both
+unit variants and payload variants.
+
+```gof
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
+```
+
+Current enum rules:
+
+- variant names must be unique inside the enum
+- payload fields are named and typed in the declaration
+- unit variants are referenced as `EnumName.Variant`
+- payload variants are constructed as `EnumName.Variant(value, ...)`
+- same-type enums participate in structural equality when their payload fields are comparable
+
+Use `enum` when the question is "which state am I in?" rather than "which fields do I have?"
+
+## Result values
+
+`Result[T, E]` is the current recoverable-error baseline.
+
+```gof
+fn halve(value: int) -> Result[int, string]:
+    if value % 2 != 0:
+        return Result.Err("odd")
+    return Result.Ok(value / 2)
+```
+
+Current rules:
+
+- `Result[T, E]` is a built-in parameterized type
+- `Result.Ok(value)` constructs a success payload
+- `Result.Err(error)` constructs an error payload
+- result values can be handled with exhaustive `match`
+- result values participate in equality when both payload sides are equality-comparable
+- postfix `expr?` unwraps `Ok(value)` and returns early on `Err(error)`
+- the enclosing function must return a compatible `Result[_, E]`
+
+Operational helpers now use the same contract:
+
+- `env("NAME")` returns `Result[string, RuntimeError]`
+- `parse_int(text)` returns `Result[int, RuntimeError]`
+- `first(values)` returns `Result[T, RuntimeError]`
+- `slice(values, start, end)` returns `Result[list[T], RuntimeError]`
+- `min(values)` returns `Result[T, RuntimeError]`
+- `max(values)` returns `Result[T, RuntimeError]`
+- `read_file(path)` returns `Result[string, RuntimeError]`
+- `recv(channel)` returns `Result[T, RuntimeError]`
+- JSON, CSV, TOML, and HTTP helpers also return `Result`
+
+## RuntimeError
+
+`RuntimeError` is the built-in operational error enum.
+
+It currently includes:
+
+- `EnvMissing(name: string)`
+- `Io(message: string)`
+- `ChannelClosed`
+- `Cancelled`
+- `TaskFailed(message: string)`
+- `TaskPanicked(task: string)`
+- `ParseInt(message: string)`
+- `EmptySequence(message: string)`
+- `Slice(message: string)`
+- `Json(message: string)`
+- `Csv(message: string)`
+- `Toml(message: string)`
+- `HttpRequest(message: string)`
+- `HttpStatus(code: int, body: string)`
+
+## Methods
+
+Methods are explicit, not magical.
+
+```gof
+fn Point.with_bonus(self: Point, extra: int) -> int:
+    return self.x + self.y + extra
+```
+
+Important rule:
+
+- the receiver type is declared in the method name
+- the first parameter must match that receiver type
+
+## How to think about data in `gof`
+
+A useful rule of thumb:
+
+- use scalars for direct values
+- use lists for ordered homogeneous data
+- use dicts for string-keyed lookup tables
+- use structs for named shaped data
+- use enums for closed state sets
+- use `Result` for explicit recoverable success/error flow

@@ -1,0 +1,139 @@
+---
+title: Tooling and Native Build
+description: The unified gof CLI — run, check, build, test, fmt, mod, doc, bench, and the VS Code extension.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+`gof` already has a unified CLI:
+
+- `gof run`
+- `gof check`
+- `gof build`
+- `gof test`
+- `gof fmt`
+- `gof mod`
+- `gof doc`
+- `gof bench`
+
+That unified toolchain matters. One of the goals of the project is to keep the
+language easy to operate, not just nice to read.
+
+## What each command means today
+
+### `gof run`
+
+Runs the source program through the bootstrap execution path.
+
+There is now also a script-first watch mode:
+
+```bash
+gof run --watch program.gof -- --example arg
+```
+
+The current watch contract is intentionally simple and honest:
+
+- initial run starts immediately
+- only one run is active at a time
+- rapid edits are batched through a small debounce window
+- compile/runtime failures do not kill the loop
+- the loop keeps using the same execution path as normal `gof run`
+
+### `gof check`
+
+```bash
+gof check program.gof
+```
+
+Runs compile-only validation without executing the program.
+
+For editor tooling and automation there is also a machine-readable path:
+
+```bash
+gof check program.gof --json --stdin
+```
+
+### `gof test`
+
+Today package-aware `gof test` has an explicit split contract:
+
+- executable package targets (`src/main.gof`) run compile plus execute smoke
+- library package targets (`src/lib.gof`) currently stay compile-only
+
+### `gof build`
+
+By default:
+
+```bash
+gof build program.gof
+```
+
+emits the structured backend artifact.
+
+### `gof build --native`
+
+```bash
+gof build program.gof --native
+```
+
+Emits a runnable host executable.
+
+<Callout type="warn">
+  Today `--native` is a bootstrap-native path. The generated executable packages the
+  bootstrap evaluator around a deterministic embedded source bundle.
+  It is not the final backend. The long-term goal is direct native code generation.
+</Callout>
+
+## What good tooling means for `gof`
+
+The project is aiming for tooling that is:
+
+- predictable
+- cross-platform
+- easy to script
+- explicit about what it is producing
+
+What this slice still does not provide:
+
+- REPL
+- shebang or direct executable script UX
+- script packaging/install flows
+- hot reload
+- incremental compilation reuse inside watch mode
+
+## VS Code editor baseline
+
+The repository ships a VS Code extension for `gof` in `tools/vscode-gof`, with
+the primary user-facing install path through the
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language).
+
+It currently covers:
+
+- `.gof` file association
+- syntax highlighting
+- starter snippets for modules, functions, enums, structs, `select`, and task joins
+- compiler-backed diagnostics powered by `gof check --json --stdin`
+- `#` comments, bracket pairs, and indentation for colon-ended blocks
+
+It does not yet provide:
+
+- LSP
+- debugger
+- profiler
+- semantic rename or go-to-definition
+
+The extension resolves diagnostics toolchains in this order:
+
+1. `gof.toolchain.path`
+2. repo-local cargo fallback inside the `gof` repository
+3. `gof` on `PATH`
+
+For local packaging:
+
+```bash
+cd tools/vscode-gof
+npm install
+npm test
+npm run package
+```

@@ -164,7 +164,7 @@ Hard sequencing rule:
 - `[x]` Packaging smoke builds on CI for Linux, Windows, and macOS
 - `[x]` Local rolling snapshot publish script for every maintainer push
 - `[x]` Windows `Inno Setup` installer with PATH integration for user-level installs
-- `[x]` versioned learning book scaffold in `docs/book`
+- `[x]` documentation site in `docs/site/` (Fumadocs + Next.js, EN + RU)
 - `[x]` GitHub Pages deployment path for hosted language docs
 - Exit criteria:
 - governance docs exist
@@ -308,7 +308,7 @@ Hard sequencing rule:
 ### M8. Reliability, Tooling, and Production Discipline
 
 - `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery with opt-in `--include-ignored`
-- `[x]` markdown doctest baseline through explicit `gof doctest ...` fences, default whole-file plain `gof` examples, and canonical repo-doc discovery for `README.md` and the mdBook sources
+- `[x]` markdown doctest baseline through explicit `gof doctest ...` fences, default whole-file plain `gof` examples, and canonical repo-doc discovery for `README.md` and the docs site sources
 - `[~]` typed fixtures through `fixture(test|module) fn`, DAG-backed injection, runtime caching, cleanup hooks, artifact-backed product fixtures under `tests/ui|runtime`, plus shipped `gof test --json` / `--junit` reporters, dedicated failure vs harness exit codes, and deterministic `--shuffle` / `--seed` ordering
 - `[~]` richer diagnostics coverage, including dedicated doctest discovery diagnostics
 - `[ ]` fuzzing for parser, resolver, and type layer

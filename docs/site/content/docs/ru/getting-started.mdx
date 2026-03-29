@@ -1,0 +1,112 @@
+---
+title: Быстрый старт
+description: Кратчайший правильный путь от нуля до работающей программы на gof.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+
+## Выбери нормальную стартовую точку
+
+<Tabs items={["Релизный бинарь", "Из репозитория"]}>
+  <Tab value="Релизный бинарь">
+    Если тебе нужен установленный toolchain:
+
+    **Unix-like системы:**
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.sh | bash
+    ```
+
+    **Windows PowerShell:**
+    ```powershell
+    irm https://raw.githubusercontent.com/GofMan5/gof-lang/main/scripts/install.ps1 | iex
+    ```
+
+    Это хороший путь, если ты хочешь попробовать язык как пользователь.
+  </Tab>
+  <Tab value="Из репозитория">
+    Если ты развиваешь сам язык или хочешь самый свежий bootstrap-state:
+
+    ```bash
+    cargo run -q -p gof-cli --bin gof -- run examples/hello_print.gof
+    ```
+
+    Если тебе нужно просто писать и запускать программы на `gof`, не оставайся на Rust-пути.
+    Ставь `gof`, убеждайся, что он есть в `PATH`, и используй обычный CLI напрямую.
+  </Tab>
+</Tabs>
+
+## Первая программа
+
+Напиши так:
+
+```gof
+fn main() -> int:
+    print("hello from gof")
+    return 42
+```
+
+Сохрани как `hello.gof` и запусти:
+
+```bash
+gof run hello.gof
+```
+
+### Что здесь реально происходит
+
+- `print("hello from gof")` пишет текст в stdout
+- `return 42` становится финальным значением программы в bootstrap CLI path
+
+Это намеренное разделение. `print` — side effect. `return` — итог программы.
+
+## Команды, которые реально нужно знать сначала
+
+Форматирование:
+
+```bash
+gof fmt hello.gof
+```
+
+Проверка форматирования без переписывания:
+
+```bash
+gof fmt hello.gof --check
+```
+
+Запуск fixture suite:
+
+```bash
+gof test tests/fixtures
+```
+
+Сборка backend artifact:
+
+```bash
+gof build hello.gof
+```
+
+Сборка bootstrap-native executable:
+
+```bash
+gof build hello.gof --native
+```
+
+## Пойми build modes правильно
+
+- `gof run` исполняет программу через bootstrap evaluator
+- `gof build` по умолчанию делает структурированный backend artifact
+- `gof build --native` делает реальный host executable
+
+<Callout type="warn">
+  `--native` пока не означает финальный direct codegen backend. Это bootstrap-native path.
+</Callout>
+
+## Нормальный порядок изучения
+
+1. [Обзор языка](/docs/language-tour)
+2. [Типы и данные](/docs/types-and-data)
+3. [Управление потоком](/docs/control-flow)
+4. [Модули и файлы](/docs/modules-and-files)
+5. [Базовая стандартная библиотека](/docs/stdlib-baseline)
+6. [Многопоточность](/docs/concurrency)
+7. [Тестирование](/docs/testing)

@@ -1,0 +1,121 @@
+---
+title: Типы и данные
+description: Как данные моделируются в текущем bootstrap-subset gof.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+## Встроенные scalar values
+
+Сейчас базовые scalar types такие:
+
+- `int`, `string`, `bool`, `json`
+
+Есть также `unit`, который означает "нет осмысленного значения", и runtime-level
+values вроде tasks, channels и cancellation tokens.
+
+Parameterized annotations: `list[int]`, `dict[int]`, `channel[int]`, `task[int]`, `Result[int, RuntimeError]`.
+
+## Списки
+
+```gof
+values: list[int] = [10, 20, 30]
+return values[0] + len(values)
+```
+
+Текущие правила:
+
+- список должен быть однородным, когда type layer может это вывести
+- `append(list, value)` возвращает новый список
+- `first(list)` и `last(list)` возвращают `Result[element, RuntimeError]`
+- `slice(list, start, end)` возвращает `Result[list[element], RuntimeError]`
+- `reverse(list)` и `sort(list)` возвращают новые списки
+- `min(list)` и `max(list)` возвращают `Result[element, RuntimeError]`
+
+<Callout type="info">
+  List helpers в `gof` — это явное построение нового значения, а не скрытая мутация.
+</Callout>
+
+## Словари
+
+```gof
+store: dict[int] = {"ok": 7, "warn": 2}
+return store["ok"] + len(store)
+```
+
+```gof
+base: dict[int] = {"ok": 7}
+next = insert(base, "warn", 2)
+return next["warn"]
+```
+
+Текущие правила: строковые ключи, `dict()`, `insert(dict, key, value)`, `keys(dict)`, `values(dict)`, `contains(dict, "key")`, `len(dict)`.
+
+## Числовые выражения
+
+```gof
+value = -(8 + 2) / 5
+rest = value % 2
+```
+
+## Сравнения
+
+- equality через `==` и `!=` для `int`, `string`, `bool`, `json`, `unit`, `list[T]`, `dict[T]`, `struct`, `enum`, `Result[T, E]`
+- ordering через `<`, `<=`, `>`, `>=` только для `int` и `string`
+
+## Struct
+
+```gof
+struct Point:
+    x: int
+    y: int
+
+fn total(point: Point) -> int:
+    return point.x + point.y
+```
+
+## Enum
+
+```gof
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
+```
+
+Unit-вариант: `EnumName.Variant`. Payload-вариант: `EnumName.Variant(value, ...)`.
+
+## Result
+
+```gof
+fn halve(value: int) -> Result[int, string]:
+    if value % 2 != 0:
+        return Result.Err("odd")
+    return Result.Ok(value / 2)
+```
+
+- `Result.Ok(value)` и `Result.Err(error)` — конструкторы
+- postfix `expr?` распаковывает `Ok` и делает ранний `return` на `Err`
+- operational helpers тоже возвращают `Result`
+
+## RuntimeError
+
+Встроенный operational error enum: `EnvMissing`, `Io`, `ChannelClosed`, `Cancelled`, `TaskFailed`, `TaskPanicked`, `ParseInt`, `EmptySequence`, `Slice`, `Json`, `Csv`, `Toml`, `HttpRequest`, `HttpStatus`.
+
+## Методы
+
+```gof
+fn Point.with_bonus(self: Point, extra: int) -> int:
+    return self.x + self.y + extra
+```
+
+Receiver type объявляется в имени метода, первый параметр должен совпадать.
+
+## Как правильно думать о данных в `gof`
+
+- scalar — для простых значений
+- list — для упорядоченных однородных данных
+- dict — для string-keyed lookup
+- struct — для shaped data
+- enum — для закрытого набора состояний
+- Result — для явного recoverable success/error flow

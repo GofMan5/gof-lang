@@ -1,0 +1,122 @@
+---
+title: Базовая стандартная библиотека
+description: Shipped stdlib surface — вывод, файловый I/O, коллекции, JSON, HTTP и принцип explicit-by-design.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Текущий stdlib surface намеренно небольшой.
+
+Shipped stdlib теперь имеет реальный import-delivery path. Зарезервированные module names:
+
+- `bytes`, `io`, `time`, `net`, `http`
+
+## Shipped bytes, stream, deadline и TCP foundation
+
+- `bytes` — `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
+- `io` — `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
+- `time` — `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
+- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+
+```gof
+import bytes
+import io
+import time
+
+fn main() -> Result[int, RuntimeError]:
+    payload = bytes_from_string("hello")
+    deadline = deadline_after(1000)?
+    mut writer = open_write_stream("roundtrip.txt")?
+    writer = writer.with_deadline(deadline)
+    writer.write_all(payload)?
+    writer.flush()?
+    writer.close()?
+
+    mut reader = open_read_stream("roundtrip.txt")?
+    reader = reader.with_deadline(deadline)
+    text = reader.read_all()?.to_string()?
+    reader.close()?
+    return Result.Ok(len(text))
+```
+
+<Callout type="info">
+  Blocking I/O возвращает `Result[..., RuntimeError]`, а не прячет ошибку в неявном runtime state.
+</Callout>
+
+## Output и correctness checks
+
+```gof
+print("ready")
+assert(true, "must stay true")
+```
+
+## Process, filesystem и paths
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    root = cwd()?
+    path = path_join(root, "target/demo.txt")
+    write_file(path, "gof")?
+    return Result.Ok(len(read_file(path)?))
+```
+
+- `argv()`, `read_stdin()`, `read_stdin_lines()`
+- `unix_seconds()`, `unix_millis()`
+- `env(name)`, `cwd()`
+- `run_process(program, args)` — без shell-интерполяции
+- `read_file(path)`, `write_file(path, contents)`
+- `exists(path)`, `read_dir(path)`, `mkdir(path)`, `remove_file(path)`
+- `path_join`, `path_dir`, `path_base`, `path_ext`
+
+## Helpers для коллекций
+
+```gof
+values = [1, 2]
+values = append(values, 3)
+has_three = contains(values, 3)
+window = slice(values, 0, 2)
+ordered = sort(reverse(values))
+```
+
+```gof
+store: dict = {"critical": 5, "ok": 7}
+names = keys(store)
+counts = values(store)
+present = contains(store, "ok")
+```
+
+```gof
+line = trim("  gof,lang  ")
+parts = split(line, ",")
+merged = join(parts, "-")
+has_prefix = starts_with(merged, "gof")
+has_suffix = ends_with(merged, "lang")
+```
+
+## Sequence helpers
+
+- `first(list)`, `last(list)` → `Result[element, RuntimeError]`
+- `slice(list, start, end)` → `Result[list[element], RuntimeError]`
+- `reverse(list)`, `sort(list)` → новые списки
+- `min(list)`, `max(list)` → `Result[element, RuntimeError]`
+
+## JSON, CSV, TOML, YAML, base64, HTTP
+
+- `json_parse`, `json_get`, `json_index`, `json_len`, `json_string`, `json_int`
+- `csv_parse`, `csv_stringify`
+- `toml_parse`, `yaml_parse`
+- `base64_encode`, `base64_decode`
+- `template_render(template, values)`
+- `http_request(method, url[, body[, headers[, timeout_ms]]])`
+- `import http` — typed response helpers
+- `http_get(url)`, `http_post(url, body[, content_type])`
+- `sleep(milliseconds)` — явный retry/backoff
+
+## Conversion helpers
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    parsed = parse_int(trim(" 41 "))?
+    rendered = "gof-" + to_string(parsed + 1)
+    return Result.Ok(parsed + len(rendered))
+```

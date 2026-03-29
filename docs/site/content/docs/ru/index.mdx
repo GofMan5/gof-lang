@@ -1,0 +1,126 @@
+---
+title: Введение
+description: Изучай язык gof по правильной модели мышления, а не по догадкам.
+---
+
+import { Cards, Card } from "fumadocs-ui/components/card";
+import { Callout } from "fumadocs-ui/components/callout";
+
+<div className="mb-8 rounded-lg border border-fd-border bg-fd-card p-8">
+  <p className="text-fd-muted-foreground mb-2 text-sm font-medium uppercase tracking-wide">Книга gof</p>
+  <h2 className="mb-4 text-3xl font-bold leading-tight">Изучай язык по правильной модели мышления, а не по догадкам.</h2>
+  <p className="text-fd-muted-foreground text-lg leading-relaxed">
+    <code>gof</code> стремится к читаемости Python, concurrency-модели уровня Go и
+    инженерной строгости Rust. Важен не сам слоган, а то, что язык проектируется
+    так, чтобы оставаться оптимизируемым, явным и нормально обучаемым с самого начала.
+  </p>
+
+  <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Читаемо</p>
+      <p className="text-fd-muted-foreground text-xs">низкая церемониальность, синтаксис на отступах</p>
+    </div>
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Явно</p>
+      <p className="text-fd-muted-foreground text-xs">типовые контракты, видимая мутабельность, честный control flow</p>
+    </div>
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Параллельно</p>
+      <p className="text-fd-muted-foreground text-xs">`go`, `await`, каналы и `select`</p>
+    </div>
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Честно</p>
+      <p className="text-fd-muted-foreground text-xs">bootstrap-ограничения так и называются</p>
+    </div>
+  </div>
+</div>
+
+<Cards>
+  <Card title="Быстрый старт" description="Установка, первый запуск и минимальный рабочий цикл." href="/docs/getting-started" />
+  <Card title="Обзор языка" description="Сначала пойми модель, потом заучивай синтаксис." href="/docs/language-tour" />
+  <Card title="Многопоточность" description="Текущий baseline задач, каналов и select." href="/docs/concurrency" />
+</Cards>
+
+<Callout type="info">
+  Главное правило: книга объясняет, spec фиксирует, examples доказывают, что реально работает сегодня.
+</Callout>
+
+## Каким `gof` пытается быть
+
+`gof` не пытается повторять внутренности Python. Он пытается сохранить плюсы
+читаемости Python, но при этом оставить путь к нативной производительности,
+предсказуемой многопоточности и долгосрочно поддерживаемой архитектуре.
+
+Отсюда главный принцип:
+
+> Если "похоже на Python" конфликтует с safety, оптимизируемостью или ясной
+> семантикой, `gof` выбирает ясную семантику.
+
+## Для чего эта книга
+
+Это основной путь обучения `gof`.
+
+Используй ее, если тебе нужны:
+
+- объяснение текущего языка человеческим языком
+- примеры, которые совпадают с реальной реализацией
+- правильная картина того, что уже есть, а что еще bootstrap
+
+## Для чего эта книга не предназначена
+
+Это не формальная спецификация языка. Для точных правил смотри:
+
+- `spec/language-v1.md`
+- `spec/diagnostics.md`
+- `rfcs/`
+
+Книга учит. Спецификация определяет контракт. Примеры держат их в честном состоянии.
+
+## Как правильно учить `gof`
+
+Не учи `gof` как набор ключевых слов.
+
+Учить надо в таком порядке:
+
+1. что означают значения и биндинги
+2. какие типовые контракты уже реальны
+3. как устроен control flow
+4. как моделируются данные
+5. как сегодня ведут себя задачи, каналы и `select`
+6. что реально делает toolchain
+
+## Что реально есть уже сейчас
+
+Сейчас в репозитории уже есть:
+
+- функции и явные return contracts
+- локальные импорты по соседним файлам и manifest-resolved local packages с детерминированным lockfile
+- `struct`
+- `enum`
+- исчерпывающий `match`
+- методы
+- списки и словари
+- `assert`
+- файловый I/O
+- `go` / `await`
+- каналы и `select`
+- `gof build --native`
+
+Но часть этого все еще bootstrap-уровня:
+
+- native build пока оборачивает bootstrap evaluator
+- stdlib намеренно маленькая
+- package system пока ограничена локальными пакетами без registry и solver
+- concurrency semantics еще не production-grade
+
+## Чего не надо предполагать
+
+Не надо автоматически думать, что в `gof` уже есть:
+
+- совместимость с Python
+- зрелая package ecosystem
+- финальная семантика каналов
+- direct native code generation
+- большая стандартная библиотека
+
+Книга будет всегда предпочитать точное "еще нет" красивому, но ложному "почти уже да".

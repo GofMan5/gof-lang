@@ -1,0 +1,104 @@
+---
+title: Тестирование
+description: Shipped testing platform — test fn, fixtures, snapshots, doctests, reporters и gof test.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`gof` теперь имеет shipped testing platform baseline.
+
+## Текущий surface
+
+- `test fn`
+- `fixture(test) fn` и `fixture(module) fn`
+- reserved stdlib import `testing`
+- typed `TestContext`
+- deterministic discovery для `*_test.gof` и `tests/**/*.gof`
+- snapshots под `tests/snapshots/`
+- product fixtures под `tests/ui`, `tests/runtime`, `tests/runtime-fail`
+- markdown doctests через `gof test --docs`
+
+Пример:
+
+```gof
+import testing
+
+test fn sums_are_stable(t: TestContext):
+    case = t.case("small-sum")
+    case.equal(2 + 3, 5, "expected deterministic integer addition")
+
+test fn result_paths_stay_explicit(t: TestContext) -> Result[unit, RuntimeError]:
+    parsed = parse_int("7")?
+    return Result.Ok(t.equal(parsed, 7, "expected parse_int to preserve value"))
+```
+
+```bash
+gof test examples/testing_baseline
+gof test --list examples/testing_baseline
+gof test --shuffle --seed 17 examples/testing_baseline
+```
+
+## `TestContext`
+
+- `t.fail(message)`, `t.equal(actual, expected, message)`
+- `t.not_equal(actual, expected, message)`
+- `t.true(condition, message)`, `t.false(condition, message)`
+- `t.ok(result, message)`, `t.err(result, message)`
+- `t.match_snapshot(name, value)`, `t.case(name)`
+- `t.temp_dir()`, `t.temp_file(prefix)`, `t.env(name, value)`
+- `t.skip(message)`, `t.todo(message)`
+
+## Typed fixtures
+
+```gof
+import testing
+
+fixture(module) fn shared_total() -> int:
+    return 41
+
+fixture(test) fn scratch_dir(t: TestContext) -> TempDir:
+    return t.temp_dir()
+
+test fn uses_fixtures(shared_total: int, scratch_dir: TempDir, t: TestContext):
+    t.equal(shared_total, 41, "expected cached module fixture value")
+    t.true(exists(scratch_dir.path()), "expected test fixture temp dir")
+```
+
+- `fixture(module)` — один раз на файл
+- `fixture(test)` — один раз на тест
+- dependency injection по имени и типу параметра
+- optional `cleanup()` receiver method
+
+## Snapshot contract
+
+- snapshots под `tests/snapshots/`
+- обновление только через `--update-snapshots`
+
+## Product fixtures
+
+- `tests/ui/*.gof` — compile failure expected
+- `tests/runtime/*.gof` — success expected
+- `tests/runtime-fail/*.gof` — runtime failure expected
+
+Артефакты: `.diag`, `.stdout`, `.stderr`, `.exit`.
+
+## Reporters
+
+- `gof test --json` → schema `gof.test.report/v1`
+- `gof test --junit` → JUnit/xUnit XML
+
+## Exit codes
+
+- `10` — хотя бы один тест failed
+- `11` — harness не смог завершить discovery/execution
+
+## Markdown doctests
+
+- `` ```gof doctest `` `` — compile + run
+- `` ```gof doctest no_run `` `` — compile only
+- `` ```gof doctest compile_fail `` `` — expect compile failure
+- `` ```gof doctest runtime_fail `` `` — expect runtime failure
+
+<Callout type="info">
+  Еще не shipped: property testing, fuzzing, concurrency stress, benchmark integration.
+</Callout>

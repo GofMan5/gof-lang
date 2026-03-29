@@ -1,0 +1,154 @@
+---
+title: Testing
+description: The shipped testing platform — test fn, fixtures, snapshots, doctests, reporters, and gof test.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`gof` now has the first shipped slice of a real testing platform.
+
+This is not the final test system yet. It is the first coherent baseline that
+lets user code and repository code share the same language-level test surface
+instead of treating `assert(...)` as a pseudo-framework.
+
+## Current surface
+
+The shipped slice currently includes:
+
+- `test fn`
+- `fixture(test) fn` and `fixture(module) fn`
+- the reserved stdlib import `testing`
+- typed `TestContext`
+- deterministic `gof test` discovery for `*_test.gof` and `tests/**/*.gof`
+- snapshot storage under `tests/snapshots/`
+- artifact-backed product fixtures under `tests/ui`, `tests/runtime`, and `tests/runtime-fail`
+- optional fixture cleanup hooks through receiver method `cleanup()`
+- markdown doctests through `gof test --docs`
+
+Example:
+
+```gof
+import testing
+
+test fn sums_are_stable(t: TestContext):
+    case = t.case("small-sum")
+    case.equal(2 + 3, 5, "expected deterministic integer addition")
+
+test fn result_paths_stay_explicit(t: TestContext) -> Result[unit, RuntimeError]:
+    parsed = parse_int("7")?
+    return Result.Ok(t.equal(parsed, 7, "expected parse_int to preserve value"))
+```
+
+Run it with:
+
+```bash
+gof test examples/testing_baseline
+gof test --list examples/testing_baseline
+gof test --shuffle --seed 17 examples/testing_baseline
+```
+
+## `TestContext`
+
+The shipped `testing` stdlib currently exposes these baseline helpers:
+
+- `t.fail(message)` — immediate test failure
+- `t.equal(actual, expected, message)` — equality check
+- `t.not_equal(actual, expected, message)` — inequality check
+- `t.true(condition, message)` — boolean assertion
+- `t.false(condition, message)` — negated boolean assertion
+- `t.ok(result, message)` — assert Result is Ok
+- `t.err(result, message)` — assert Result is Err
+- `t.match_snapshot(name, value)` — snapshot comparison
+- `t.case(name)` — sub-case scoping
+- `t.temp_dir()` — create temporary directory
+- `t.temp_file(prefix)` — create temporary file
+- `t.env(name, value)` — scoped environment override
+- `t.skip(message)` — skip the test
+- `t.todo(message)` — mark as todo
+
+## Typed fixtures
+
+Fixtures are explicit top-level functions that feed typed dependencies into
+tests and other fixtures.
+
+```gof
+import testing
+
+fixture(module) fn shared_total() -> int:
+    return 41
+
+fixture(test) fn scratch_dir(t: TestContext) -> TempDir:
+    return t.temp_dir()
+
+test fn uses_fixtures(shared_total: int, scratch_dir: TempDir, t: TestContext):
+    t.equal(shared_total, 41, "expected cached module fixture value")
+    t.true(exists(scratch_dir.path()), "expected test fixture temp dir")
+```
+
+Current fixture rules:
+
+- `fixture(module)` caches one value per test file during a `gof test` run
+- `fixture(test)` creates one value per test case
+- dependency injection resolves by parameter name and compatible type
+- fixtures must declare an explicit return type
+- only `fixture(test)` may request `t: TestContext`
+- fixture values may declare an optional `cleanup()` receiver method
+
+## Snapshot contract
+
+Snapshots are explicit and deterministic:
+
+- they live under `tests/snapshots/`
+- paths are derived from the source file path and nested `t.case(...)` names
+- they update only when you pass `--update-snapshots`
+
+## Product fixtures
+
+`gof test` now also owns the repository-style product harness paths:
+
+- `tests/ui/*.gof`: the file must fail during compilation
+- `tests/runtime/*.gof`: the file must execute successfully
+- `tests/runtime-fail/*.gof`: the file must compile, then fail at runtime
+
+Those paths use explicit artifact files: `.diag`, `.stdout`, `.stderr`, `.exit`.
+
+## JSON reporter
+
+`gof test --json` emits one machine-readable report to stdout with stable
+schema `gof.test.report/v1`.
+
+## JUnit reporter
+
+`gof test --junit` emits one JUnit/xUnit XML document to stdout.
+
+## Exit codes
+
+`gof test` reserves two dedicated non-zero exit codes:
+
+- `10`: at least one discovered test target failed honestly
+- `11`: the test harness itself could not complete discovery, execution, or reporting honestly
+
+## Markdown doctests
+
+`gof test --docs` has a shipped markdown baseline:
+
+- `` ```gof doctest `` ``: compile and run
+- `` ```gof doctest no_run `` ``: compile only
+- `` ```gof doctest compile_fail `` ``: expect compilation failure
+- `` ```gof doctest runtime_fail `` ``: expect runtime failure
+- plain `` ```gof `` `` fences default to doctests only when the block looks like a whole-file example
+- `` ```gof ignore `` `` and `` ```gof text `` `` force a fence to stay prose-only
+
+## Current limits
+
+<Callout type="info">
+  This slice is intentionally narrower than the final testing platform.
+</Callout>
+
+Not shipped yet:
+
+- property testing
+- fuzzing
+- concurrency stress
+- benchmark integration
+- default parallel execution

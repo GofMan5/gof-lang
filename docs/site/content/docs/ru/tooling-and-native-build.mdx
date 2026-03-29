@@ -1,0 +1,75 @@
+---
+title: Инструменты и native build
+description: Единый CLI gof — run, check, build, test, fmt, mod, doc, bench и расширение VS Code.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+У `gof` уже есть единый CLI:
+
+- `gof run`, `gof check`, `gof build`, `gof test`
+- `gof fmt`, `gof mod`, `gof doc`, `gof bench`
+
+## Что означают команды
+
+### `gof run`
+
+Запускает программу через bootstrap execution path.
+
+Watch mode:
+
+```bash
+gof run --watch program.gof -- --example arg
+```
+
+### `gof check`
+
+```bash
+gof check program.gof
+gof check program.gof --json --stdin
+```
+
+Compile-only validation. Машиночитаемый путь для editor tooling.
+
+### `gof test`
+
+- executable package targets → compile + execute smoke
+- library package targets → compile-only
+
+### `gof build`
+
+```bash
+gof build program.gof
+```
+
+### `gof build --native`
+
+```bash
+gof build program.gof --native
+```
+
+<Callout type="warn">
+  `--native` пока bootstrap-native path. Executable оборачивает bootstrap evaluator.
+  Финальная цель — direct native code generation.
+</Callout>
+
+## VS Code editor baseline
+
+Расширение в `tools/vscode-gof`, установка через
+[Marketplace](https://marketplace.visualstudio.com/items?itemName=gofman5.gof-language):
+
+- `.gof` file association и syntax highlighting
+- snippets для modules, functions, enums, structs, `select`
+- compiler-backed diagnostics через `gof check --json --stdin`
+- `#` comments, bracket pairs, indentation
+
+Чего пока нет: LSP, debugger, profiler, semantic rename.
+
+Для локальной сборки:
+
+```bash
+cd tools/vscode-gof
+npm install
+npm test
+npm run package
+```

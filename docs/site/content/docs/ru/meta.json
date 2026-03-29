@@ -1,0 +1,20 @@
+{
+  "title": "Документация",
+  "pages": [
+    "---Введение---",
+    "index",
+    "getting-started",
+    "---Язык---",
+    "language-tour",
+    "types-and-data",
+    "control-flow",
+    "modules-and-files",
+    "---Рантайм---",
+    "concurrency",
+    "stdlib-baseline",
+    "---Инженерия---",
+    "tooling-and-native-build",
+    "testing",
+    "status-and-roadmap"
+  ]
+}

@@ -1,0 +1,96 @@
+---
+title: Многопоточность
+description: Tasks, каналы, select и cancellation — текущий bootstrap concurrency baseline.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Concurrency — одна из причин существования `gof`, поэтому и учить ее нужно аккуратно.
+
+## Шаг 1: `go` и `await`
+
+```gof
+fn square(x: int) -> int:
+    return x * x
+
+fn main() -> int:
+    job: task[int] = go square(12)
+    return await job
+```
+
+Текущие правила:
+
+- `go` спавнит top-level named function call
+- `await` ждет task value
+- `await_result(task)` делает recoverable join как `Result[T, RuntimeError]`
+- `await_result(task, token)` позволяет вернуть `Result.Err(RuntimeError.Cancelled)`
+
+```gof
+fn lucky() -> int:
+    return 7
+
+fn main() -> Result[int, RuntimeError]:
+    job: task[int] = go lucky()
+    return await_result(job)
+```
+
+## Шаг 2: каналы
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    ch: channel[int] = channel()
+    send(ch, 4)?
+    return recv(ch)
+```
+
+- `channel()` — unbounded, `channel(0)` — rendezvous, `channel(n)` — bounded
+- `close(channel)` закрывает явно
+- `send(channel, value)` → `Result[unit, RuntimeError]`
+- `recv(channel)` → `Result[T, RuntimeError]`
+
+## Шаг 3: `select`
+
+```gof
+fn main() -> Result[int, RuntimeError]:
+    left: channel[int] = channel()
+    right: channel[int] = channel()
+    send(right, 8)?
+    select:
+        value = recv(left):
+            return Result.Ok(value? + 0)
+        value = recv(right):
+            return Result.Ok(value? + 1)
+```
+
+- receive arms, send arms и один `default` arm
+- runtime блокируется на wakeup-сигналах channel/token
+- round-robin baseline при нескольких ready arms
+
+## Шаг 4: cancellation
+
+```gof
+fn main() -> bool:
+    token = timeout_token(0)
+    manual = cancel_token()
+    cancel_after(manual, 0)
+    return is_cancelled(token) and is_cancelled(manual)
+```
+
+- `cancel_token()` создает cooperative token
+- `cancel(token)` переводит в cancelled state
+- `timeout_token(milliseconds)` — auto-cancel token
+- `cancel_after(token, milliseconds)` — schedule cancel
+- `send(..., token)`, `recv(..., token)` и `await_result(task, token)` просыпаются сразу после отмены token
+
+## Чего еще не хватает
+
+<Callout type="warn">
+  Это уже реальный baseline, но не финальная concurrency story.
+</Callout>
+
+- production-grade fairness
+- automatic task panic preservation для plain `await`
+- deadline/context propagation
+- production scheduler hardening
+
+Думай о ней так: уже достаточно реальна, чтобы учиться и тестировать, но еще не production-grade.

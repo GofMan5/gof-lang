@@ -1,0 +1,85 @@
+---
+title: Модули и файлы
+description: Bootstrap module system — локальные импорты, пакеты, lockfile и текущая dependency story.
+---
+
+Bootstrap module system в `gof` по-прежнему маленький и строгий намеренно.
+
+## Локальные импорты
+
+`import name` ищет модуль в детерминированном порядке:
+
+1. `name.gof` рядом с импортирующим файлом
+2. `src/name.gof` внутри ближайшего package root с `gof.mod`
+3. `src/lib.gof` из локальной зависимости
+
+Зарезервированные stdlib-импорты: `import bytes`, `import io`, `import time`, `import net`, `import http`.
+
+Пример пакета:
+
+```text
+app/
+  gof.mod
+  src/
+    main.gof
+    math.gof
+```
+
+с `gof.mod`:
+
+```toml
+module = "example/app"
+edition = "2026"
+
+[dependencies]
+```
+
+и `src/main.gof`:
+
+```gof
+import math
+
+fn main() -> int:
+    return square(9)
+```
+
+## Локальные path dependencies
+
+```toml
+module = "example/package_app"
+edition = "2026"
+
+[dependencies]
+package_math = { path = "../package_math" }
+```
+
+`src/lib.gof` — dependency entrypoint для `import package_math`.
+
+## Locking локального графа
+
+```bash
+gof mod resolve --dir package_app
+```
+
+Правила:
+
+- `gof.lock` — единственный lockfile format
+- писать его умеет только `gof mod resolve`
+- `gof run`, `gof build` и `gof test` требуют свежий lockfile для manifest-backed packages
+- изменения `gof.mod` или dependency paths делают lockfile stale
+
+## Как ведет себя текущий module graph
+
+- same-directory imports
+- shipped stdlib imports через зарезервированные module names
+- package-root imports через ближайший `gof.mod`
+- локальные path dependencies через `[dependencies]`
+- один merged bootstrap module graph
+- запрещены: import cycles, duplicate top-level names
+
+## Как лучше организовывать программы
+
+- `gof.mod` в корне пакета
+- `src/main.gof` для entrypoint
+- `src/lib.gof` для dependency-facing exports
+- helper logic по понятным модулям внутри `src/`

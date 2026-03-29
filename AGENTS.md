@@ -155,7 +155,7 @@ Expected verification by area:
 - parser / AST / HIR / typechecker / runtime: focused Rust tests + conformance where relevant
 - CLI: CLI/conformance tests
 - `tools/vscode-gof`: `npm test` and `npm run package`
-- docs/book: build touched books
+- docs/site: `npm run build` in `docs/site/`
 - release/install scripts: targeted packaging checks
 
 Run the whole world only when the change is truly cross-cutting or release-risky.
@@ -169,7 +169,7 @@ Public behavior is not done until the repository teaches it.
 If you change public syntax, semantics, tooling, stdlib, diagnostics, runtime
 behavior, or package behavior, update the relevant source of truth:
 
-- `docs/book/`
+- `docs/site/`
 - `examples/`
 - `README.md`
 - `spec/`

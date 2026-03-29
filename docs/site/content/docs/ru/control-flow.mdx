@@ -1,0 +1,137 @@
+---
+title: Управление потоком
+description: Как gof держит control flow очевидным — if, while, match и postfix ?.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+`gof` старается держать control flow очевидным. Текущий bootstrap-subset уже
+дает достаточно, чтобы писать осмысленную логику.
+
+## `if`, `while` и loop control
+
+```gof
+fn main() -> int:
+    mut n: int = 3
+    mut total: int = 0
+    while n > 0:
+        if n > 1:
+            total = total + n
+        else:
+            total = total + 10
+        n = n - 1
+    return total
+```
+
+Текущие правила:
+
+- conditions должны быть boolean
+- `if` и `while` используют блоки по отступам
+- `break` выходит из ближайшего цикла
+- `continue` переходит к следующей итерации
+
+Текущий baseline для loop control:
+
+```gof
+fn main() -> int:
+    mut total = 0
+    for value in [1, 2, 3, 4]:
+        if value == 2:
+            continue
+        total = total + value
+        if total > 3:
+            break
+    return total
+```
+
+## `and`, `or`, `not`
+
+```gof
+if ready and not failed:
+    return 1
+```
+
+- `and` и `or` требуют boolean operands, сохраняют short-circuit behavior
+- `not` требует boolean operand
+
+## `match`
+
+```gof
+enum Status:
+    Ready
+    Busy
+    Failed
+
+fn score(status: Status) -> int:
+    match status:
+        Status.Ready:
+            return 100
+        Status.Busy:
+            return 50
+        Status.Failed:
+            return 0
+```
+
+- target должен быть enum или `Result`
+- все варианты должны быть покрыты
+- duplicate arms запрещены
+
+Payload-варианты распаковываются прямо в заголовке arm:
+
+```gof
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
+
+fn score(state: JobState) -> int:
+    match state:
+        JobState.Ready:
+            return 0
+        JobState.Running(pid):
+            return pid
+        JobState.Failed(message):
+            return len(message)
+```
+
+<Callout type="info">
+  `match` нужен не просто для красоты, а чтобы делать state handling явным и полным.
+</Callout>
+
+`Result` использует тот же exhaustive story:
+
+```gof
+fn main() -> int:
+    outcome: Result[int, string] = Result.Ok(42)
+    match outcome:
+        Result.Ok(value):
+            return value
+        Result.Err(error):
+            return len(error)
+```
+
+## Postfix `?`
+
+```gof
+fn halve(value: int) -> Result[int, string]:
+    if value % 2 != 0:
+        return Result.Err("odd")
+    return Result.Ok(value / 2)
+
+fn compute() -> Result[int, string]:
+    half = halve(84)?
+    return Result.Ok(half)
+```
+
+- operand должен быть `Result[T, E]`
+- `Ok(value)` распаковывается в `value`
+- `Err(error)` делает ранний `return` из внешней функции
+
+## Когда использовать что
+
+- `if` — ветвление по булевым фактам
+- `while` — повторение до условия
+- `for` — итерация по коллекции
+- `match` — исчерпывающий dispatch по state space
+- `?` — явный ранний выход из `Result`
+- `break`/`continue` — управление циклом

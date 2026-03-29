@@ -1,0 +1,140 @@
+---
+title: Introduction
+description: Learn the gof language by the right mental model, not by guesswork.
+---
+
+import { Cards, Card } from "fumadocs-ui/components/card";
+import { Callout } from "fumadocs-ui/components/callout";
+
+<div className="mb-8 rounded-lg border border-fd-border bg-fd-card p-8">
+  <p className="text-fd-muted-foreground mb-2 text-sm font-medium uppercase tracking-wide">The gof Book</p>
+  <h2 className="mb-4 text-3xl font-bold leading-tight">Learn the language by the right mental model, not by guesswork.</h2>
+  <p className="text-fd-muted-foreground text-lg leading-relaxed">
+    <code>gof</code> is aiming for Python-like readability, Go-like concurrency, and
+    Rust-grade engineering discipline. The important part is not the slogan. The
+    important part is that the language is being designed to stay optimizable,
+    explicit, and teachable from day one.
+  </p>
+
+  <div className="mt-6 grid grid-cols-2 gap-3 md:grid-cols-4">
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Readable</p>
+      <p className="text-fd-muted-foreground text-xs">low ceremony, indentation-aware syntax</p>
+    </div>
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Explicit</p>
+      <p className="text-fd-muted-foreground text-xs">typed contracts, visible mutability, clear control flow</p>
+    </div>
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Concurrent</p>
+      <p className="text-fd-muted-foreground text-xs">`go`, `await`, channels, and `select`</p>
+    </div>
+    <div className="rounded-md border border-fd-border bg-fd-secondary p-3">
+      <p className="text-sm font-semibold">Honest</p>
+      <p className="text-fd-muted-foreground text-xs">bootstrap features are called bootstrap features</p>
+    </div>
+  </div>
+</div>
+
+<Cards>
+  <Card title="Getting Started" description="Install or run locally, execute your first program, and learn the command flow." href="/docs/getting-started" />
+  <Card title="Language Tour" description="Understand what the language is trying to be before you memorize syntax." href="/docs/language-tour" />
+  <Card title="Concurrency" description="See the current task, channel, and select baseline with its real limits." href="/docs/concurrency" />
+</Cards>
+
+<Callout type="info">
+  Canonical rule: the book teaches, the spec defines, and the examples prove what really runs today.
+</Callout>
+
+## What `gof` is trying to be
+
+`gof` is not trying to be a clone of Python internals. It is trying to keep the
+good parts of Python's reading experience while keeping a clean path to native
+performance, predictable concurrency, and long-term maintainability.
+
+That leads to a very important rule:
+
+> If "looks a bit like Python" conflicts with safety, optimizer-friendliness, or
+> architectural clarity, `gof` chooses clarity.
+
+You should read the current language with this mindset:
+
+- readable syntax matters
+- explicit semantics matter more
+- bootstrap convenience is allowed
+- bootstrap lies are not allowed
+
+## What this book is for
+
+This book is the main learning path for `gof`.
+
+Use it when you want:
+
+- a guided explanation of the language surface that exists today
+- examples that match the current compiler and evaluator
+- the correct mental model for what is stable, what is bootstrap, and what is still evolving
+
+## What this book is not
+
+This book is not the formal language contract. For exact rules and diagnostics,
+use:
+
+- `spec/language-v1.md`
+- `spec/diagnostics.md`
+- `rfcs/`
+
+The book teaches. The spec defines. The examples keep both honest.
+
+## The right way to learn `gof`
+
+Do not learn `gof` as a pile of keywords.
+
+Learn it in this order:
+
+1. what values and bindings mean
+2. what type contracts are already real
+3. how control flow stays explicit
+4. how user-defined data is modeled
+5. how tasks, channels, and `select` behave today
+6. what the bootstrap toolchain really emits
+
+That order matters because `gof` is being built around semantics first, syntax second.
+
+## Current reality
+
+`gof` is still in bootstrap development. That matters, and the book will keep saying
+that clearly.
+
+Today the repository already has:
+
+- functions and typed return contracts
+- same-directory imports plus manifest-resolved local path packages with deterministic lockfiles
+- `struct`
+- `enum`
+- exhaustive `match`
+- methods
+- lists and dicts
+- `assert`
+- file I/O
+- `go` / `await`
+- channels and `select`
+- `gof build --native`
+
+But some pieces are still bootstrap-grade:
+
+- the native build path currently packages the bootstrap evaluator
+- the standard library is intentionally small
+- package management is still local-package-only with no registry or solver
+- concurrency semantics still need production hardening
+
+## What you should not assume
+
+Do not assume that `gof` already has:
+
+- Python compatibility
+- a full package ecosystem
+- production-grade channel semantics
+- direct native code generation
+- a large standard library
+
+The book will always prefer a precise "not yet" over a misleading "basically yes."

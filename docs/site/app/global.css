@@ -1,0 +1,76 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+@theme {
+  /* ── gof brand: dark-first palette ── */
+  --color-fd-background: #0e1117;
+  --color-fd-foreground: #e2dfd8;
+  --color-fd-muted: #1a1f2b;
+  --color-fd-muted-foreground: #8a8680;
+  --color-fd-popover: #151920;
+  --color-fd-popover-foreground: #e2dfd8;
+  --color-fd-card: #1a1f2b;
+  --color-fd-card-foreground: #e2dfd8;
+  --color-fd-border: #2a3040;
+  --color-fd-primary: #d4a56a;
+  --color-fd-primary-foreground: #0e1117;
+  --color-fd-secondary: #222836;
+  --color-fd-secondary-foreground: #e2dfd8;
+  --color-fd-accent: #2a3040;
+  --color-fd-accent-foreground: #e2dfd8;
+  --color-fd-ring: #d4a56a;
+}
+
+:root {
+  --fd-layout-width: 1400px;
+}
+
+/* ── Force dark as the only theme ── */
+html {
+  color-scheme: dark;
+}
+
+/* ── Custom scrollbar ── */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #0e1117;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3040;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a4050;
+}
+
+/* ── Code block styling ── */
+pre {
+  border: 1px solid #2a3040 !important;
+  border-radius: 8px !important;
+}
+
+/* ── Sidebar active link accent ── */
+[data-active="true"] {
+  color: #d4a56a !important;
+  font-weight: 600;
+}
+
+/* ── Smooth page transitions ── */
+main {
+  animation: fd-fade-in 0.2s ease-out;
+}
+
+@keyframes fd-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
