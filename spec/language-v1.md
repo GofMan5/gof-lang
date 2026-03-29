@@ -136,7 +136,7 @@ The bootstrap compiler in this repository currently supports:
 - the shipped `io` module currently exposes `ReadStream`, `WriteStream`, `open_read_stream`, and `open_write_stream`
 - the shipped `time` module currently exposes `NetDeadline`, `deadline_after`, and `deadline_at_unix_millis`
 - the shipped `net` module currently exposes `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, and `listen_tcp`
-- the shipped `http` module currently exposes `response_status`, `response_body`, `response_method`, `response_url`, `response_headers`, `response_header_values`, and `response_header`
+- the shipped `http` module currently exposes `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, and `response_content_type`
 - the shipped `testing` module currently exposes `TestContext`, `TempDir`, `TempFile`, `TestContext.fail`, `TestContext.equal`, `TestContext.not_equal`, `TestContext.true`, `TestContext.false`, `TestContext.ok`, `TestContext.err`, `TestContext.match_snapshot`, `TestContext.case`, `TestContext.temp_dir`, `TestContext.temp_file`, `TestContext.env`, `TestContext.skip`, `TestContext.todo`, `TempDir.path`, and `TempFile.path`
 - `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, `NetDeadline`, `TestContext`, `TempDir`, and `TempFile` are currently opaque shipped-stdlib types rather than user-declarable language types
 - `fixture(scope) fn` currently declares a top-level typed fixture and cannot declare a receiver

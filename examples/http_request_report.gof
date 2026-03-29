@@ -8,10 +8,10 @@ fn main() -> Result[int, RuntimeError]:
     body = response_body(report)?
     method = response_method(report)?
     url = response_url(report)?
-    content_type_values = response_header_values(report, "content-type")?
-    content_type = json_string(json_index(content_type_values, 0)?)?
+    content_type = response_content_type(report)?
     request_id = response_header(report, "x-request-id")?
     assert(status == 202, "expected accepted response")
+    assert(response_is_success(report)?, "expected 202 report to count as success")
     assert(body == "accepted", "expected echoed response body")
     assert(method == "POST", "expected request method to round-trip")
     assert(url == base + "/inspect", "expected response report URL")

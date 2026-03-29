@@ -5,11 +5,17 @@ import net
 import time
 
 fn main() -> Result[int, RuntimeError]:
-    report = json_parse("{\"status\":204,\"body\":\"ok\",\"headers\":{\"content-type\":[\"text/plain\"]},\"method\":\"GET\",\"url\":\"https://example.com/health\"}")?
+    report = json_parse("{\"status\":204,\"body\":\"{\\\"service\\\":\\\"alpha\\\",\\\"count\\\":7}\",\"headers\":{\"content-type\":[\"application/json; charset=utf-8\"]},\"method\":\"GET\",\"url\":\"https://example.com/health\"}")?
     status = response_status(report)?
-    body = response_body(report)?
+    status_class = response_status_class(report)?
+    success = response_is_success(report)?
+    body = response_json(report)?
+    service = json_string(json_get(body, "service")?)?
+    count = json_int(json_get(body, "count")?)?
     method = response_method(report)?
     url = response_url(report)?
-    content_type = response_header(report, "content-type")?
+    content_type = response_content_type(report)?
     assert(status == 204, "expected parsed status")
-    return Result.Ok(status + len(body) + len(method) + len(url) + len(content_type))
+    assert(success, "expected 2xx report to count as success")
+    assert(service == "alpha", "expected response_json to parse body")
+    return Result.Ok(status + status_class + count + len(service) + len(method) + len(url) + len(content_type))

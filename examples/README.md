@@ -29,7 +29,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdin_report.gof`: explicit stdin ingestion through `read_stdin()` and `read_stdin_lines()` for shell-style pipelines
 - `time_report.gof`: explicit Unix wall-clock helpers through `unix_seconds()` and `unix_millis()`
 - `base64_report.gof`: explicit base64 encode/decode helpers for HTTP/CI/script payloads
-- `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names
+- `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus typed `http` response helpers
 - `tcp_roundtrip.gof`: shipped `net` / `time` stdlib foundation with `TcpListener`, `DuplexStream`, explicit deadlines, and loopback roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`

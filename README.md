@@ -190,7 +190,7 @@ imports instead of behind ever-growing global builtins:
 - `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
 - `time`: `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
 - `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
-- `http`: `response_status`, `response_body`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`
+- `http`: `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, `response_content_type`
 
 This is still bootstrap surface, not the final network platform. The current
 focus is explicit `Result`-based bytes/stream/deadline/TCP contracts plus
@@ -266,10 +266,12 @@ back to host-language glue. HTTPS/TLS continues to ride on the existing
 stack.
 
 The reserved `http` stdlib import now also ships typed response helpers such as
-`response_status(report)`, `response_body(report)`, `response_method(report)`,
-`response_url(report)`, and `response_header(report, name)` so scripts can
-inspect structured `http_request(...)` reports without repeating raw
-`json_get(...)` / `json_string(...)` boilerplate at every call site.
+`response_status(report)`, `response_status_class(report)`,
+`response_is_success(report)`, `response_json(report)`,
+`response_content_type(report)`, `response_method(report)`, `response_url(report)`,
+and `response_header(report, name)` so scripts can inspect structured
+`http_request(...)` reports without repeating raw `json_get(...)` /
+`json_string(...)` / `json_parse(...)` boilerplate at every call site.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

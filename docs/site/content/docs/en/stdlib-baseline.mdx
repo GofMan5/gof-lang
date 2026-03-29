@@ -213,7 +213,7 @@ Current rules:
 - `base64_decode(text)` returns `Result[string, RuntimeError]`
 - `template_render(template, values)` returns `Result[string, RuntimeError]`
 - `http_request(method, url[, body[, headers[, timeout_ms]]])` returns `Result[json, RuntimeError]`
-- `import http` now exposes typed response helpers such as `response_status(...)`, `response_body(...)`, `response_headers(...)`
+- `import http` now exposes typed response helpers such as `response_status(...)`, `response_status_class(...)`, `response_is_success(...)`, `response_json(...)`, `response_headers(...)`, and `response_content_type(...)`
 - `http_get(url)` is the current bootstrap HTTP read path
 - `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
 - `sleep(milliseconds)` makes retry and backoff intent explicit

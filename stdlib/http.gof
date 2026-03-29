@@ -1,8 +1,18 @@
 fn response_status(report: json) -> Result[int, RuntimeError]:
     return json_int(json_get(report, "status")?)
 
+fn response_status_class(report: json) -> Result[int, RuntimeError]:
+    return Result.Ok(response_status(report)? / 100)
+
+fn response_is_success(report: json) -> Result[bool, RuntimeError]:
+    status = response_status(report)?
+    return Result.Ok(status >= 200 and status < 300)
+
 fn response_body(report: json) -> Result[string, RuntimeError]:
     return json_string(json_get(report, "body")?)
+
+fn response_json(report: json) -> Result[json, RuntimeError]:
+    return json_parse(response_body(report)?)
 
 fn response_method(report: json) -> Result[string, RuntimeError]:
     return json_string(json_get(report, "method")?)
@@ -20,4 +30,7 @@ fn response_header_values(report: json, name: string) -> Result[json, RuntimeErr
 fn response_header(report: json, name: string) -> Result[string, RuntimeError]:
     values = response_header_values(report, name)?
     return json_string(json_index(values, 0)?)
+
+fn response_content_type(report: json) -> Result[string, RuntimeError]:
+    return response_header(report, "content-type")
 
