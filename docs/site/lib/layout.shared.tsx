@@ -25,6 +25,7 @@ export function baseOptions(locale: string): BaseLayoutProps {
           </span>
         </span>
       ),
+      url: `/${locale}/docs`,
     },
     githubUrl: "https://github.com/GofMan5/gof-lang",
   };
