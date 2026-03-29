@@ -1,3 +1,5 @@
+import http
+
 fn api_base() -> string:
     configured = env("GOF_TELEGRAM_API_BASE")
     match configured:
@@ -7,12 +9,11 @@ fn api_base() -> string:
             return "https://api.telegram.org"
 
 fn fetch_updates(base: string, token: string, offset: int) -> Result[json, RuntimeError]:
-    body = http_get(base + "/bot" + token + "/getUpdates?timeout=1&offset=" + to_string(offset))?
-    return json_parse(body)
+    return get_json(base + "/bot" + token + "/getUpdates?timeout=1&offset=" + to_string(offset))
 
 fn send_pong(base: string, token: string, chat_id: int) -> Result[int, RuntimeError]:
     body = "{\"chat_id\":" + to_string(chat_id) + ",\"text\":\"pong\"}"
-    http_post(base + "/bot" + token + "/sendMessage", body, "application/json")?
+    post_json(base + "/bot" + token + "/sendMessage", body)?
     return Result.Ok(chat_id)
 
 fn main() -> Result[int, RuntimeError]:

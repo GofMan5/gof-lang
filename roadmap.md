@@ -362,6 +362,7 @@ Hard sequencing rule:
 - `[x]` CP-M10-2d: shipped `net` stdlib loopback bind/connect helpers plus typed `SocketAddr` dialing wrappers to remove repeated address-string plumbing in local service workers
 - `[x]` CP-M10-2e: shipped `io`/`net` timeout wrappers over explicit deadline controls so common service paths can arm streams, listeners, and TCP dials without restitching `deadline_after(...)` by hand
 - `[x]` CP-M10-2f: shipped `io`/`net` UTF-8 string stream helpers over the existing `Bytes` foundation so service code can stay explicit without hand-converting every read/write edge
+- `[x]` CP-M10-2g: shipped `http` JSON request helpers for the common automation/client path so bots and internal services do not repeat `http_get(...)` plus `json_parse(...)` or hardcode JSON request headers at every call site
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

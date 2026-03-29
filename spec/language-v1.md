@@ -136,7 +136,7 @@ The bootstrap compiler in this repository currently supports:
 - the shipped `io` module currently exposes `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`, `ReadStream.read_string`, `ReadStream.read_exact_string`, `ReadStream.read_all_string`, `WriteStream.write_string`, `WriteStream.write_all_string`, `ReadStream.with_timeout`, and `WriteStream.with_timeout`
 - the shipped `time` module currently exposes `NetDeadline`, `deadline_after`, and `deadline_at_unix_millis`
 - the shipped `net` module currently exposes `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.read_string`, `DuplexStream.read_exact_string`, `DuplexStream.read_all_string`, `DuplexStream.write_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, and `SocketAddr.connect_tcp_with_timeout`
-- the shipped `http` module currently exposes `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, and `response_content_type`
+- the shipped `http` module currently exposes `request_json_headers`, `get_json`, `post_json`, `request_json_report`, `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, and `response_content_type`
 - the shipped `testing` module currently exposes `TestContext`, `TempDir`, `TempFile`, `TestContext.fail`, `TestContext.equal`, `TestContext.not_equal`, `TestContext.true`, `TestContext.false`, `TestContext.ok`, `TestContext.err`, `TestContext.match_snapshot`, `TestContext.case`, `TestContext.temp_dir`, `TestContext.temp_file`, `TestContext.env`, `TestContext.skip`, `TestContext.todo`, `TempDir.path`, and `TempFile.path`
 - `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, `NetDeadline`, `TestContext`, `TempDir`, and `TempFile` are currently opaque shipped-stdlib types rather than user-declarable language types
 - `fixture(scope) fn` currently declares a top-level typed fixture and cannot declare a receiver
@@ -363,11 +363,15 @@ The bootstrap compiler in this repository currently supports:
 - `http_get` currently accepts exactly one string URL and returns `Result[string, RuntimeError]`
 - `http_post` currently accepts `(url, body)` or `(url, body, content_type)` and returns `Result[string, RuntimeError]`
 - `http_request` currently accepts `(method, url)`, `(method, url, body)`, `(method, url, body, headers)`, or `(method, url, body, headers, timeout_ms)` and returns `Result[json, RuntimeError]`
+- `request_json_headers()` currently returns a `dict[string]` with `Accept` and `Content-Type` both set to `application/json`
+- `get_json(url)` currently accepts exactly one string URL and returns parsed `Result[json, RuntimeError]`
+- `post_json(url, body)` currently accepts `(string, string)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]`
+- `request_json_report(method, url, body, timeout_ms)` currently accepts `(string, string, string, int)` where `body` is JSON text, applies default JSON headers, and returns the structured `http_request(...)` JSON report
 - `http_request` currently reports `status`, `body`, `headers`, `method`, and `url` as a structured JSON object
 - `http_request` currently preserves non-success HTTP statuses as successful reports so callers can inspect them explicitly
 - `http_request` currently normalizes response header names to lowercase and exposes each header as `list[string]`
 - `http_request` currently accepts explicit `dict[string]` request headers and an optional non-negative timeout in milliseconds
-- `import http` currently exposes explicit helpers for extracting typed status/body/method/url/header data from the structured `http_request(...)` response report
+- `import http` currently exposes explicit JSON request helpers plus typed helpers for extracting status/body/method/url/header data from the structured `http_request(...)` response report
 - HTTPS/TLS currently flows through the bootstrap `ureq + rustls` transport path
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires either a list target with an integer index or a dict target with a string key

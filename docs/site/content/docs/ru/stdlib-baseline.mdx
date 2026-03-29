@@ -125,8 +125,11 @@ has_suffix = ends_with(merged, "lang")
 - `base64_encode`, `base64_decode`
 - `template_render(template, values)`
 - `http_request(method, url[, body[, headers[, timeout_ms]]])`
+- `import http` — JSON request helper-ы вроде `request_json_headers()`, `get_json(url)`, `post_json(url, body)`, `request_json_report(...)`
 - `import http` — typed response helpers вроде `response_status(...)`, `response_status_class(...)`, `response_is_success(...)`, `response_json(...)`, `response_headers(...)`, `response_content_type(...)`
 - `http_get(url)`, `http_post(url, body[, content_type])`
+
+Когда нужен полный контроль над custom headers, оставайся на raw `http_request(...)` path.
 - `sleep(milliseconds)` — явный retry/backoff
 
 ## Conversion helpers

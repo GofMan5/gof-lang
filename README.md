@@ -190,7 +190,7 @@ imports instead of behind ever-growing global builtins:
 - `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`, `ReadStream.read_all_string`, `WriteStream.write_all_string`, `ReadStream.with_timeout`, `WriteStream.with_timeout`
 - `time`: `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
 - `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.read_exact_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp_with_timeout`
-- `http`: `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, `response_content_type`
+- `http`: `request_json_headers`, `get_json`, `post_json`, `request_json_report`, `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, `response_content_type`
 
 This is still bootstrap surface, not the final network platform. The current
 focus is explicit `Result`-based bytes/stream/deadline/TCP contracts plus
@@ -288,6 +288,13 @@ The reserved `http` stdlib import now also ships typed response helpers such as
 and `response_header(report, name)` so scripts can inspect structured
 `http_request(...)` reports without repeating raw `json_get(...)` /
 `json_string(...)` / `json_parse(...)` boilerplate at every call site.
+
+It now also ships JSON-client helpers like `request_json_headers()`,
+`get_json(url)`, `post_json(url, body)`, and
+`request_json_report(method, url, body, timeout_ms)` so bots, webhooks, and
+internal API clients can stay on the common JSON path without repeating
+`http_get(...)` plus `json_parse(...)` or hardcoding the JSON content type on
+every request.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

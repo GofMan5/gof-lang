@@ -6,6 +6,7 @@ import time
 
 fn main() -> Result[int, RuntimeError]:
     report = json_parse("{\"status\":204,\"body\":\"{\\\"service\\\":\\\"alpha\\\",\\\"count\\\":7}\",\"headers\":{\"content-type\":[\"application/json; charset=utf-8\"]},\"method\":\"GET\",\"url\":\"https://example.com/health\"}")?
+    json_headers: dict[string] = request_json_headers()
     status = response_status(report)?
     status_class = response_status_class(report)?
     success = response_is_success(report)?
@@ -15,7 +16,11 @@ fn main() -> Result[int, RuntimeError]:
     method = response_method(report)?
     url = response_url(report)?
     content_type = response_content_type(report)?
+    accept = json_headers["Accept"]
+    json_content_type = json_headers["Content-Type"]
     assert(status == 204, "expected parsed status")
     assert(success, "expected 2xx report to count as success")
     assert(service == "alpha", "expected response_json to parse body")
-    return Result.Ok(status + status_class + count + len(service) + len(method) + len(url) + len(content_type))
+    assert(accept == "application/json", "expected JSON accept helper")
+    assert(json_content_type == "application/json", "expected JSON content type helper")
+    return Result.Ok(status + status_class + count + len(service) + len(method) + len(url) + len(content_type) + len(json_headers))

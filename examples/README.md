@@ -29,7 +29,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdin_report.gof`: explicit stdin ingestion through `read_stdin()` and `read_stdin_lines()` for shell-style pipelines
 - `time_report.gof`: explicit Unix wall-clock helpers through `unix_seconds()` and `unix_millis()`
 - `base64_report.gof`: explicit base64 encode/decode helpers for HTTP/CI/script payloads
-- `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus typed `http` response helpers
+- `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus JSON request and typed response helpers from shipped `http`
 - `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, typed `SocketAddr` dialing, timeout wrappers, and duplex string roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
@@ -59,7 +59,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `payload_match.gof`: enum payload variants plus exhaustive destructuring `match`
 - `result_flow.gof`: `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, and exhaustive result handling
 - `runtime_ops.gof`: `argv`, `env`, `cwd`, `exists`, `read_dir`, and path helpers on top of `Result`
-- `telegram_long_polling.gof`: bootstrap Telegram bot path with `env`, `sleep`, `http_get`, `http_post`, `json_*`, and `Result`
+- `telegram_long_polling.gof`: bootstrap Telegram bot path with shipped `http` JSON helpers, `env`, `sleep`, and explicit `Result`
 - `geometry.gof`: `struct`, typed fields, constructor calls, field access
 - `geometry_methods.gof`: receiver methods on structs and method calls
 - `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow
@@ -89,7 +89,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdin_report.gof` -> `Result.Ok(value: chars=11 first=alpha lines=2)` for stdin `alpha\nbeta\n`
 - `time_report.gof` -> `Result.Ok(value: 1)`
 - `base64_report.gof` -> `Result.Ok(value: 12)`
-- `stdlib_imports.gof` -> `0`
+- `stdlib_imports.gof` -> `Result.Ok(value: 280)`
 - `tcp_roundtrip.gof` -> `Result.Ok(value: 10)`
 - `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`

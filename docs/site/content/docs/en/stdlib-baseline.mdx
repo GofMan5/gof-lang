@@ -194,9 +194,7 @@ Current sequence-helper rules:
 import http
 
 fn notify(base: string) -> Result[int, RuntimeError]:
-    sleep(0)
-    headers: dict[string] = {"Accept": "application/json", "Content-Type": "application/json"}
-    report = http_request("POST", base + "/notify", "{\"text\":\"pong\"}", headers, 1500)?
+    report = request_json_report("POST", base + "/notify", "{\"text\":\"pong\"}", 1500)?
     return response_status(report)
 ```
 
@@ -212,9 +210,12 @@ Current rules:
 - `base64_decode(text)` returns `Result[string, RuntimeError]`
 - `template_render(template, values)` returns `Result[string, RuntimeError]`
 - `http_request(method, url[, body[, headers[, timeout_ms]]])` returns `Result[json, RuntimeError]`
-- `import http` now exposes typed response helpers such as `response_status(...)`, `response_status_class(...)`, `response_is_success(...)`, `response_json(...)`, `response_headers(...)`, and `response_content_type(...)`
+- `import http` now exposes JSON request helpers such as `request_json_headers()`, `get_json(url)`, `post_json(url, body)`, and `request_json_report(...)`
+- `import http` also exposes typed response helpers such as `response_status(...)`, `response_status_class(...)`, `response_is_success(...)`, `response_json(...)`, `response_headers(...)`, and `response_content_type(...)`
 - `http_get(url)` is the current bootstrap HTTP read path
 - `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
+
+Use the raw `http_request(...)` path when you need custom header control beyond the common JSON client flow.
 - `sleep(milliseconds)` makes retry and backoff intent explicit
 
 ## Conversion helpers
