@@ -1,6 +1,6 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use gof_compiler::{
-    CompileMode, Diagnostics, SourceFile, TestExecutionOutcome, TestModuleState,
+    CompileMode, Diagnostic, Diagnostics, SourceFile, Span, TestExecutionOutcome, TestModuleState,
     TestRuntimeOptions, cleanup_test_module_fixtures_with_output, compile_source,
     normalize_source_path, run_module_with_output, run_test_function_with_output,
 };
@@ -52,6 +52,13 @@ enum DocTestMode {
     NoRun,
     CompileFail,
     RuntimeFail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParsedDoctestFence {
+    Start(DocTestMode),
+    Ignore,
+    NotDoctest,
 }
 
 #[derive(Debug, Clone)]
@@ -1895,11 +1902,15 @@ fn project_root_for_source(path: &Path) -> PathBuf {
 
 fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
     let text = fs::read_to_string(&path)?;
+    let source = SourceFile::new(&path, &text);
+    let normalized_path = normalize_source_path(&path);
     let mut doctests = Vec::new();
     let mut inside = false;
     let mut active_mode = None;
     let mut block_lines = Vec::new();
     let mut block_start_line = 0usize;
+    let mut active_fence_line = 0usize;
+    let mut active_fence_text = String::new();
     let mut ordinal = 0usize;
 
     for (index, raw_line) in text.lines().enumerate() {
@@ -1907,11 +1918,16 @@ fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
         let trimmed = raw_line.trim_start();
 
         if !inside {
-            if let Some(mode) = parse_doctest_fence(trimmed) {
-                inside = true;
-                active_mode = Some(mode);
-                block_lines.clear();
-                block_start_line = line_number + 1;
+            match parse_doctest_fence(trimmed, line_number, raw_line, &source)? {
+                ParsedDoctestFence::Start(mode) => {
+                    inside = true;
+                    active_mode = Some(mode);
+                    block_lines.clear();
+                    block_start_line = line_number + 1;
+                    active_fence_line = line_number;
+                    active_fence_text = raw_line.to_string();
+                }
+                ParsedDoctestFence::Ignore | ParsedDoctestFence::NotDoctest => {}
             }
             continue;
         }
@@ -1931,7 +1947,7 @@ fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
                     .unwrap_or_else(|| Path::new("."))
                     .join(synthetic_name);
                 doctests.push(DocTestCase {
-                    markdown_path: normalize_source_path(&path),
+                    markdown_path: normalized_path.clone(),
                     synthetic_source_path: normalize_source_path(&synthetic_source_path),
                     line: block_start_line,
                     ordinal,
@@ -1946,37 +1962,117 @@ fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
         block_lines.push(raw_line.to_string());
     }
 
+    if inside {
+        return Err(doctest_fence_error(
+            &source,
+            active_fence_line,
+            &active_fence_text,
+            "GOF3128",
+            "unterminated doctest fence",
+            "this doctest block starts here but never closes with a matching ``` fence",
+            "close the doctest block with ``` or remove the doctest marker",
+        ));
+    }
+
     Ok(doctests)
 }
 
-fn parse_doctest_fence(line: &str) -> Option<DocTestMode> {
+fn parse_doctest_fence(
+    line: &str,
+    line_number: usize,
+    raw_line: &str,
+    source: &SourceFile,
+) -> Result<ParsedDoctestFence> {
     if !line.starts_with("```") {
-        return None;
+        return Ok(ParsedDoctestFence::NotDoctest);
     }
     let info = line.trim_start_matches('`').trim();
     let tokens = info.split_whitespace().collect::<Vec<_>>();
     if tokens.is_empty() || tokens[0] != "gof" {
-        return None;
+        return Ok(ParsedDoctestFence::NotDoctest);
     }
     if !tokens.iter().any(|token| *token == "doctest") {
-        return None;
+        return Ok(ParsedDoctestFence::NotDoctest);
     }
     if tokens
         .iter()
         .any(|token| *token == "ignore" || *token == "text")
     {
-        return None;
+        return Ok(ParsedDoctestFence::Ignore);
     }
-    if tokens.iter().any(|token| *token == "compile_fail") {
-        return Some(DocTestMode::CompileFail);
+
+    let mut no_run = false;
+    let mut compile_fail = false;
+    let mut runtime_fail = false;
+
+    for token in tokens.iter().skip(1) {
+        match *token {
+            "doctest" => {}
+            "no_run" => no_run = true,
+            "compile_fail" => compile_fail = true,
+            "runtime_fail" => runtime_fail = true,
+            other => {
+                return Err(doctest_fence_error(
+                    source,
+                    line_number,
+                    raw_line,
+                    "GOF3126",
+                    format!("unknown doctest fence modifier `{other}`"),
+                    "allowed doctest modifiers are `no_run`, `compile_fail`, `runtime_fail`, `ignore`, and `text`",
+                    "use `gof doctest`, `gof doctest no_run`, `gof doctest compile_fail`, or `gof doctest runtime_fail`",
+                ));
+            }
+        }
     }
-    if tokens.iter().any(|token| *token == "runtime_fail") {
-        return Some(DocTestMode::RuntimeFail);
+
+    let mode_count = usize::from(no_run) + usize::from(compile_fail) + usize::from(runtime_fail);
+    if mode_count > 1 {
+        return Err(doctest_fence_error(
+            source,
+            line_number,
+            raw_line,
+            "GOF3127",
+            "conflicting doctest fence modes",
+            "choose at most one execution modifier from `no_run`, `compile_fail`, and `runtime_fail`",
+            "keep only one doctest execution modifier on this fence",
+        ));
     }
-    if tokens.iter().any(|token| *token == "no_run") {
-        return Some(DocTestMode::NoRun);
+
+    if compile_fail {
+        return Ok(ParsedDoctestFence::Start(DocTestMode::CompileFail));
     }
-    Some(DocTestMode::Run)
+    if runtime_fail {
+        return Ok(ParsedDoctestFence::Start(DocTestMode::RuntimeFail));
+    }
+    if no_run {
+        return Ok(ParsedDoctestFence::Start(DocTestMode::NoRun));
+    }
+
+    Ok(ParsedDoctestFence::Start(DocTestMode::Run))
+}
+
+fn doctest_fence_error(
+    source: &SourceFile,
+    line_number: usize,
+    raw_line: &str,
+    code: &'static str,
+    message: impl Into<String>,
+    note: impl Into<String>,
+    fix_it: &str,
+) -> anyhow::Error {
+    let diagnostic = Diagnostic::error(
+        code,
+        message,
+        note,
+        markdown_line_span(line_number, raw_line),
+    )
+    .with_fix_it(fix_it)
+    .with_source_path(source.path().to_path_buf());
+    anyhow!(Diagnostics(vec![diagnostic]).render(source))
+}
+
+fn markdown_line_span(line_number: usize, raw_line: &str) -> Span {
+    Span::new(line_number, 1, raw_line.chars().count().max(1) + 1)
 }
 
 fn doctest_id(doctest: &DocTestCase) -> String {

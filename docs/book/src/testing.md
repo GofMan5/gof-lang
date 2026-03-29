@@ -227,6 +227,11 @@ Those items are tracked in:
 That keeps the current books honest without pretending every old teaching
 fragment is already safe to run as a doctest.
 
+Invalid doctest fences now also fail explicitly instead of being treated as
+ambient markdown: unknown modifiers, conflicting execution modes, and
+unterminated doctest blocks surface dedicated diagnostics so docs CI does not
+silently drift away from the runner contract.
+
 When `gof test --docs` targets the repository root, repo-wide markdown
 discovery is now scoped to the canonical teaching sources:
 

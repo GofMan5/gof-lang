@@ -141,6 +141,8 @@ The current shipped testing contract is still explicit and intentionally narrow:
 - `gof test --shuffle` deterministically reorders discovered language tests,
   doctests, fixtures, and package checks; `--seed <n>` pins the active order
   explicitly, while omitting `--seed` keeps shuffle deterministic with seed `0`
+- invalid `gof doctest` fences now fail with dedicated diagnostics for unknown
+  modifiers, conflicting execution modes, and unterminated doctest blocks
 - `gof test --json` emits a single machine-readable report with stable schema
   `gof.test.report/v1`, summary counts, per-target events, captured stdout, and
   structured diagnostics

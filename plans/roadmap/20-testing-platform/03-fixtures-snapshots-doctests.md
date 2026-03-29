@@ -20,6 +20,8 @@ Delivered in shipped slices:
 - explicit update flow for `.diag`, `.stdout`, `.stderr`, and `.exit` artifacts
 - canonical repo-doc extraction for `README.md`, `docs/book/src/**/*.md`, and
   `docs/book-ru/src/**/*.md` when `gof test --docs` targets the repository root
+- dedicated doctest discovery diagnostics for unknown modifiers, conflicting
+  execution modes, and unterminated doctest fences
 
 Planned next:
 
@@ -36,8 +38,8 @@ Planned next:
 
 - current fixture delivery adds `GOF3120`, `GOF3121`, `GOF3122`, `GOF3123`,
   `GOF3124`, and `GOF3125`
-- future doctest slices must still add dedicated diagnostics for doctest mode
-  misuse instead of overloading generic parse failures
+- shipped doctest discovery diagnostics now add `GOF3126`, `GOF3127`, and
+  `GOF3128` for invalid modifiers, conflicting modes, and unterminated fences
 
 ## Tests
 

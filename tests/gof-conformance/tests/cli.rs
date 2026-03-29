@@ -2648,6 +2648,73 @@ fn gof_test_lists_opt_in_doctests() {
 }
 
 #[test]
+fn gof_test_rejects_unknown_doctest_modifiers() {
+    let temp = tempdir().expect("tempdir should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof doctest slow\nfn main() -> int:\n    return 1\n```\n",
+    )
+    .expect("markdown doctest file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg(temp.path())
+        .assert()
+        .code(GOF_TEST_HARNESS_FAILURE_EXIT_CODE)
+        .stderr(predicate::str::contains("GOF3126"))
+        .stderr(predicate::str::contains("unknown doctest fence modifier `slow`"))
+        .stderr(predicate::str::contains("guide.md"));
+}
+
+#[test]
+fn gof_test_json_reports_conflicting_doctest_modes_as_harness_errors() {
+    let temp = tempdir().expect("tempdir should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof doctest no_run runtime_fail\nfn main() -> int:\n    return 1\n```\n",
+    )
+    .expect("markdown doctest file should exist");
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--json")
+        .arg("--docs")
+        .arg(temp.path())
+        .assert()
+        .code(GOF_TEST_HARNESS_FAILURE_EXIT_CODE)
+        .stderr(predicate::str::is_empty());
+
+    let report = parse_stdout_json(&assert.get_output().stdout);
+    assert_eq!(report["ok"], serde_json::Value::Bool(false));
+    assert!(report["harnessError"].as_str().is_some_and(|message| {
+        message.contains("GOF3127")
+            && message.contains("conflicting doctest fence modes")
+            && message.contains("guide.md")
+    }));
+}
+
+#[test]
+fn gof_test_rejects_unterminated_doctest_fences() {
+    let temp = tempdir().expect("tempdir should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 1\n",
+    )
+    .expect("markdown doctest file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg(temp.path())
+        .assert()
+        .code(GOF_TEST_HARNESS_FAILURE_EXIT_CODE)
+        .stderr(predicate::str::contains("GOF3128"))
+        .stderr(predicate::str::contains("unterminated doctest fence"))
+        .stderr(predicate::str::contains("guide.md"));
+}
+
+#[test]
 fn gof_test_seed_requires_shuffle() {
     gof_command()
         .arg("test")

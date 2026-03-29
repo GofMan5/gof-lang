@@ -44,6 +44,8 @@ pieces:
 
 - slice 1 introduces `GOF3113`, `GOF3114`, `GOF3115`, `GOF3117`, `GOF3118`,
   and `GOF3119`
+- later shipped fixture and doctest slices extend that set through `GOF3120`-
+  `GOF3128`
 - future slices must reserve new diagnostics explicitly instead of overloading
   generic compiler/runtime codes
 

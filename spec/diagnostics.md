@@ -136,3 +136,6 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3123`: unresolved or incompatible typed fixture dependency
 - `GOF3124`: invalid fixture lifetime dependency between scopes
 - `GOF3125`: invalid fixture cleanup hook contract
+- `GOF3126`: unknown doctest fence modifier
+- `GOF3127`: conflicting doctest fence modes
+- `GOF3128`: unterminated doctest fence

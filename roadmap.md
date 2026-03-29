@@ -309,14 +309,14 @@ Hard sequencing rule:
 - `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery with opt-in `--include-ignored`
 - `[x]` opt-in markdown doctest baseline through `gof test --docs`, plus canonical repo-doc discovery for `README.md` and the mdBook sources
 - `[~]` typed fixtures through `fixture(test|module) fn`, DAG-backed injection, runtime caching, cleanup hooks, artifact-backed product fixtures under `tests/ui|runtime`, plus shipped `gof test --json` / `--junit` reporters, dedicated failure vs harness exit codes, and deterministic `--shuffle` / `--seed` ordering
-- `[ ]` richer diagnostics coverage
+- `[~]` richer diagnostics coverage, including dedicated doctest discovery diagnostics
 - `[ ]` fuzzing for parser, resolver, and type layer
 - `[ ]` stress harness for runtime and concurrency
 - `[ ]` golden tests for compiler outputs
 - `[ ]` observability and debuggability improvements
 - Checkpoints:
 - `[x]` CP-M8-0: hybrid testing platform slice 1
-- `[~]` CP-M8-1: typed fixtures, cleanup hooks, canonical repo-doc doctest discovery, product fixtures, shipped JSON/JUnit reporter slices, dedicated test exit codes, and deterministic shuffle/seed ordering
+- `[~]` CP-M8-1: typed fixtures, cleanup hooks, canonical repo-doc doctest discovery, product fixtures, shipped JSON/JUnit reporter slices, dedicated test exit codes, deterministic shuffle/seed ordering, and explicit doctest discovery diagnostics
 - `[ ]` CP-M8-2: property, fuzz, stress, and benchmark integration
 - Exit criteria:
 - production engineering quality is visible in tooling, not just language design

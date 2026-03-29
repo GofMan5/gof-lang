@@ -227,6 +227,11 @@ stable schema `gof.test.report/v1`.
 Это позволяет честно проверять runnable примеры, не делая вид, что каждый
 старый учебный фрагмент уже автоматически готов к doctest execution.
 
+Некорректные doctest-fence теперь тоже падают явно, а не растворяются в
+обычном markdown: неизвестные modifiers, конфликтующие execution-modes и
+незакрытые doctest blocks получают отдельные diagnostics, чтобы docs CI не
+расходился с реальным runner-contract.
+
 Когда `gof test --docs` запускается на корне репозитория, repo-wide discovery
 теперь ограничен canonical teaching sources:
 
