@@ -57,6 +57,7 @@ enum DocTestMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ParsedDoctestFence {
     Start(DocTestMode),
+    Plain,
     Ignore,
     NotDoctest,
 }
@@ -1907,6 +1908,7 @@ fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
     let mut doctests = Vec::new();
     let mut inside = false;
     let mut active_mode = None;
+    let mut active_plain = false;
     let mut block_lines = Vec::new();
     let mut block_start_line = 0usize;
     let mut active_fence_line = 0usize;
@@ -1922,6 +1924,16 @@ fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
                 ParsedDoctestFence::Start(mode) => {
                     inside = true;
                     active_mode = Some(mode);
+                    active_plain = false;
+                    block_lines.clear();
+                    block_start_line = line_number + 1;
+                    active_fence_line = line_number;
+                    active_fence_text = raw_line.to_string();
+                }
+                ParsedDoctestFence::Plain => {
+                    inside = true;
+                    active_mode = None;
+                    active_plain = true;
                     block_lines.clear();
                     block_start_line = line_number + 1;
                     active_fence_line = line_number;
@@ -1933,7 +1945,12 @@ fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
         }
 
         if trimmed.starts_with("```") {
-            if let Some(mode) = active_mode.take() {
+            let resolved_mode = if active_plain {
+                classify_plain_gof_fence_mode(&block_lines)
+            } else {
+                active_mode.take()
+            };
+            if let Some(mode) = resolved_mode {
                 ordinal += 1;
                 let synthetic_name = format!(
                     "{}.doctest-{}.gof",
@@ -1956,6 +1973,7 @@ fn discover_doctests_in_markdown(path: PathBuf) -> Result<Vec<DocTestCase>> {
                 });
             }
             inside = false;
+            active_plain = false;
             continue;
         }
 
@@ -1992,6 +2010,12 @@ fn parse_doctest_fence(
         return Ok(ParsedDoctestFence::NotDoctest);
     }
     if !tokens.iter().any(|token| *token == "doctest") {
+        if tokens.iter().skip(1).any(|token| *token == "ignore" || *token == "text") {
+            return Ok(ParsedDoctestFence::Ignore);
+        }
+        if tokens.len() == 1 {
+            return Ok(ParsedDoctestFence::Plain);
+        }
         return Ok(ParsedDoctestFence::NotDoctest);
     }
     if tokens
@@ -2049,6 +2073,39 @@ fn parse_doctest_fence(
     }
 
     Ok(ParsedDoctestFence::Start(DocTestMode::Run))
+}
+
+fn classify_plain_gof_fence_mode(block_lines: &[String]) -> Option<DocTestMode> {
+    let first_meaningful = block_lines
+        .iter()
+        .map(|line| line.trim())
+        .find(|line| !line.is_empty() && !line.starts_with('#'))?;
+
+    if !looks_like_whole_file_gof_example(first_meaningful) {
+        return None;
+    }
+
+    let source = block_lines.join("\n");
+    if source.contains("fn main(") {
+        Some(DocTestMode::Run)
+    } else {
+        Some(DocTestMode::NoRun)
+    }
+}
+
+fn looks_like_whole_file_gof_example(first_line: &str) -> bool {
+    [
+        "fn ",
+        "import ",
+        "struct ",
+        "enum ",
+        "protocol ",
+        "fixture(",
+        "test fn ",
+        "module ",
+    ]
+    .iter()
+    .any(|prefix| first_line.starts_with(prefix))
 }
 
 fn doctest_fence_error(

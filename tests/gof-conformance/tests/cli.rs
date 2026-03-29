@@ -2648,6 +2648,74 @@ fn gof_test_lists_opt_in_doctests() {
 }
 
 #[test]
+fn gof_test_lists_default_plain_gof_fences_as_doctests_when_they_look_like_whole_files() {
+    let temp = tempdir().expect("tempdir should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof\nfn main() -> int:\n    return 1\n```\n\n```gof\nenum Status:\n    Ready\n```\n\n```gof\nif ready and not failed:\n    return 1\n```\n\n```gof ignore\nfn main() -> int:\n    return 9\n```\n",
+    )
+    .expect("markdown doctest file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("guide.md:4::doctest#1"))
+        .stdout(predicate::str::contains("guide.md:9::doctest-no-run#2"))
+        .stdout(predicate::str::contains("guide.md:14::").not())
+        .stdout(predicate::str::contains("guide.md:19::").not())
+        .stdout(predicate::str::contains("listed 2"));
+}
+
+#[test]
+fn gof_test_runs_default_plain_gof_fences_in_json_reports() {
+    let temp = tempdir().expect("tempdir should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof\nfn main() -> int:\n    return 3\n```\n\n```gof\nstruct Point:\n    x: int\n```\n",
+    )
+    .expect("markdown doctest file should exist");
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--json")
+        .arg("--docs")
+        .arg(temp.path())
+        .assert()
+        .success();
+
+    let report = parse_stdout_json(&assert.get_output().stdout);
+    let events = report["events"]
+        .as_array()
+        .expect("events should be present in test report");
+
+    let run_event = events
+        .iter()
+        .find(|event| {
+            event["id"]
+                .as_str()
+                .is_some_and(|id| id.ends_with("guide.md:4::doctest#1"))
+        })
+        .expect("plain main fence should be reported as a run doctest");
+    assert_eq!(run_event["status"], "passed");
+    assert_eq!(run_event["stdout"], "3\n");
+
+    let no_run_event = events
+        .iter()
+        .find(|event| {
+            event["id"]
+                .as_str()
+                .is_some_and(|id| id.ends_with("guide.md:9::doctest-no-run#2"))
+        })
+        .expect("plain top-level declarations should be reported as no-run doctests");
+    assert_eq!(no_run_event["status"], "passed");
+    assert_eq!(no_run_event["stdout"], "");
+}
+
+#[test]
 fn gof_test_rejects_unknown_doctest_modifiers() {
     let temp = tempdir().expect("tempdir should exist");
     fs::write(

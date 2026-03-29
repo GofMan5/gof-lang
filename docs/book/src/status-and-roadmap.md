@@ -23,7 +23,7 @@ The current repo already supports:
 - JSON helpers and bootstrap HTTP GET
 - channels, `close`, cancellation tokens, and `select`
 - `go` / `await`
-- language-level `test fn`, typed `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test`, and opt-in markdown doctests
+- language-level `test fn`, typed `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test`, and markdown doctests for explicit fences plus whole-file plain examples
 - a real CLI and a bootstrap-native build path
 - an installable VS Code editor baseline with syntax highlighting and snippets for `.gof` files
 

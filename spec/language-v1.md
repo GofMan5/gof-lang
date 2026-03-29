@@ -216,7 +216,7 @@ The bootstrap compiler in this repository currently supports:
 - `print` currently accepts exactly one printable value and returns `unit`
 - `assert` currently accepts either `(bool)` or `(bool, string)` and returns `unit`
 - `gof test` currently discovers language-level tests from `*_test.gof` and `tests/**/*.gof`
-- `gof test --docs` currently discovers opt-in markdown doctests from fenced ` ```gof doctest ... ` blocks
+- `gof test --docs` currently discovers markdown doctests from fenced ` ```gof doctest ... ` blocks plus whole-file plain ` ```gof ` examples that start with top-level declarations; ` ```gof ignore ` and ` ```gof text ` force prose-only opt-out
 - `TestContext.fail(message)` currently fails the running test immediately
 - `TestContext.equal(actual, expected, message)` and `TestContext.not_equal(actual, expected, message)` currently compare rendered values inside the test runner
 - `TestContext.true(condition, message)` and `TestContext.false(condition, message)` currently fail when the boolean contract is violated

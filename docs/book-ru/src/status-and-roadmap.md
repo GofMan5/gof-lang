@@ -23,7 +23,7 @@
 - JSON helpers и bootstrap HTTP GET
 - channels, `close`, cancellation tokens и `select`
 - `go` / `await`
-- language-level `test fn`, typed `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test` и opt-in markdown doctests
+- language-level `test fn`, typed `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test` и markdown doctests для explicit fences и whole-file plain examples
 - реальный CLI и bootstrap-native build path
 
 Этого уже достаточно, чтобы учить реальную семантику, запускать нетривиальные

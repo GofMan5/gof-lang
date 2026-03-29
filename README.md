@@ -60,7 +60,7 @@ gof check examples/geometry.gof        # compile-only validation
 gof test examples/testing_baseline     # run language-level tests
 gof test --list examples/testing_baseline
 gof test --shuffle --seed 17 examples/testing_baseline
-gof test --docs                        # run opt-in markdown doctests
+gof test --docs                        # run markdown doctests
 gof mod resolve --dir examples/package_app
 gof build app.gof --native             # build a native executable
 gof fmt src/main.gof                   # format
@@ -81,7 +81,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` / `http_request(...)` | bootstrap |
 | Same-directory imports, reserved shipped stdlib imports (`bytes` / `io` / `time` / `net` / `http` / `testing`), initial `Bytes` / stream / deadline / TCP stdlib foundation, and manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
-| `test fn`, `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware plus JSON/JUnit-reporting `gof test`, opt-in markdown doctests, and hybrid discovery across `*_test.gof`, `tests/**/*.gof`, and legacy repo fixtures | bootstrap |
+| `test fn`, `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware plus JSON/JUnit-reporting `gof test`, markdown doctests, and hybrid discovery across `*_test.gof`, `tests/**/*.gof`, and legacy repo fixtures | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | `gof check --json [--stdin]` | stable compiler-backed diagnostics contract |
 | `gof run --watch [--debounce-ms] <target> [-- ...args]` | bootstrap serial edit-run loop for scripts and executable packages |
@@ -116,8 +116,9 @@ surface:
   and `t.todo(...)`
 - deterministic snapshot storage under `tests/snapshots/`
 - discovery through `*_test.gof` and `tests/**/*.gof`
-- opt-in markdown doctests through fenced `gof doctest ...` blocks plus
-  `gof test --docs`
+- markdown doctests through `gof test --docs`, explicit `gof doctest ...`
+  fences, and whole-file plain `gof` examples; use `gof ignore` or `gof text`
+  on a fence to force prose-only opt-out
 
 The current shipped testing contract is still explicit and intentionally narrow:
 

@@ -13,6 +13,8 @@ Delivered in shipped slices:
 - explicit update flow via `--update-snapshots`
 - temp files/directories and environment restoration through `TestContext`
 - opt-in markdown doctests through `gof test --docs` and fenced ` ```gof doctest ... ` modes
+- default doctest behavior for plain ` ```gof ` fences when the block looks like a whole-file example with top-level declarations
+- ` ```gof ignore ` and ` ```gof text ` opt-outs for plain fences that should stay prose-only
 - typed fixtures through `fixture(test) fn` and `fixture(module) fn`
 - fixture DAG resolution by parameter name and compatible type
 - fixture cleanup hooks through receiver method `cleanup() -> unit | Result[unit, RuntimeError]`
@@ -25,8 +27,7 @@ Delivered in shipped slices:
 
 Planned next:
 
-- default doctest behavior for plain ` ```gof ` fences where the examples are
-  intended to become executable contracts instead of prose-only snippets
+- any broader plain-fence coverage beyond whole-file examples still needs to stay explicit enough that statement-level teaching fragments do not silently turn into unstable docs CI contracts
 
 ## Non-goals
 

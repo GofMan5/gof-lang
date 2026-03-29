@@ -19,7 +19,7 @@ framework.
 - snapshots в `tests/snapshots/`
 - artifact-backed product fixtures в `tests/ui`, `tests/runtime` и `tests/runtime-fail`
 - optional fixture cleanup hooks через receiver method `cleanup()`
-- opt-in markdown doctests через `gof test --docs`
+- markdown doctests через `gof test --docs`, включая явные `gof doctest ...` fences и whole-file plain `gof` examples
 
 Пример:
 
@@ -203,7 +203,7 @@ stable schema `gof.test.report/v1`.
 
 Пока еще не shipped:
 
-- автоматический doctest для каждого обычного markdown-блока `gof`
+- автоматический doctest для каждого обычного markdown-блока `gof`, включая statement-level teaching snippets, которые не выглядят как whole-file examples
 - property testing
 - fuzzing
 - concurrency stress
@@ -215,17 +215,19 @@ stable schema `gof.test.report/v1`.
 - [`roadmap.md`](../../../roadmap.md)
 - [`plans/roadmap/20-testing-platform/00-overview.md`](../../../plans/roadmap/20-testing-platform/00-overview.md)
 
-## Opt-in doctests
+## Markdown doctests
 
-`gof test --docs` теперь умеет явный opt-in baseline для markdown fences:
+`gof test --docs` теперь дает shipped markdown baseline с двумя путями:
 
 - ```` ```gof doctest ````: compile + run
 - ```` ```gof doctest no_run ````: только compile
 - ```` ```gof doctest compile_fail ````: ожидаем compile failure
 - ```` ```gof doctest runtime_fail ````: ожидаем runtime failure
+- обычные ```` ```gof ```` fences теперь становятся doctests по умолчанию только тогда, когда block выглядит как whole-file example и начинается с top-level declarations вроде `fn`, `import`, `struct` или `enum`
+- ```` ```gof ignore ```` и ```` ```gof text ```` принудительно оставляют plain fence prose-only, даже если он иначе выглядел бы как whole-file doctest
 
 Это позволяет честно проверять runnable примеры, не делая вид, что каждый
-старый учебный фрагмент уже автоматически готов к doctest execution.
+statement-level учебный фрагмент уже автоматически готов к doctest execution.
 
 Некорректные doctest-fence теперь тоже падают явно, а не растворяются в
 обычном markdown: неизвестные modifiers, конфликтующие execution-modes и

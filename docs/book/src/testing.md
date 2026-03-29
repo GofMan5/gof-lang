@@ -18,7 +18,7 @@ The shipped slice currently includes:
 - snapshot storage under `tests/snapshots/`
 - artifact-backed product fixtures under `tests/ui`, `tests/runtime`, and `tests/runtime-fail`
 - optional fixture cleanup hooks through receiver method `cleanup()`
-- opt-in markdown doctests through `gof test --docs`
+- markdown doctests through `gof test --docs`, including explicit `gof doctest ...` fences and whole-file plain `gof` examples
 
 Example:
 
@@ -203,7 +203,7 @@ This slice is intentionally narrower than the final testing platform.
 
 Not shipped yet:
 
-- default doctest execution for every plain `gof` markdown fence
+- automatic doctest execution for every plain `gof` markdown fence, including statement-level prose snippets that are not whole-file examples
 - property testing
 - fuzzing
 - concurrency stress
@@ -215,17 +215,19 @@ Those items are tracked in:
 - [`roadmap.md`](../../../roadmap.md)
 - [`plans/roadmap/20-testing-platform/00-overview.md`](../../../plans/roadmap/20-testing-platform/00-overview.md)
 
-## Opt-in doctests
+## Markdown doctests
 
-`gof test --docs` now has an explicit opt-in markdown baseline:
+`gof test --docs` now has a shipped markdown baseline with two entry paths:
 
 - ```` ```gof doctest ````: compile and run
 - ```` ```gof doctest no_run ````: compile only
 - ```` ```gof doctest compile_fail ````: expect compilation failure
 - ```` ```gof doctest runtime_fail ````: expect runtime failure
+- plain ```` ```gof ```` fences now default to doctests only when the block looks like a whole-file example that starts with top-level declarations such as `fn`, `import`, `struct`, or `enum`
+- ```` ```gof ignore ```` and ```` ```gof text ```` force a plain fence to stay prose-only even when it would otherwise qualify as a whole-file doctest
 
-That keeps the current books honest without pretending every old teaching
-fragment is already safe to run as a doctest.
+That keeps the current books honest without pretending every statement-level
+teaching fragment is already safe to run as a doctest.
 
 Invalid doctest fences now also fail explicitly instead of being treated as
 ambient markdown: unknown modifiers, conflicting execution modes, and
