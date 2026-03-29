@@ -127,12 +127,17 @@ The current shipped testing contract is still explicit and intentionally narrow:
   or `Result[Type, RuntimeError]`
 - `fixture(module)` values are cached once per language test file, while
   `fixture(test)` values are recreated once per test case
+- fixture values may declare an optional receiver method
+  `cleanup() -> unit | Result[unit, RuntimeError]`; test-scoped cleanup runs
+  before `TestContext` teardown and module-scoped cleanup runs once per test file
 - tests currently return either `unit` or `Result[unit, RuntimeError]`
 - `gof test` currently ships list/filter/fail-fast/nocapture/snapshot-update/docs
-  flow plus legacy diagnostics/runtime fixtures
-- explicit fixture cleanup hooks, unified `tests/ui` + `tests/runtime`
-  product harnesses, property/fuzz/stress, JSON/JUnit reporters, and benchmark
-  integration stay on the roadmap rather than being implied as done
+  flow, language-level tests, legacy fixtures, and artifact-backed product
+  fixtures under `tests/ui`, `tests/runtime`, and `tests/runtime-fail`
+- `--update-snapshots` currently rewrites both snapshots and product-fixture
+  artifacts such as `.diag`, `.stdout`, `.stderr`, and `.exit`
+- property/fuzz/stress, JSON/JUnit reporters, and benchmark integration stay
+  on the roadmap rather than being implied as done
 
 Useful commands:
 

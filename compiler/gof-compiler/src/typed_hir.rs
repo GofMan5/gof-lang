@@ -101,6 +101,7 @@ const BUILTIN_OPAQUE_TYPE_NAMES: &[&str] = &[
 ];
 
 const STDLIB_BRIDGE_PREFIX: &str = "__gof_internal_";
+const FIXTURE_CLEANUP_METHOD_NAME: &str = "cleanup";
 
 fn is_builtin_opaque_type_name(name: &str) -> bool {
     BUILTIN_OPAQUE_TYPE_NAMES.contains(&name)
@@ -959,6 +960,8 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         })
         .collect::<Vec<_>>();
 
+    validate_fixture_cleanup_hooks(module, &signatures, &method_signatures, &mut diagnostics);
+
     if diagnostics.is_empty() {
         Ok(TypedModule {
             structs,
@@ -1263,6 +1266,89 @@ fn validate_fixture_contract(
     }
 }
 
+fn validate_fixture_cleanup_hooks(
+    module: &HirModule,
+    signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
+    diagnostics: &mut Diagnostics,
+) {
+    let cleanup_methods = module
+        .functions
+        .iter()
+        .filter_map(|function| {
+            let receiver_type = function.receiver_type.as_ref()?;
+            Some(((receiver_type.name.clone(), function.name.clone()), function))
+        })
+        .collect::<HashMap<_, _>>();
+    let mut validated_receivers = HashSet::new();
+
+    for function in module
+        .functions
+        .iter()
+        .filter(|function| function.kind == FunctionKind::Fixture && function.receiver_type.is_none())
+    {
+        let Some(signature) = signatures.get(&function.name) else {
+            continue;
+        };
+        let Some(value_type) = signature.fixture_value_type.as_ref() else {
+            continue;
+        };
+        let Some(receiver_name) = type_method_receiver_name(value_type) else {
+            continue;
+        };
+        if !validated_receivers.insert(receiver_name.clone()) {
+            continue;
+        }
+
+        let key = (receiver_name, FIXTURE_CLEANUP_METHOD_NAME.to_string());
+        let Some(cleanup_signature) = method_signatures.get(&key) else {
+            continue;
+        };
+        let Some(cleanup_method) = cleanup_methods.get(&key) else {
+            continue;
+        };
+
+        if cleanup_signature.arity != 1 {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3125",
+                    format!(
+                        "fixture cleanup hook `{}` must not declare extra parameters",
+                        function_symbol_from_hir(cleanup_method)
+                    ),
+                    "fixture teardown runs as `cleanup()` on the resolved fixture value, so only the receiver parameter is allowed",
+                    hir_function_contract_span(cleanup_method),
+                )
+                .with_fix_it("remove the extra parameters and keep only the receiver parameter")
+                .with_source_path(cleanup_method.source_path.clone()),
+            );
+        }
+
+        if !is_valid_fixture_cleanup_return_type(&cleanup_signature.return_type) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3125",
+                    format!(
+                        "fixture cleanup hook `{}` has an unsupported return type",
+                        function_symbol_from_hir(cleanup_method)
+                    ),
+                    format!(
+                        "fixture cleanup hooks currently support only `unit` or `Result[unit, RuntimeError]`, not `{}`",
+                        cleanup_signature.return_type.display_name()
+                    ),
+                    cleanup_method
+                        .return_type
+                        .as_ref()
+                        .map(|ty| ty.span)
+                        .unwrap_or_else(|| hir_function_contract_span(cleanup_method)),
+                )
+                .with_fix_it("declare `cleanup` as `-> unit` or `-> Result[unit, RuntimeError]`")
+                .with_source_path(cleanup_method.source_path.clone()),
+            );
+        }
+    }
+}
+
 fn validate_test_return_type(
     function: &HirFunction,
     return_type: &Type,
@@ -1289,6 +1375,21 @@ fn validate_test_return_type(
 }
 
 fn is_valid_test_return_type(return_type: &Type) -> bool {
+    match return_type {
+        Type::Unit | Type::Unknown => true,
+        Type::Result(ok, err) => {
+            matches!(ok.as_ref(), Type::Unit | Type::Unknown)
+                && match err.as_ref() {
+                    Type::Unknown => true,
+                    Type::Enum(runtime_error) => runtime_error == "RuntimeError",
+                    _ => false,
+                }
+        }
+        _ => false,
+    }
+}
+
+fn is_valid_fixture_cleanup_return_type(return_type: &Type) -> bool {
     match return_type {
         Type::Unit | Type::Unknown => true,
         Type::Result(ok, err) => {
@@ -9395,6 +9496,26 @@ mod tests {
         .expect_err("module fixtures should not depend on test fixtures");
 
         assert!(diagnostics.codes().contains(&"GOF3124"));
+    }
+
+    #[test]
+    fn rejects_fixture_cleanup_hooks_with_extra_parameters() {
+        let diagnostics = lower_source(
+            "struct Scratch:\n    marker: string\n\nfn Scratch.cleanup(self: Scratch, force: bool):\n    print(\"cleanup\")\n\nfixture(test) fn scratch() -> Scratch:\n    return Scratch(\"marker\")\n",
+        )
+        .expect_err("fixture cleanup hooks should not accept extra parameters");
+
+        assert!(diagnostics.codes().contains(&"GOF3125"));
+    }
+
+    #[test]
+    fn rejects_fixture_cleanup_hooks_with_invalid_return_types() {
+        let diagnostics = lower_source(
+            "struct Scratch:\n    marker: string\n\nfn Scratch.cleanup(self: Scratch) -> int:\n    return 1\n\nfixture(module) fn scratch() -> Scratch:\n    return Scratch(\"marker\")\n",
+        )
+        .expect_err("fixture cleanup hooks should use the supported return contract");
+
+        assert!(diagnostics.codes().contains(&"GOF3125"));
     }
 
     #[test]

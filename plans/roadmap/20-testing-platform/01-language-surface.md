@@ -29,6 +29,8 @@ Delivered in the next testing slice:
 - fixtures require explicit return types of `Type` or
   `Result[Type, RuntimeError]`
 - only `fixture(test)` may request `t: TestContext`
+- fixture values may declare an optional receiver method
+  `cleanup() -> unit | Result[unit, RuntimeError]`
 
 Planned later:
 
@@ -36,7 +38,7 @@ Planned later:
 - `property fn`
 - `fuzz fn`
 - `stress fn`
-- fixture lifetime scopes and cleanup protocol
+- additional fixture lifetime scopes beyond `test|module`
 
 ## Non-goals
 
@@ -57,6 +59,7 @@ Planned later:
 - `GOF3122`: fixture dependency cycle
 - `GOF3123`: unresolved or incompatible typed fixture dependency
 - `GOF3124`: invalid fixture lifetime dependency between scopes
+- `GOF3125`: invalid fixture cleanup hook contract
 
 ## Tests
 
@@ -65,7 +68,7 @@ Planned later:
 - typed-HIR validation for valid and invalid test contracts
 - typed-HIR validation for fixture scopes, dependency resolution, and cycles
 - runtime coverage for assertions, snapshots, temp resources, env restore,
-  skip/todo control flow, and fixture caching
+  skip/todo control flow, fixture caching, and fixture cleanup ordering
 
 ## Exit Criteria
 

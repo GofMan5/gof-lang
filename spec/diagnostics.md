@@ -135,3 +135,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3122`: fixture dependency cycle
 - `GOF3123`: unresolved or incompatible typed fixture dependency
 - `GOF3124`: invalid fixture lifetime dependency between scopes
+- `GOF3125`: invalid fixture cleanup hook contract

@@ -147,6 +147,7 @@ The bootstrap compiler in this repository currently supports:
 - fixtures currently must declare an explicit return type of either `Type` or `Result[Type, RuntimeError]`
 - `fixture(test)` may currently accept typed fixture dependencies plus at most one `t: TestContext`
 - `fixture(module)` may currently accept only typed fixture dependencies and may not request `TestContext`
+- fixture values may currently declare an optional receiver method `cleanup() -> unit | Result[unit, RuntimeError]`
 - module-scoped fixtures are currently cached once per language test file during one `gof test` run
 - test-scoped fixtures are currently cached once per test case during one `gof test` run
 - package directories currently use `src/main.gof` as the executable entrypoint and `src/lib.gof` as the dependency entrypoint
@@ -226,7 +227,9 @@ The bootstrap compiler in this repository currently supports:
 - `TestContext.skip(message)` currently marks the current test as skipped
 - `TestContext.todo(message)` currently marks the current test as todo
 - `TempDir.path()` and `TempFile.path()` currently return the concrete host path backing the temporary resource
-- explicit fixture cleanup hooks are not shipped yet; only `TestContext`-managed temp resources and environment overrides clean up automatically
+- fixture values may currently opt into teardown through receiver method `cleanup() -> unit | Result[unit, RuntimeError]`
+- test-scoped fixture cleanup currently runs after the test body but before `TestContext` temp/env teardown
+- module-scoped fixture cleanup currently runs once after the language test file finishes, in reverse fixture dependency order
 - `run_process(program, args)` currently requires `(string, list[string])` and returns `Result[json, RuntimeError]`
 - `run_process(program, args)` currently executes the program directly without shell interpolation
 - `run_process(program, args)` currently captures `program`, `args`, `status`, `stdout`, and `stderr` inside the returned JSON object

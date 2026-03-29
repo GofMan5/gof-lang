@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow, bail};
 use gof_compiler::{
     CompileMode, Diagnostics, SourceFile, TestExecutionOutcome, TestModuleState,
-    TestRuntimeOptions, compile_source, normalize_source_path, run_module_with_output,
-    run_test_function_with_output,
+    TestRuntimeOptions, cleanup_test_module_fixtures_with_output, compile_source,
+    normalize_source_path, run_module_with_output, run_test_function_with_output,
 };
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -144,6 +144,7 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
         let compiled = compile_source(&source, CompileMode::Library)
             .map_err(|error| crate::render_error(&source, error))?;
         let mut module_state = TestModuleState::default();
+        let mut stop_after_file = false;
 
         for test_name in &file.test_names {
             let id = format!("{}::{test_name}", display_id_for_path(&file.source_path));
@@ -161,45 +162,32 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
             )
             .map_err(|error| crate::render_error(&source, error))?;
 
-            let show_output =
-                args.nocapture || !matches!(result.outcome, TestExecutionOutcome::Passed);
-            if show_output && !result.stdout.is_empty() {
-                eprintln!("stdout[{id}]:");
-                print!("{}", result.stdout);
+            if report_language_test_result(
+                &id,
+                &source,
+                result,
+                &args,
+                &mut summary,
+                &mut failures,
+            ) {
+                stop_after_file = true;
+                break;
             }
+        }
 
-            match result.outcome {
-                TestExecutionOutcome::Passed => {
-                    println!("ok {id}");
-                    summary.passed += 1;
-                }
-                TestExecutionOutcome::Skipped(message) => {
-                    println!("skip {id}: {message}");
-                    summary.skipped += 1;
-                }
-                TestExecutionOutcome::Todo(message) => {
-                    println!("todo {id}: {message}");
-                    summary.todo += 1;
-                }
-                TestExecutionOutcome::Failed(message) => {
-                    eprintln!("FAIL {id}");
-                    eprintln!("{message}");
-                    summary.failed += 1;
-                    failures.push(id);
-                    if args.fail_fast {
-                        bail!("stopped after first failure");
-                    }
-                }
-                TestExecutionOutcome::FailedDiagnostics(diagnostics) => {
-                    eprintln!("FAIL {id}");
-                    eprintln!("{}", diagnostics.render(&source));
-                    summary.failed += 1;
-                    failures.push(id);
-                    if args.fail_fast {
-                        bail!("stopped after first failure");
-                    }
-                }
-            }
+        let cleanup_id = format!("{}::<cleanup>", display_id_for_path(&file.source_path));
+        if report_module_fixture_cleanup_result(
+            &cleanup_id,
+            cleanup_test_module_fixtures_with_output(&compiled.ast, &mut module_state),
+            &args,
+            &mut summary,
+            &mut failures,
+        ) {
+            stop_after_file = true;
+        }
+
+        if stop_after_file && args.fail_fast {
+            bail!("stopped after first failure");
         }
     }
 
@@ -224,7 +212,7 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
         }
 
         for path in filtered_fixture_targets {
-            match crate::run_fixture(&path) {
+            match crate::run_fixture(&path, args.update_snapshots) {
                 Ok(()) => {
                     println!("ok {}", display_id_for_path(&path));
                     summary.passed += 1;
@@ -280,6 +268,107 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
     } else {
         Err(anyhow!("failing targets: {}", failures.join(", ")))
     }
+}
+
+fn report_language_test_result(
+    id: &str,
+    source: &SourceFile,
+    result: gof_compiler::TestExecutionResult,
+    args: &TestArgs,
+    summary: &mut RunSummary,
+    failures: &mut Vec<String>,
+) -> bool {
+    let cleanup_failed = result.cleanup_error.is_some();
+    let show_output =
+        args.nocapture || cleanup_failed || !matches!(result.outcome, TestExecutionOutcome::Passed);
+    if show_output && !result.stdout.is_empty() {
+        eprintln!("stdout[{id}]:");
+        print!("{}", result.stdout);
+    }
+
+    if cleanup_failed {
+        eprintln!("FAIL {id}");
+        match result.outcome {
+            TestExecutionOutcome::Passed => {}
+            TestExecutionOutcome::Skipped(message) => {
+                eprintln!("note: test requested skip before teardown: {message}");
+            }
+            TestExecutionOutcome::Todo(message) => {
+                eprintln!("note: test was marked todo before teardown: {message}");
+            }
+            TestExecutionOutcome::Failed(message) => {
+                eprintln!("{message}");
+            }
+            TestExecutionOutcome::FailedDiagnostics(diagnostics) => {
+                eprintln!("{}", diagnostics.render(source));
+            }
+        }
+        eprintln!(
+            "{}",
+            result
+                .cleanup_error
+                .expect("cleanup failure should be present when cleanup_failed is true")
+        );
+        summary.failed += 1;
+        failures.push(id.to_string());
+        return args.fail_fast;
+    }
+
+    match result.outcome {
+        TestExecutionOutcome::Passed => {
+            println!("ok {id}");
+            summary.passed += 1;
+            false
+        }
+        TestExecutionOutcome::Skipped(message) => {
+            println!("skip {id}: {message}");
+            summary.skipped += 1;
+            false
+        }
+        TestExecutionOutcome::Todo(message) => {
+            println!("todo {id}: {message}");
+            summary.todo += 1;
+            false
+        }
+        TestExecutionOutcome::Failed(message) => {
+            eprintln!("FAIL {id}");
+            eprintln!("{message}");
+            summary.failed += 1;
+            failures.push(id.to_string());
+            args.fail_fast
+        }
+        TestExecutionOutcome::FailedDiagnostics(diagnostics) => {
+            eprintln!("FAIL {id}");
+            eprintln!("{}", diagnostics.render(source));
+            summary.failed += 1;
+            failures.push(id.to_string());
+            args.fail_fast
+        }
+    }
+}
+
+fn report_module_fixture_cleanup_result(
+    id: &str,
+    result: gof_compiler::FixtureCleanupResult,
+    args: &TestArgs,
+    summary: &mut RunSummary,
+    failures: &mut Vec<String>,
+) -> bool {
+    let show_output = args.nocapture || result.error.is_some();
+    if show_output && !result.stdout.is_empty() {
+        eprintln!("stdout[{id}]:");
+        print!("{}", result.stdout);
+    }
+
+    let Some(error) = result.error else {
+        return false;
+    };
+
+    eprintln!("FAIL {id}");
+    eprintln!("{error}");
+    summary.failed += 1;
+    failures.push(id.to_string());
+    args.fail_fast
 }
 
 fn filter_doctests(doctests: Vec<DocTestCase>, args: &TestArgs) -> Vec<DocTestCase> {

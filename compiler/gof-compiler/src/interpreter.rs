@@ -3,7 +3,7 @@ use crate::ast::{
     SelectArm, SelectArmKind, Stmt, StructDecl, UnaryOp,
 };
 use crate::diagnostics::{Diagnostic, Diagnostics};
-use crate::source::Span;
+use crate::source::{SourceFile, Span};
 use crate::typed_hir::{Type, TypedFunction, TypedModule};
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -39,6 +39,7 @@ thread_local! {
 static NEXT_TEST_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
 const STDLIB_BRIDGE_PREFIX: &str = "__gof_internal_";
+const FIXTURE_CLEANUP_METHOD_NAME: &str = "cleanup";
 
 fn reset_select_arm_rotation() {
     NEXT_SELECT_ARM_START.with(|counter| counter.set(0));
@@ -74,6 +75,13 @@ pub struct TestRuntimeOptions {
 pub struct TestExecutionResult {
     pub outcome: TestExecutionOutcome,
     pub stdout: String,
+    pub cleanup_error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FixtureCleanupResult {
+    pub stdout: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -88,6 +96,7 @@ pub enum TestExecutionOutcome {
 #[derive(Debug, Default)]
 pub struct TestModuleState {
     module_fixtures: HashMap<String, Value>,
+    module_fixture_order: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2358,10 +2367,12 @@ pub fn run_test_function_with_output(
 
     let mut test_context = None;
     let mut test_fixture_cache = HashMap::new();
+    let mut test_fixture_order = Vec::new();
     let mut resolving = Vec::new();
-    let args = match build_runtime_param_bindings(&typed_function) {
+    let outcome = match build_runtime_param_bindings(&typed_function) {
         Ok(bindings) => {
             let mut resolved = Vec::with_capacity(bindings.len());
+            let mut resolution_failure = None;
             for binding in bindings {
                 match binding {
                     FixtureParamBinding::TestContext => resolved.push(Value::Opaque(
@@ -2384,50 +2395,114 @@ pub fn run_test_function_with_output(
                             &mut test_context,
                             module_state,
                             &mut test_fixture_cache,
+                            &mut test_fixture_order,
                             &mut resolving,
                             function_name,
                         ) {
                             Ok(value) => resolved.push(value),
                             Err(outcome) => {
-                                return Ok(TestExecutionResult {
-                                    outcome,
-                                    stdout: output.snapshot(),
-                                });
+                                resolution_failure = Some(outcome);
+                                break;
                             }
                         }
                     }
                 }
             }
-            resolved
+
+            match resolution_failure {
+                Some(outcome) => outcome,
+                None => match eval_test_function(
+                    &function, &resolved, &functions, &methods, &structs, &enums, &output,
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(diagnostics) => TestExecutionOutcome::FailedDiagnostics(diagnostics),
+                },
+            }
         }
-        Err(outcome) => {
-            return Ok(TestExecutionResult {
-                outcome,
-                stdout: output.snapshot(),
-            });
-        }
+        Err(outcome) => outcome,
     };
 
-    let outcome = match eval_test_function(
-        &function, &args, &functions, &methods, &structs, &enums, &output,
-    ) {
-        Ok(outcome) => outcome,
-        Err(diagnostics) => TestExecutionOutcome::FailedDiagnostics(diagnostics),
-    };
+    let mut cleanup_errors = cleanup_fixture_cache(
+        &mut test_fixture_order,
+        &mut test_fixture_cache,
+        &functions,
+        &methods,
+        &structs,
+        &enums,
+        &output,
+    );
 
     if let Some(context) = test_context {
         if let Err(error) = context.cleanup() {
-            return Ok(TestExecutionResult {
-                outcome: TestExecutionOutcome::Failed(error),
-                stdout: output.snapshot(),
-            });
+            cleanup_errors.push(error);
         }
     }
 
     Ok(TestExecutionResult {
         outcome,
         stdout: output.snapshot(),
+        cleanup_error: join_cleanup_errors(cleanup_errors),
     })
+}
+
+pub fn cleanup_test_module_fixtures_with_output(
+    module: &Module,
+    module_state: &mut TestModuleState,
+) -> FixtureCleanupResult {
+    reset_select_arm_rotation();
+
+    let functions = Arc::new(
+        module
+            .functions
+            .iter()
+            .filter(|function| function.receiver_type.is_none())
+            .map(|function| (function.name.clone(), function.clone()))
+            .collect::<HashMap<_, _>>(),
+    );
+    let methods = Arc::new(
+        module
+            .functions
+            .iter()
+            .filter_map(|function| {
+                function.receiver_type.as_ref().map(|receiver_type| {
+                    (
+                        (receiver_type.name.clone(), function.name.clone()),
+                        function.clone(),
+                    )
+                })
+            })
+            .collect::<HashMap<_, _>>(),
+    );
+    let structs = Arc::new(
+        module
+            .structs
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.clone()))
+            .collect::<HashMap<_, _>>(),
+    );
+    let mut enum_table = module
+        .enums
+        .iter()
+        .map(|decl| (decl.name.clone(), decl.clone()))
+        .collect::<HashMap<_, _>>();
+    enum_table.extend(builtin_enum_table());
+    let enums = Arc::new(enum_table);
+    let output = OutputBuffer::new(Vec::new());
+
+    let cleanup_errors = cleanup_fixture_cache(
+        &mut module_state.module_fixture_order,
+        &mut module_state.module_fixtures,
+        &functions,
+        &methods,
+        &structs,
+        &enums,
+        &output,
+    );
+
+    FixtureCleanupResult {
+        stdout: output.snapshot(),
+        error: join_cleanup_errors(cleanup_errors),
+    }
 }
 
 fn build_fixture_specs(typed_module: &TypedModule) -> HashMap<String, FixtureRuntimeSpec> {
@@ -2493,6 +2568,7 @@ fn resolve_fixture(
     test_context: &mut Option<TestContextValue>,
     module_state: &mut TestModuleState,
     test_fixture_cache: &mut HashMap<String, Value>,
+    test_fixture_order: &mut Vec<String>,
     resolving: &mut Vec<String>,
     test_name: &str,
 ) -> Result<Value, TestExecutionOutcome> {
@@ -2547,6 +2623,7 @@ fn resolve_fixture(
                 test_context,
                 module_state,
                 test_fixture_cache,
+                test_fixture_order,
                 resolving,
                 test_name,
             )?),
@@ -2562,9 +2639,11 @@ fn resolve_fixture(
     let value = result?;
     match spec.scope {
         FixtureScope::Test => {
+            test_fixture_order.push(name.to_string());
             test_fixture_cache.insert(name.to_string(), value.clone());
         }
         FixtureScope::Module => {
+            module_state.module_fixture_order.push(name.to_string());
             module_state
                 .module_fixtures
                 .insert(name.to_string(), value.clone());
@@ -2600,6 +2679,117 @@ fn unwrap_fixture_value(spec: &FixtureRuntimeSpec, value: Value) -> Result<Value
             )),
         },
         _ => Ok(value),
+    }
+}
+
+fn cleanup_fixture_cache(
+    fixture_order: &mut Vec<String>,
+    fixture_values: &mut HashMap<String, Value>,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    while let Some(name) = fixture_order.pop() {
+        let Some(value) = fixture_values.remove(&name) else {
+            continue;
+        };
+        if let Err(error) = run_fixture_cleanup_hook(
+            &name,
+            &value,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+        ) {
+            errors.push(error);
+        }
+    }
+    errors
+}
+
+fn run_fixture_cleanup_hook(
+    fixture_name: &str,
+    value: &Value,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+) -> Result<(), String> {
+    let Some(receiver_name) = fixture_cleanup_receiver_name(value) else {
+        return Ok(());
+    };
+    let Some(function) = methods
+        .get(&(receiver_name, FIXTURE_CLEANUP_METHOD_NAME.to_string()))
+        .cloned()
+    else {
+        return Ok(());
+    };
+
+    let result = eval_function(&function, &[value.clone()], functions, methods, structs, enums, output)
+        .map_err(|diagnostics| render_fixture_cleanup_diagnostics(&function, diagnostics))?;
+    validate_fixture_cleanup_result(fixture_name, result)
+}
+
+fn fixture_cleanup_receiver_name(value: &Value) -> Option<String> {
+    match value {
+        Value::Struct(value) => Some(value.name.clone()),
+        Value::Opaque(value) => Some(value.receiver_name().to_string()),
+        _ => None,
+    }
+}
+
+fn validate_fixture_cleanup_result(fixture_name: &str, value: Value) -> Result<(), String> {
+    match value {
+        Value::Unit => Ok(()),
+        Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Ok" => {
+            Ok(())
+        }
+        Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Err" => {
+            let detail = enum_value
+                .payloads
+                .first()
+                .and_then(|(_, value)| value.cli_text())
+                .unwrap_or_else(|| "fixture cleanup returned Result.Err".to_string());
+            Err(format!(
+                "fixture `{fixture_name}` cleanup returned Result.Err({detail})"
+            ))
+        }
+        other => Err(format!(
+            "fixture `{fixture_name}` cleanup returned `{}` instead of `unit` or `Result[unit, RuntimeError]`",
+            other
+                .cli_text()
+                .unwrap_or_else(|| value_name(&other).to_string())
+        )),
+    }
+}
+
+fn render_fixture_cleanup_diagnostics(function: &Function, diagnostics: Diagnostics) -> String {
+    let symbol = match &function.receiver_type {
+        Some(receiver_type) => format!("{}.{}", receiver_type.name, function.name),
+        None => function.name.clone(),
+    };
+    match SourceFile::from_path(&function.source_path) {
+        Ok(source) => format!(
+            "fixture cleanup hook `{symbol}` failed with diagnostics:\n{}",
+            diagnostics.render(&source)
+        ),
+        Err(_) => format!(
+            "fixture cleanup hook `{symbol}` failed with diagnostics codes {:?}",
+            diagnostics.codes()
+        ),
+    }
+}
+
+fn join_cleanup_errors(errors: Vec<String>) -> Option<String> {
+    if errors.is_empty() {
+        None
+    } else {
+        Some(errors.join("\n\n"))
     }
 }
 
@@ -13334,8 +13524,9 @@ fn condition_span(stmt: &Stmt) -> Span {
 mod tests {
     use super::{
         CancelTokenValue, ChannelHandle, ChannelReceiveState, TaskBoundary, TaskHandle, TaskPanic,
-        TestExecutionOutcome, TestModuleState, TestRuntimeOptions, Value, result_ok, run,
-        run_test_function_with_output, run_with_output, run_with_output_with_args,
+        TestExecutionOutcome, TestModuleState, TestRuntimeOptions, Value,
+        cleanup_test_module_fixtures_with_output, result_ok, run, run_test_function_with_output,
+        run_with_output, run_with_output_with_args,
     };
     use crate::ast::parse;
     use crate::cst::CstModule;
@@ -13555,6 +13746,35 @@ mod tests {
     }
 
     #[test]
+    fn test_runner_runs_test_fixture_cleanup_before_test_context_teardown() {
+        let temp = tempdir().expect("tempdir should exist");
+        let marker_path = temp
+            .path()
+            .join("test-fixture-cleanup.txt")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source_text = format!(
+            "import testing\n\nstruct CleanupProbe:\n    dir_path: string\n    marker_path: string\n\nfn CleanupProbe.cleanup(self: CleanupProbe) -> Result[unit, RuntimeError]:\n    if exists(self.dir_path):\n        return write_file(self.marker_path, \"dir-alive\")\n    return write_file(self.marker_path, \"dir-missing\")\n\nfixture(test) fn probe(t: TestContext) -> CleanupProbe:\n    dir = t.temp_dir()\n    return CleanupProbe(dir.path(), \"{marker_path}\")\n\ntest fn uses_fixture(probe: CleanupProbe, t: TestContext):\n    t.true(exists(probe.dir_path), \"expected fixture temp dir during test\")\n"
+        );
+        let result = run_test_source(
+            &source_text,
+            "uses_fixture",
+            temp.path(),
+            "unit/test-fixture-cleanup",
+            false,
+        )
+        .expect("fixture-backed test should execute");
+
+        assert!(matches!(result.outcome, TestExecutionOutcome::Passed));
+        assert_eq!(result.cleanup_error, None);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("test-fixture-cleanup.txt"))
+                .expect("cleanup marker should exist"),
+            "dir-alive"
+        );
+    }
+
+    #[test]
     fn test_runner_reuses_module_scoped_fixtures_across_tests() {
         let temp = tempdir().expect("tempdir should exist");
         let counter_path = temp
@@ -13603,6 +13823,58 @@ mod tests {
     }
 
     #[test]
+    fn test_runner_cleans_module_fixtures_once_after_the_test_file() {
+        let temp = tempdir().expect("tempdir should exist");
+        let marker_path = temp
+            .path()
+            .join("module-fixture-cleanup.txt")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let source_text = format!(
+            "import testing\n\nstruct CleanupProbe:\n    marker_path: string\n\nfn CleanupProbe.cleanup(self: CleanupProbe) -> Result[unit, RuntimeError]:\n    if exists(self.marker_path):\n        current = read_file(self.marker_path)?\n        return write_file(self.marker_path, current + \"cleanup\\n\")\n    return write_file(self.marker_path, \"cleanup\\n\")\n\nfixture(module) fn shared_probe() -> CleanupProbe:\n    return CleanupProbe(\"{marker_path}\")\n\ntest fn first(shared_probe: CleanupProbe, t: TestContext):\n    t.true(true, \"expected first test body to run\")\n\ntest fn second(shared_probe: CleanupProbe, t: TestContext):\n    t.true(true, \"expected second test body to run\")\n"
+        );
+        let source = SourceFile::new("math_test.gof", &source_text);
+        let compiled = compile_source(&source, CompileMode::Library)
+            .expect("fixture-backed source should compile");
+        let options = TestRuntimeOptions {
+            snapshot_root: temp.path().to_path_buf(),
+            snapshot_group: PathBuf::from("unit/module-fixture-cleanup"),
+            update_snapshots: false,
+            program_args: Vec::new(),
+        };
+        let mut module_state = TestModuleState::default();
+
+        let first = run_test_function_with_output(
+            &compiled.ast,
+            &compiled.typed_hir,
+            "first",
+            options.clone(),
+            &mut module_state,
+        )
+        .expect("first test should execute");
+        let second = run_test_function_with_output(
+            &compiled.ast,
+            &compiled.typed_hir,
+            "second",
+            options,
+            &mut module_state,
+        )
+        .expect("second test should execute");
+        let cleanup = cleanup_test_module_fixtures_with_output(&compiled.ast, &mut module_state);
+
+        assert!(matches!(first.outcome, TestExecutionOutcome::Passed));
+        assert!(matches!(second.outcome, TestExecutionOutcome::Passed));
+        assert_eq!(first.cleanup_error, None);
+        assert_eq!(second.cleanup_error, None);
+        assert_eq!(cleanup.error, None);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("module-fixture-cleanup.txt"))
+                .expect("module cleanup marker should exist"),
+            "cleanup\n"
+        );
+    }
+
+    #[test]
     fn test_runner_reports_fixture_result_errors() {
         let temp = tempdir().expect("tempdir should exist");
         let result = run_test_source(
@@ -13619,6 +13891,24 @@ mod tests {
             TestExecutionOutcome::Failed(ref message)
                 if message.contains("fixture `broken_value` returned Result.Err")
         ));
+    }
+
+    #[test]
+    fn test_runner_reports_fixture_cleanup_failures() {
+        let temp = tempdir().expect("tempdir should exist");
+        let result = run_test_source(
+            "import testing\n\nstruct BrokenProbe:\n    marker: string\n\nfn BrokenProbe.cleanup(self: BrokenProbe) -> Result[unit, RuntimeError]:\n    return Result.Err(RuntimeError.Io(\"cleanup failed\"))\n\nfixture(test) fn broken() -> BrokenProbe:\n    return BrokenProbe(\"marker\")\n\ntest fn uses_fixture(broken: BrokenProbe, t: TestContext):\n    t.true(true, \"expected primary test body to pass\")\n",
+            "uses_fixture",
+            temp.path(),
+            "unit/fixture-cleanup-errors",
+            false,
+        )
+        .expect("fixture-backed test should execute");
+
+        assert!(matches!(result.outcome, TestExecutionOutcome::Passed));
+        assert!(result.cleanup_error.as_ref().is_some_and(|message| {
+            message.contains("fixture `broken` cleanup returned Result.Err")
+        }));
     }
 
     #[test]

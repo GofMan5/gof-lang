@@ -17,6 +17,8 @@ framework.
 - типизированный `TestContext`
 - детерминированный discovery через `*_test.gof` и `tests/**/*.gof`
 - snapshots в `tests/snapshots/`
+- artifact-backed product fixtures в `tests/ui`, `tests/runtime` и `tests/runtime-fail`
+- optional fixture cleanup hooks через receiver method `cleanup()`
 - opt-in markdown doctests через `gof test --docs`
 
 Пример:
@@ -89,6 +91,34 @@ test fn uses_fixtures(shared_total: int, scratch_dir: TempDir, t: TestContext):
 - fixture обязана явно объявлять return type и сейчас может возвращать только
   `Type` или `Result[Type, RuntimeError]`
 - только `fixture(test)` может запрашивать `t: TestContext`
+- fixture value может объявить optional receiver method
+    `cleanup() -> unit | Result[unit, RuntimeError]`
+- test-scoped cleanup запускается после тела теста, но до temp/env teardown из
+    `TestContext`; module-scoped cleanup выполняется один раз после завершения файла
+
+## Fixture cleanup
+
+Возвращаемое fixture-value может явно описать teardown через receiver method с
+именем `cleanup`.
+
+```gof doctest no_run
+import testing
+
+struct ScratchDir:
+        path: string
+
+fn ScratchDir.cleanup(self: ScratchDir) -> Result[unit, RuntimeError]:
+    return write_file(path_join(self.path, "teardown.log"), "cleanup ran")
+
+fixture(test) fn scratch(t: TestContext) -> ScratchDir:
+        dir = t.temp_dir()
+        return ScratchDir(dir.path())
+```
+
+Это сохраняет lifecycle явным без второго callback DSL: teardown живет рядом с
+типом, который fixture возвращает, runner вызывает hook в обратном порядке
+зависимостей, а test-scoped cleanup успевает отработать до удаления temp
+ресурсов и восстановления env overrides из `TestContext`.
 
 ## Контракт snapshots
 
@@ -101,15 +131,37 @@ Snapshots сделаны намеренно явными:
 Это сохраняет snapshot churn видимым и reviewable, вместо тихой перезаписи
 артефактов при обычном `gof test`.
 
+## Product fixtures
+
+`gof test` теперь же ведет и repository-style product harness paths:
+
+- `tests/ui/*.gof`: файл обязан падать на compilation
+- `tests/runtime/*.gof`: файл обязан успешно выполняться
+- `tests/runtime-fail/*.gof`: файл обязан скомпилироваться и упасть уже на runtime
+
+Для этих путей используются явные artifact-файлы:
+
+- `.diag` для diagnostic codes
+- `.stdout` для CLI-visible stdout
+- `.stderr` для отрендеренных diagnostics
+- `.exit` для ожидаемого harness exit status
+
+Обновление делается явно:
+
+```text
+gof test --update-snapshots path/to/project
+```
+
+Так compile/runtime product fixtures теперь живут под тем же CLI entrypoint,
+что и language-level tests, вместо разъезда по отдельным одноразовым harness-скриптам.
+
 ## Что еще не shipped
 
 Этот срез уже полезный, но сознательно далек от финальной платформы.
 
 Пока еще не shipped:
 
-- явные fixture cleanup hooks поверх temp/env cleanup, который уже делает `TestContext`
 - автоматический doctest для каждого обычного markdown-блока `gof`
-- unified `tests/ui` и `tests/runtime` product harness под `gof test`
 - JSON и JUnit reporters
 - property testing
 - fuzzing

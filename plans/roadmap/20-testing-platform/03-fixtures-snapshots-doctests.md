@@ -15,16 +15,16 @@ Delivered in slice 1:
 - opt-in markdown doctests through `gof test --docs` and fenced ` ```gof doctest ... ` modes
 - typed fixtures through `fixture(test) fn` and `fixture(module) fn`
 - fixture DAG resolution by parameter name and compatible type
+- fixture cleanup hooks through receiver method `cleanup() -> unit | Result[unit, RuntimeError]`
+- unified `tests/ui`, `tests/runtime`, and `tests/runtime-fail` product contract under `gof test`
+- explicit update flow for `.diag`, `.stdout`, `.stderr`, and `.exit` artifacts
 
 Planned next:
 
-- teardown via `cleanup() -> unit | Result[unit, RuntimeError]`
 - doctest extraction from:
   - `README.md`
   - `docs/book/**/*.md`
   - `docs/book-ru/**/*.md`
-- unified `tests/ui` and `tests/runtime` product contract under `gof test`
-- explicit update flow for `.diag`, `.stdout`, `.stderr`, and `.exit` artifacts
 
 ## Non-goals
 
@@ -35,14 +35,14 @@ Planned next:
 ## Diagnostics Impact
 
 - current fixture delivery adds `GOF3120`, `GOF3121`, `GOF3122`, `GOF3123`,
-  and `GOF3124`
-- future fixture/doctest slices must still add dedicated diagnostics for cleanup
-  misuse and doctest mode misuse instead of overloading generic parse failures
+  `GOF3124`, and `GOF3125`
+- future doctest slices must still add dedicated diagnostics for doctest mode
+  misuse instead of overloading generic parse failures
 
 ## Tests
 
 - snapshot stability and update behavior
-- fixture graph resolution and cycle rejection
+- fixture graph resolution, cycle rejection, and cleanup ordering
 - doctest extraction from markdown with line-accurate failure reporting
 - UI/runtime fixture diffing with stable path/line/code output
 

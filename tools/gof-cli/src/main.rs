@@ -628,29 +628,92 @@ fn normalize_cli_path(path: &Path) -> String {
     }
 }
 
-fn run_fixture(path: &Path) -> Result<()> {
-    let source = SourceFile::from_path(path)?;
-    let is_runtime_fail = path
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FixtureHarnessKind {
+    LegacyPass,
+    LegacyCompileFail,
+    LegacyRuntimeFail,
+    UiCompileFail,
+    RuntimePass,
+    RuntimeFail,
+}
+
+#[derive(Debug, Clone)]
+struct FixtureArtifacts {
+    stdout: String,
+    stderr: String,
+    exit_code: i32,
+    diag_codes: Vec<&'static str>,
+}
+
+fn classify_fixture_harness(path: &Path) -> FixtureHarnessKind {
+    let in_legacy_fixture_tree = path
         .components()
-        .any(|component| component.as_os_str() == "runtime-fail");
-    let is_compile_fail = path
+        .any(|component| component.as_os_str() == "fixtures");
+    if in_legacy_fixture_tree
+        && path
+            .components()
+            .any(|component| component.as_os_str() == "runtime-fail")
+    {
+        FixtureHarnessKind::LegacyRuntimeFail
+    } else if in_legacy_fixture_tree
+        && path
+            .components()
+            .any(|component| component.as_os_str() == "fail")
+    {
+        FixtureHarnessKind::LegacyCompileFail
+    } else if path
+        .components()
+        .any(|component| component.as_os_str() == "runtime-fail")
+    {
+        FixtureHarnessKind::RuntimeFail
+    } else if path
+        .components()
+        .any(|component| component.as_os_str() == "runtime")
+    {
+        FixtureHarnessKind::RuntimePass
+    } else if path.components().any(|component| component.as_os_str() == "ui") {
+        FixtureHarnessKind::UiCompileFail
+    } else if path
         .components()
         .any(|component| component.as_os_str() == "fail")
-        && !is_runtime_fail;
+    {
+        FixtureHarnessKind::LegacyCompileFail
+    } else {
+        FixtureHarnessKind::LegacyPass
+    }
+}
+
+fn run_fixture(path: &Path, update_expected_artifacts: bool) -> Result<()> {
+    let harness = classify_fixture_harness(path);
+    if matches!(
+        harness,
+        FixtureHarnessKind::UiCompileFail
+            | FixtureHarnessKind::RuntimePass
+            | FixtureHarnessKind::RuntimeFail
+    ) {
+        return run_product_fixture(path, harness, update_expected_artifacts);
+    }
+
+    let source = SourceFile::from_path(path)?;
 
     match compile_source(&source, CompileMode::Executable) {
-        Ok(_) if is_compile_fail => bail!("expected fixture to fail during compilation"),
-        Ok(_) if is_runtime_fail => match run_module_with_output(&source) {
+        Ok(_) if harness == FixtureHarnessKind::LegacyCompileFail => {
+            bail!("expected fixture to fail during compilation")
+        }
+        Ok(_) if harness == FixtureHarnessKind::LegacyRuntimeFail => match run_module_with_output(&source) {
             Ok(result) => bail!(
                 "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
                 result.stdout,
                 result.value.cli_text()
             ),
-            Err(error) => validate_expected_diagnostics(path, &error),
+            Err(error) => validate_expected_diagnostics(path, &error, update_expected_artifacts),
         },
         Ok(_) => Ok(()),
-        Err(error) if is_compile_fail => validate_expected_diagnostics(path, &error),
-        Err(error) if is_runtime_fail => Err(anyhow!(
+        Err(error) if harness == FixtureHarnessKind::LegacyCompileFail => {
+            validate_expected_diagnostics(path, &error, update_expected_artifacts)
+        }
+        Err(error) if harness == FixtureHarnessKind::LegacyRuntimeFail => Err(anyhow!(
             "expected runtime failure, but compilation failed instead:\n{}",
             render_error(&source, error)
         )),
@@ -658,25 +721,257 @@ fn run_fixture(path: &Path) -> Result<()> {
     }
 }
 
-fn validate_expected_diagnostics(path: &Path, error: &Diagnostics) -> Result<()> {
-    let expected = path.with_extension("diag");
-    if expected.exists() {
-        let expected_contents = fs::read_to_string(&expected)?;
-        let expected_codes = expected_contents
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>();
-        let actual_codes = error.codes();
-        if actual_codes != expected_codes {
-            bail!(
-                "diagnostic mismatch: expected {:?}, got {:?}",
-                expected_codes,
-                actual_codes
-            );
+fn run_product_fixture(
+    path: &Path,
+    harness: FixtureHarnessKind,
+    update_expected_artifacts: bool,
+) -> Result<()> {
+    let source = SourceFile::from_path(path)?;
+    let actual = match harness {
+        FixtureHarnessKind::UiCompileFail => match compile_source(&source, CompileMode::Executable) {
+            Ok(_) => bail!("expected ui fixture to fail during compilation"),
+            Err(error) => FixtureArtifacts {
+                stdout: String::new(),
+                stderr: render_fixture_diagnostics(path, &source, &error),
+                exit_code: 1,
+                diag_codes: error.codes(),
+            },
+        },
+        FixtureHarnessKind::RuntimePass => match run_module_with_output(&source) {
+            Ok(result) => FixtureArtifacts {
+                stdout: render_execution_stdout(&result),
+                stderr: String::new(),
+                exit_code: 0,
+                diag_codes: Vec::new(),
+            },
+            Err(error) => bail!(
+                "expected runtime fixture to succeed, but it failed instead:\n{}",
+                render_fixture_diagnostics(path, &source, &error)
+            ),
+        },
+        FixtureHarnessKind::RuntimeFail => match run_module_with_output(&source) {
+            Ok(result) => bail!(
+                "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
+                result.stdout,
+                result.value.cli_text()
+            ),
+            Err(error) => FixtureArtifacts {
+                stdout: String::new(),
+                stderr: render_fixture_diagnostics(path, &source, &error),
+                exit_code: 1,
+                diag_codes: error.codes(),
+            },
+        },
+        FixtureHarnessKind::LegacyPass
+        | FixtureHarnessKind::LegacyCompileFail
+        | FixtureHarnessKind::LegacyRuntimeFail => {
+            bail!("product fixture runner received a legacy fixture kind")
         }
+    };
+
+    validate_product_fixture_artifacts(path, harness, &actual, update_expected_artifacts)
+}
+
+fn render_execution_stdout(result: &gof_compiler::ExecutionResult) -> String {
+    let mut rendered = result.stdout.clone();
+    if let Some(value) = result.value.cli_text() {
+        rendered.push_str(&value);
+        rendered.push('\n');
+    }
+    normalize_artifact_text(&rendered)
+}
+
+fn render_fixture_diagnostics(path: &Path, source: &SourceFile, diagnostics: &Diagnostics) -> String {
+    let rendered = diagnostics.render(source);
+    normalize_fixture_output_paths(path, &rendered)
+}
+
+fn validate_product_fixture_artifacts(
+    path: &Path,
+    harness: FixtureHarnessKind,
+    actual: &FixtureArtifacts,
+    update_expected_artifacts: bool,
+) -> Result<()> {
+    match harness {
+        FixtureHarnessKind::UiCompileFail | FixtureHarnessKind::RuntimeFail => {
+            sync_fixture_artifact(path, "stderr", &actual.stderr, update_expected_artifacts)?;
+            sync_fixture_artifact(
+                path,
+                "diag",
+                &diag_artifact_text(&actual.diag_codes),
+                update_expected_artifacts,
+            )?;
+            sync_fixture_artifact(
+                path,
+                "exit",
+                &format!("{}\n", actual.exit_code),
+                update_expected_artifacts,
+            )?;
+            remove_fixture_artifact(path, "stdout", update_expected_artifacts)?;
+        }
+        FixtureHarnessKind::RuntimePass => {
+            sync_fixture_artifact(path, "stdout", &actual.stdout, update_expected_artifacts)?;
+            sync_fixture_artifact(
+                path,
+                "exit",
+                &format!("{}\n", actual.exit_code),
+                update_expected_artifacts,
+            )?;
+            remove_fixture_artifact(path, "stderr", update_expected_artifacts)?;
+            remove_fixture_artifact(path, "diag", update_expected_artifacts)?;
+        }
+        FixtureHarnessKind::LegacyPass
+        | FixtureHarnessKind::LegacyCompileFail
+        | FixtureHarnessKind::LegacyRuntimeFail => {}
+    }
+
+    Ok(())
+}
+
+fn validate_expected_diagnostics(
+    path: &Path,
+    error: &Diagnostics,
+    update_expected_artifacts: bool,
+) -> Result<()> {
+    sync_fixture_artifact(
+        path,
+        "diag",
+        &diag_artifact_text(&error.codes()),
+        update_expected_artifacts,
+    )
+}
+
+fn diag_artifact_text(codes: &[&str]) -> String {
+    if codes.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", codes.join("\n"))
+    }
+}
+
+fn sync_fixture_artifact(
+    path: &Path,
+    extension: &str,
+    actual: &str,
+    update_expected_artifacts: bool,
+) -> Result<()> {
+    let artifact_path = path.with_extension(extension);
+    let actual = normalize_artifact_text(actual);
+
+    match fs::read_to_string(&artifact_path) {
+        Ok(expected) => {
+            if normalize_artifact_text(&expected) != actual {
+                if update_expected_artifacts {
+                    fs::write(&artifact_path, actual)?;
+                    return Ok(());
+                }
+                bail!(
+                    "fixture artifact mismatch for `{}`\n  note: artifact `{}` differs from the current output\n  help: rerun `gof test --update-snapshots {}` to accept the new artifact",
+                    fixture_display_id(path),
+                    display_path(&artifact_path),
+                    display_path(path)
+                );
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if update_expected_artifacts {
+                fs::write(&artifact_path, actual)?;
+                Ok(())
+            } else {
+                bail!(
+                    "missing expected fixture artifact `{}` for `{}`\n  help: rerun `gof test --update-snapshots {}` to create it",
+                    display_path(&artifact_path),
+                    fixture_display_id(path),
+                    display_path(path)
+                );
+            }
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn remove_fixture_artifact(path: &Path, extension: &str, update_expected_artifacts: bool) -> Result<()> {
+    if !update_expected_artifacts {
+        return Ok(());
+    }
+
+    let artifact_path = path.with_extension(extension);
+    if artifact_path.exists() {
+        fs::remove_file(artifact_path)?;
     }
     Ok(())
+}
+
+fn normalize_artifact_text(value: &str) -> String {
+    value.replace("\r\n", "\n")
+}
+
+fn normalize_fixture_output_paths(path: &Path, text: &str) -> String {
+    let mut normalized = normalize_artifact_text(text);
+    let source_path = normalize_source_path(path);
+    let project_root = fixture_project_root(path);
+    let display_id = fixture_display_id(path);
+
+    for spelling in path_spellings(&source_path) {
+        normalized = normalized.replace(&spelling, &display_id);
+    }
+
+    for spelling in path_spellings(&project_root) {
+        for prefix in [format!("{spelling}\\"), format!("{spelling}/")] {
+            normalized = normalized.replace(&prefix, "");
+        }
+    }
+
+    normalized
+}
+
+fn fixture_project_root(path: &Path) -> PathBuf {
+    let normalized = normalize_source_path(path);
+    for ancestor in normalized.ancestors() {
+        if matches!(
+            ancestor.file_name().and_then(|value| value.to_str()),
+            Some("tests" | "src")
+        ) {
+            return ancestor
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .to_path_buf();
+        }
+    }
+
+    normalized
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
+}
+
+fn fixture_display_id(path: &Path) -> String {
+    let normalized = normalize_source_path(path);
+    let project_root = fixture_project_root(&normalized);
+    normalized
+        .strip_prefix(&project_root)
+        .map(display_path)
+        .unwrap_or_else(|_| display_path(&normalized))
+        .replace('\\', "/")
+}
+
+fn path_spellings(path: &Path) -> Vec<String> {
+    let rendered = display_path(path);
+    let unix = rendered.replace('\\', "/");
+    let windows = rendered.replace('/', "\\");
+    let mut values = vec![
+        rendered,
+        unix.clone(),
+        windows,
+        unix.replace('\\', "/"),
+    ];
+    if cfg!(windows) {
+        values.push(unix.to_ascii_lowercase());
+    }
+    values.sort();
+    values.dedup();
+    values
 }
 
 fn render_error(source: &SourceFile, error: Diagnostics) -> anyhow::Error {

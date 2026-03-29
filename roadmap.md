@@ -308,7 +308,7 @@ Hard sequencing rule:
 
 - `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery
 - `[x]` opt-in markdown doctest baseline through `gof test --docs`
-- `[~]` typed fixtures through `fixture(test|module) fn` with DAG-backed injection and runtime caching
+- `[~]` typed fixtures through `fixture(test|module) fn`, DAG-backed injection, runtime caching, cleanup hooks, and artifact-backed product fixtures under `tests/ui|runtime`
 - `[ ]` richer diagnostics coverage
 - `[ ]` fuzzing for parser, resolver, and type layer
 - `[ ]` stress harness for runtime and concurrency
@@ -316,7 +316,7 @@ Hard sequencing rule:
 - `[ ]` observability and debuggability improvements
 - Checkpoints:
 - `[x]` CP-M8-0: hybrid testing platform slice 1
-- `[~]` CP-M8-1: typed fixtures, doctests, and product-grade reporters
+- `[~]` CP-M8-1: typed fixtures, cleanup hooks, doctests, product fixtures, and product-grade reporters
 - `[ ]` CP-M8-2: property, fuzz, stress, and benchmark integration
 - Exit criteria:
 - production engineering quality is visible in tooling, not just language design

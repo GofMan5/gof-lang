@@ -35,7 +35,7 @@ It is also enough to express a first long-polling Telegram bot baseline.
 The next major steps are:
 
 - richer stdlib growth without semantic mud
-- deeper testing slices: fixture cleanup, unified product harnesses, reporters, property/fuzz/stress, and benchmark gates
+- deeper testing slices: unified product harnesses, reporters, property/fuzz/stress, and benchmark gates
 - production-grade concurrency contracts
 - package system hardening
 - direct native code generation

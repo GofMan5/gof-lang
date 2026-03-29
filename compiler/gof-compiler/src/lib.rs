@@ -17,8 +17,9 @@ pub mod typed_hir;
 
 pub use diagnostics::{Diagnostic, Diagnostics, Severity};
 pub use interpreter::{
-    ExecutionResult, TestExecutionOutcome, TestExecutionResult, TestModuleState,
-    TestRuntimeOptions, run_test_function_with_output,
+    ExecutionResult, FixtureCleanupResult, TestExecutionOutcome, TestExecutionResult,
+    TestModuleState, TestRuntimeOptions, cleanup_test_module_fixtures_with_output,
+    run_test_function_with_output,
 };
 pub use pipeline::{
     CompileMode, CompiledModule, build_embedded_source_bundle, compile_source,

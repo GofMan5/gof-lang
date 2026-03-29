@@ -2072,6 +2072,72 @@ fn gof_test_resolves_typed_fixtures_and_reuses_module_scope() {
 }
 
 #[test]
+fn gof_test_runs_fixture_cleanup_hooks_for_test_and_module_scope() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    let test_marker_path = temp
+        .path()
+        .join("test-fixture-cleanup.txt")
+        .to_string_lossy()
+        .replace('\\', "/");
+    let module_marker_path = temp
+        .path()
+        .join("module-fixture-cleanup.txt")
+        .to_string_lossy()
+        .replace('\\', "/");
+    fs::write(
+        tests_root.join("cleanup_test.gof"),
+        format!(
+            "import testing\n\nstruct TestProbe:\n    dir_path: string\n    marker_path: string\n\nfn TestProbe.cleanup(self: TestProbe) -> Result[unit, RuntimeError]:\n    if exists(self.dir_path):\n        if exists(self.marker_path):\n            current = read_file(self.marker_path)?\n            return write_file(self.marker_path, current + \"alive\\n\")\n        return write_file(self.marker_path, \"alive\\n\")\n    if exists(self.marker_path):\n        current = read_file(self.marker_path)?\n        return write_file(self.marker_path, current + \"missing\\n\")\n    return write_file(self.marker_path, \"missing\\n\")\n\nstruct ModuleProbe:\n    marker_path: string\n\nfn ModuleProbe.cleanup(self: ModuleProbe) -> Result[unit, RuntimeError]:\n    if exists(self.marker_path):\n        current = read_file(self.marker_path)?\n        return write_file(self.marker_path, current + \"module\\n\")\n    return write_file(self.marker_path, \"module\\n\")\n\nfixture(module) fn shared_probe() -> ModuleProbe:\n    return ModuleProbe(\"{module_marker_path}\")\n\nfixture(test) fn temp_probe(t: TestContext) -> TestProbe:\n    dir = t.temp_dir()\n    return TestProbe(dir.path(), \"{test_marker_path}\")\n\ntest fn first(shared_probe: ModuleProbe, temp_probe: TestProbe, t: TestContext):\n    t.true(exists(temp_probe.dir_path), \"expected injected test fixture temp dir\")\n\ntest fn second(shared_probe: ModuleProbe, temp_probe: TestProbe, t: TestContext):\n    t.true(exists(temp_probe.dir_path), \"expected injected test fixture temp dir\")\n"
+        ),
+    )
+    .expect("fixture cleanup test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("cleanup_test.gof::first"))
+        .stdout(predicate::str::contains("cleanup_test.gof::second"))
+        .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
+
+    assert_eq!(
+        fs::read_to_string(temp.path().join("test-fixture-cleanup.txt"))
+            .expect("test fixture cleanup marker should exist"),
+        "alive\nalive\n"
+    );
+    assert_eq!(
+        fs::read_to_string(temp.path().join("module-fixture-cleanup.txt"))
+            .expect("module fixture cleanup marker should exist"),
+        "module\n"
+    );
+}
+
+#[test]
+fn gof_test_fails_when_fixture_cleanup_hook_fails() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("broken_cleanup_test.gof"),
+        "import testing\n\nstruct BrokenProbe:\n    marker: string\n\nfn BrokenProbe.cleanup(self: BrokenProbe) -> Result[unit, RuntimeError]:\n    return Result.Err(RuntimeError.Io(\"cleanup failed\"))\n\nfixture(test) fn broken() -> BrokenProbe:\n    return BrokenProbe(\"marker\")\n\ntest fn uses_fixture(broken: BrokenProbe, t: TestContext):\n    t.true(true, \"expected primary test body to pass\")\n",
+    )
+    .expect("broken cleanup test file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "fixture `broken` cleanup returned Result.Err",
+        ))
+        .stdout(predicate::str::contains("test result: 0 passed; 1 failed"));
+}
+
+#[test]
 fn gof_test_surfaces_invalid_typed_fixture_dependencies() {
     let temp = tempdir().expect("tempdir should exist");
     let tests_root = temp.path().join("tests");
@@ -2158,4 +2224,154 @@ fn gof_test_surfaces_invalid_test_signatures() {
         .failure()
         .stderr(predicate::str::contains("GOF3113"))
         .stderr(predicate::str::contains("broken_case"));
+}
+
+#[test]
+fn gof_test_runs_product_ui_and_runtime_fixtures_and_reuses_recorded_artifacts() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    let ui_root = tests_root.join("ui");
+    let runtime_root = tests_root.join("runtime");
+    let runtime_fail_root = tests_root.join("runtime-fail");
+    fs::create_dir_all(&ui_root).expect("ui root should exist");
+    fs::create_dir_all(&runtime_root).expect("runtime root should exist");
+    fs::create_dir_all(&runtime_fail_root).expect("runtime-fail root should exist");
+
+    fs::write(
+        ui_root.join("type_mismatch.gof"),
+        "fn main() -> int:\n    return \"oops\"\n",
+    )
+    .expect("ui fixture should exist");
+    fs::write(
+        runtime_root.join("hello.gof"),
+        "fn main() -> int:\n    print(\"hi\")\n    return 7\n",
+    )
+    .expect("runtime fixture should exist");
+    fs::write(
+        runtime_fail_root.join("division_by_zero.gof"),
+        "fn main() -> int:\n    return 1 / 0\n",
+    )
+    .expect("runtime-fail fixture should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--update-snapshots")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tests/ui/type_mismatch.gof"))
+        .stdout(predicate::str::contains("tests/runtime/hello.gof"))
+        .stdout(predicate::str::contains("tests/runtime-fail/division_by_zero.gof"))
+        .stdout(predicate::str::contains("test result: 3 passed; 0 failed"));
+
+    assert_eq!(
+        fs::read_to_string(ui_root.join("type_mismatch.diag"))
+            .expect("ui diag artifact should exist"),
+        "GOF3013\n"
+    );
+    assert_eq!(
+        fs::read_to_string(ui_root.join("type_mismatch.exit"))
+            .expect("ui exit artifact should exist"),
+        "1\n"
+    );
+    let ui_stderr =
+        fs::read_to_string(ui_root.join("type_mismatch.stderr")).expect("ui stderr should exist");
+    assert!(
+        ui_stderr.contains("tests/ui/type_mismatch.gof"),
+        "ui stderr should use relative fixture paths: {ui_stderr}"
+    );
+    assert!(
+        ui_stderr.contains("GOF3013"),
+        "ui stderr should contain the diagnostic code: {ui_stderr}"
+    );
+
+    assert_eq!(
+        fs::read_to_string(runtime_root.join("hello.stdout"))
+            .expect("runtime stdout artifact should exist"),
+        "hi\n7\n"
+    );
+    assert_eq!(
+        fs::read_to_string(runtime_root.join("hello.exit"))
+            .expect("runtime exit artifact should exist"),
+        "0\n"
+    );
+
+    assert_eq!(
+        fs::read_to_string(runtime_fail_root.join("division_by_zero.diag"))
+            .expect("runtime-fail diag artifact should exist"),
+        "GOF3068\n"
+    );
+    assert_eq!(
+        fs::read_to_string(runtime_fail_root.join("division_by_zero.exit"))
+            .expect("runtime-fail exit artifact should exist"),
+        "1\n"
+    );
+    let runtime_fail_stderr = fs::read_to_string(runtime_fail_root.join("division_by_zero.stderr"))
+        .expect("runtime-fail stderr should exist");
+    assert!(
+        runtime_fail_stderr.contains("tests/runtime-fail/division_by_zero.gof"),
+        "runtime-fail stderr should use relative fixture paths: {runtime_fail_stderr}"
+    );
+    assert!(
+        runtime_fail_stderr.contains("GOF3068"),
+        "runtime-fail stderr should contain the diagnostic code: {runtime_fail_stderr}"
+    );
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test result: 3 passed; 0 failed"));
+}
+
+#[test]
+fn gof_test_rewrites_product_fixture_artifacts_with_update_snapshots() {
+    let temp = tempdir().expect("tempdir should exist");
+    let runtime_root = temp.path().join("tests").join("runtime");
+    fs::create_dir_all(&runtime_root).expect("runtime root should exist");
+    fs::write(
+        runtime_root.join("hello.gof"),
+        "fn main() -> int:\n    print(\"hi\")\n    return 7\n",
+    )
+    .expect("runtime fixture should exist");
+    fs::write(runtime_root.join("hello.stdout"), "stale\n").expect("stale stdout should exist");
+    fs::write(runtime_root.join("hello.exit"), "9\n").expect("stale exit should exist");
+    fs::write(runtime_root.join("hello.stderr"), "stale stderr\n")
+        .expect("stale stderr should exist");
+
+    gof_command()
+        .arg("test")
+        .arg(temp.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("fixture artifact mismatch"))
+        .stderr(predicate::str::contains("hello.stdout"));
+
+    gof_command()
+        .arg("test")
+        .arg("--update-snapshots")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("test result: 1 passed; 0 failed"));
+
+    assert_eq!(
+        fs::read_to_string(runtime_root.join("hello.stdout"))
+            .expect("runtime stdout artifact should be updated"),
+        "hi\n7\n"
+    );
+    assert_eq!(
+        fs::read_to_string(runtime_root.join("hello.exit"))
+            .expect("runtime exit artifact should be updated"),
+        "0\n"
+    );
+    assert!(
+        !runtime_root.join("hello.stderr").exists(),
+        "stale stderr artifact should be removed on update"
+    );
+    assert!(
+        !runtime_root.join("hello.diag").exists(),
+        "stale diag artifact should be absent for successful runtime fixtures"
+    );
 }

@@ -34,7 +34,7 @@ examples и собирать первый baseline long-polling Telegram bot.
 Следующие крупные шаги:
 
 - richer stdlib без semantic mud
-- следующие testing slices: fixture cleanup, unified product harnesses, reporters, property/fuzz/stress и benchmark gates
+- следующие testing slices: unified product harnesses, reporters, property/fuzz/stress и benchmark gates
 - production-grade concurrency contracts
 - package system hardening
 - direct native code generation

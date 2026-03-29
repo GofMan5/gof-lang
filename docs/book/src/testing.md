@@ -16,6 +16,8 @@ The shipped slice currently includes:
 - typed `TestContext`
 - deterministic `gof test` discovery for `*_test.gof` and `tests/**/*.gof`
 - snapshot storage under `tests/snapshots/`
+- artifact-backed product fixtures under `tests/ui`, `tests/runtime`, and `tests/runtime-fail`
+- optional fixture cleanup hooks through receiver method `cleanup()`
 - opt-in markdown doctests through `gof test --docs`
 
 Example:
@@ -88,6 +90,34 @@ Current fixture rules:
 - fixtures must declare an explicit return type and currently return either
   `Type` or `Result[Type, RuntimeError]`
 - only `fixture(test)` may request `t: TestContext`
+- fixture values may declare an optional receiver method
+    `cleanup() -> unit | Result[unit, RuntimeError]`
+- test-scoped cleanup runs after the test body but before `TestContext`
+    temp/env teardown; module-scoped cleanup runs once after the file finishes
+
+## Fixture cleanup
+
+Returned fixture values may opt into teardown by declaring a receiver method
+named `cleanup`.
+
+```gof doctest no_run
+import testing
+
+struct ScratchDir:
+        path: string
+
+fn ScratchDir.cleanup(self: ScratchDir) -> Result[unit, RuntimeError]:
+    return write_file(path_join(self.path, "teardown.log"), "cleanup ran")
+
+fixture(test) fn scratch(t: TestContext) -> ScratchDir:
+        dir = t.temp_dir()
+        return ScratchDir(dir.path())
+```
+
+That keeps fixture lifetime explicit without introducing a second callback DSL:
+the returned value owns its own teardown contract, the runner calls it in
+reverse dependency order, and test-scoped cleanup still happens before the
+runner removes `TestContext` temp resources or restores environment overrides.
 
 ## Snapshot contract
 
@@ -100,15 +130,37 @@ Snapshots are explicit and deterministic:
 That keeps snapshot churn visible and reviewable instead of letting normal
 `gof test` runs rewrite artifacts implicitly.
 
+## Product fixtures
+
+`gof test` now also owns the repository-style product harness paths:
+
+- `tests/ui/*.gof`: the file must fail during compilation
+- `tests/runtime/*.gof`: the file must execute successfully
+- `tests/runtime-fail/*.gof`: the file must compile, then fail at runtime
+
+Those paths use explicit artifact files:
+
+- `.diag` for diagnostic codes
+- `.stdout` for CLI-visible stdout
+- `.stderr` for rendered diagnostics
+- `.exit` for the expected harness exit status
+
+Update them explicitly with:
+
+```text
+gof test --update-snapshots path/to/project
+```
+
+That keeps compile/runtime product fixtures under the same CLI entrypoint as
+language-level tests instead of splitting the contract across ad hoc scripts.
+
 ## Current limits
 
 This slice is intentionally narrower than the final testing platform.
 
 Not shipped yet:
 
-- explicit fixture cleanup hooks beyond `TestContext`-managed temp/env cleanup
 - default doctest execution for every plain `gof` markdown fence
-- unified `tests/ui` and `tests/runtime` product harnesses under `gof test`
 - JSON and JUnit reporters
 - property testing
 - fuzzing
