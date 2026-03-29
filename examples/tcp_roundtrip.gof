@@ -1,14 +1,13 @@
-import bytes
 import net
 
 fn serve(listener: TcpListener) -> Result[int, RuntimeError]:
     conn = listener.accept()?
-    payload = conn.read_exact(5)?
-    conn.write_all(payload)?
+    payload = conn.read_exact_string(5)?
+    conn.write_all_string(payload)?
     peer = conn.peer_addr()?
     conn.close()?
     listener.close()?
-    return Result.Ok(peer.port() - peer.port() + bytes_len(payload))
+    return Result.Ok(peer.port() - peer.port() + len(payload))
 
 fn main() -> Result[int, RuntimeError]:
     mut listener = listen_tcp_loopback(0)?
@@ -18,11 +17,9 @@ fn main() -> Result[int, RuntimeError]:
 
     mut client = address.connect_tcp_with_timeout(5000)?
     client = client.with_timeout(5000)?
-    payload = bytes_from_string("ping!")
 
-    client.write_all(payload)?
-    echoed = client.read_exact(5)?
-    text = bytes_to_string(echoed)?
+    client.write_all_string("ping!")?
+    text = client.read_exact_string(5)?
     local = client.local_addr()?
     client.close()?
 

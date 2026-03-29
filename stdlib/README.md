@@ -22,6 +22,7 @@ Current shipped foundation in this slice:
   - `ReadStream`, `WriteStream`
   - `open_read_stream`, `open_write_stream`
   - explicit read/write/flush/close plus deadline/cancel/timeout wrappers
+  - string helpers: `ReadStream.read_string`, `ReadStream.read_exact_string`, `ReadStream.read_all_string`, `WriteStream.write_string`, `WriteStream.write_all_string`
 - `time`
   - `NetDeadline`
   - `deadline_after`, `deadline_at_unix_millis`
@@ -29,6 +30,7 @@ Current shipped foundation in this slice:
   - `DuplexStream`, `TcpListener`, `SocketAddr`
   - `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`
   - `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`
+  - string helpers: `DuplexStream.read_string`, `DuplexStream.read_exact_string`, `DuplexStream.read_all_string`, `DuplexStream.write_string`, `DuplexStream.write_all_string`
   - `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`
 - `http`
   - `response_status`, `response_status_class`, `response_is_success`
@@ -46,6 +48,10 @@ The `net` module now also ships loopback bind/connect wrappers and typed
 The shipped `io` and `net` modules now also expose Result-returning timeout
 wrappers that collapse the common `deadline_after(...)` plus `.with_deadline(...)`
 pattern without hiding the fact that timeout setup itself can fail.
+
+They also expose explicit UTF-8 stream helpers over the existing `Bytes`
+foundation so callers can stay in text mode when that is the real contract
+without pretending raw byte boundaries or decode failures do not exist.
 
 Planned first-wave areas:
 

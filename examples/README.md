@@ -24,13 +24,13 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `testing_baseline/math_test.gof`: language-level `test fn`, `TestContext.case(...)`, and deterministic `gof test` discovery
 - `testing_baseline/fixture_test.gof`: typed `fixture(module)` / `fixture(test)` injection with cached module scope and per-test temp resources
 - `io_roundtrip.gof`: `Result`-based file I/O plus `assert(...)`
-- `bytes_stream_roundtrip.gof`: shipped `bytes` / `io` / `time` stdlib foundation with explicit `Bytes`, timeout-armed stream wrappers, and roundtrip file I/O
+- `bytes_stream_roundtrip.gof`: shipped `bytes` / `io` / `time` stdlib foundation with timeout-armed stream wrappers, explicit UTF-8 stream helpers, and roundtrip file I/O
 - `line_io.gof`: line-oriented file I/O with `write_lines(...)`, `read_lines(...)`, and explicit cleanup
 - `stdin_report.gof`: explicit stdin ingestion through `read_stdin()` and `read_stdin_lines()` for shell-style pipelines
 - `time_report.gof`: explicit Unix wall-clock helpers through `unix_seconds()` and `unix_millis()`
 - `base64_report.gof`: explicit base64 encode/decode helpers for HTTP/CI/script payloads
 - `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus typed `http` response helpers
-- `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, typed `SocketAddr` dialing, timeout wrappers, and loopback roundtrip I/O
+- `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, typed `SocketAddr` dialing, timeout wrappers, and duplex string roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
 - `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers

@@ -1632,7 +1632,7 @@ mod tests {
 
         fs::write(
             &main_path,
-            "import bytes\nimport io\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    payload = bytes_from_string(\"gof\")\n    mut writer = open_write_stream(\"out.bin\")?\n    writer = writer.with_timeout(1000)?\n    text = bytes_to_string(payload)?\n    return Result.Ok(bytes_len(payload) + len(text) + deadline.unix_millis() - deadline.unix_millis())\n",
+            "import bytes\nimport io\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    mut writer = open_write_stream(\"out.bin\")?\n    writer = writer.with_timeout(1000)?\n    writer.write_all_string(\"gof\")?\n    mut reader = open_read_stream(\"out.bin\")?\n    reader = reader.with_timeout(1000)?\n    text = reader.read_all_string()?\n    payload = bytes_from_string(text)\n    return Result.Ok(bytes_len(payload) + deadline.unix_millis() - deadline.unix_millis())\n",
         )
         .expect("main module should exist");
 
@@ -1654,15 +1654,21 @@ mod tests {
         }
         match &main.body[1] {
             crate::typed_hir::TypedStmt::Bind { value, .. } => {
-                assert_eq!(value.ty, Type::Opaque("Bytes".to_string()));
-            }
-            other => panic!("expected bytes bind, got {other:?}"),
-        }
-        match &main.body[2] {
-            crate::typed_hir::TypedStmt::Bind { value, .. } => {
                 assert_eq!(value.ty, Type::Opaque("WriteStream".to_string()));
             }
             other => panic!("expected write stream bind, got {other:?}"),
+        }
+        match &main.body[4] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Opaque("ReadStream".to_string()));
+            }
+            other => panic!("expected read stream bind, got {other:?}"),
+        }
+        match &main.body[6] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected string bind, got {other:?}"),
         }
     }
 
@@ -1673,7 +1679,7 @@ mod tests {
 
         fs::write(
             &main_path,
-            "import net\n\nfn main() -> Result[int, RuntimeError]:\n    mut listener = listen_tcp_loopback(0)?\n    listener = listener.with_timeout(1000)?\n    address = listener.local_addr()?\n    client = address.connect_tcp_with_timeout(1000)?\n    local = client.local_addr()?\n    return Result.Ok(address.port() + local.port() - local.port())\n",
+            "import net\n\nfn main() -> Result[int, RuntimeError]:\n    mut listener = listen_tcp_loopback(0)?\n    listener = listener.with_timeout(1000)?\n    address = listener.local_addr()?\n    client = address.connect_tcp_with_timeout(1000)?\n    client.write_all_string(\"ping\")?\n    text = client.read_exact_string(4)?\n    return Result.Ok(address.port() + len(text) - len(text))\n",
         )
         .expect("main module should exist");
 
@@ -1704,6 +1710,12 @@ mod tests {
                 assert_eq!(value.ty, Type::Opaque("DuplexStream".to_string()));
             }
             other => panic!("expected duplex stream bind, got {other:?}"),
+        }
+        match &main.body[5] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::String);
+            }
+            other => panic!("expected string bind, got {other:?}"),
         }
     }
 

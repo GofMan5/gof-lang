@@ -7,11 +7,20 @@ fn open_write_stream(path: string) -> Result[WriteStream, RuntimeError]:
 fn ReadStream.read(self: ReadStream, max_bytes: int) -> Result[Bytes, RuntimeError]:
     return __gof_internal_read_stream_read(self, max_bytes)
 
+fn ReadStream.read_string(self: ReadStream, max_bytes: int) -> Result[string, RuntimeError]:
+    return __gof_internal_bytes_to_string(self.read(max_bytes)?)
+
 fn ReadStream.read_exact(self: ReadStream, byte_count: int) -> Result[Bytes, RuntimeError]:
     return __gof_internal_read_stream_read_exact(self, byte_count)
 
+fn ReadStream.read_exact_string(self: ReadStream, byte_count: int) -> Result[string, RuntimeError]:
+    return __gof_internal_bytes_to_string(self.read_exact(byte_count)?)
+
 fn ReadStream.read_all(self: ReadStream) -> Result[Bytes, RuntimeError]:
     return __gof_internal_read_stream_read_all(self)
+
+fn ReadStream.read_all_string(self: ReadStream) -> Result[string, RuntimeError]:
+    return __gof_internal_bytes_to_string(self.read_all()?)
 
 fn ReadStream.close(self: ReadStream) -> Result[unit, RuntimeError]:
     return __gof_internal_read_stream_close(self)
@@ -29,8 +38,14 @@ fn ReadStream.with_timeout(self: ReadStream, milliseconds: int) -> Result[ReadSt
 fn WriteStream.write(self: WriteStream, bytes: Bytes) -> Result[int, RuntimeError]:
     return __gof_internal_write_stream_write(self, bytes)
 
+fn WriteStream.write_string(self: WriteStream, text: string) -> Result[int, RuntimeError]:
+    return self.write(__gof_internal_bytes_from_string(text))
+
 fn WriteStream.write_all(self: WriteStream, bytes: Bytes) -> Result[unit, RuntimeError]:
     return __gof_internal_write_stream_write_all(self, bytes)
+
+fn WriteStream.write_all_string(self: WriteStream, text: string) -> Result[unit, RuntimeError]:
+    return self.write_all(__gof_internal_bytes_from_string(text))
 
 fn WriteStream.flush(self: WriteStream) -> Result[unit, RuntimeError]:
     return __gof_internal_write_stream_flush(self)
