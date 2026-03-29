@@ -40,6 +40,7 @@ test fn result_paths_stay_explicit(t: TestContext) -> Result[unit, RuntimeError]
 ```text
 gof test examples/testing_baseline
 gof test --list examples/testing_baseline
+gof test --shuffle --seed 17 examples/testing_baseline
 ```
 
 ## `TestContext`
@@ -244,3 +245,9 @@ truth, а не затягивает в CI случайные article drafts ил
 
 Это сохраняет default contract детерминированным и product-oriented, но всё же
 оставляет maintainers явный escape hatch для точечной глубокой проверки.
+
+`gof test --shuffle` теперь дает явный opt-in для детерминированного
+seeded-переупорядочивания language tests, doctests, fixtures и package
+targets. `--seed <n>` явно фиксирует активный порядок, а если `--seed` не
+передан, shuffled-order все равно остается стабильным за счет seed `0`, а не
+уходит в неявную недетерминированность.

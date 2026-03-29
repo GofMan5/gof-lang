@@ -39,6 +39,7 @@ Run it with:
 ```text
 gof test examples/testing_baseline
 gof test --list examples/testing_baseline
+gof test --shuffle --seed 17 examples/testing_baseline
 ```
 
 ## `TestContext`
@@ -242,3 +243,8 @@ the default harness skips on purpose, such as `tests/support/`, `snapshots/`,
 
 That keeps the default contract deterministic and product-oriented while still
 giving maintainers an explicit escape hatch for one-off deep validation.
+
+`gof test --shuffle` now opt-ins to deterministic seeded reordering for
+language tests, doctests, fixtures, and package targets. `--seed <n>` pins the
+active order explicitly, while omitting `--seed` keeps the shuffled order
+stable with seed `0` instead of introducing ambient nondeterminism.

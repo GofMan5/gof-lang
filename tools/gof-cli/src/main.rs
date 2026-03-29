@@ -98,6 +98,10 @@ pub(crate) struct TestArgs {
     #[arg(long)]
     list: bool,
     #[arg(long)]
+    shuffle: bool,
+    #[arg(long, requires = "shuffle")]
+    seed: Option<u64>,
+    #[arg(long)]
     fail_fast: bool,
     #[arg(long)]
     nocapture: bool,

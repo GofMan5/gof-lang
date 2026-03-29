@@ -598,7 +598,9 @@ fn emit_json_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: 
                 "noCapture": args.nocapture,
                 "updateSnapshots": args.update_snapshots,
                 "docs": args.docs,
-                "includeIgnored": args.include_ignored
+                "includeIgnored": args.include_ignored,
+                "shuffle": args.shuffle,
+                "seed": active_shuffle_seed(args)
             },
             "summary": {
                 "executed": report.summary.executed(),
@@ -673,6 +675,10 @@ fn emit_junit_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms:
     write_junit_property(&mut xml, "gof.updateSnapshots", if args.update_snapshots { "true" } else { "false" })?;
     write_junit_property(&mut xml, "gof.docs", if args.docs { "true" } else { "false" })?;
     write_junit_property(&mut xml, "gof.includeIgnored", if args.include_ignored { "true" } else { "false" })?;
+    write_junit_property(&mut xml, "gof.shuffle", if args.shuffle { "true" } else { "false" })?;
+    if let Some(seed) = active_shuffle_seed(args) {
+        write_junit_property(&mut xml, "gof.seed", &seed.to_string())?;
+    }
     for (index, input_id) in input_ids.iter().enumerate() {
         write_junit_property(&mut xml, &format!("gof.input.{}", index + 1), input_id)?;
     }
@@ -928,7 +934,7 @@ fn discover_targets(args: &TestArgs) -> Result<DiscoveredTargets> {
         .collect::<Result<Vec<_>>>()?;
     language_files.sort_by(|left, right| left.source_path.cmp(&right.source_path));
 
-    Ok(DiscoveredTargets {
+    let mut discovered = DiscoveredTargets {
         language_files: filter_language_tests(language_files, args),
         fixture_targets: filter_paths(fixture_targets.into_iter().collect(), args, |path| {
             display_id_for_path(path)
@@ -946,7 +952,9 @@ fn discover_targets(args: &TestArgs) -> Result<DiscoveredTargets> {
                 .collect(),
             args,
         ),
-    })
+    };
+    apply_target_ordering(&mut discovered, args);
+    Ok(discovered)
 }
 
 fn discovered_targets_is_empty(discovered: &DiscoveredTargets) -> bool {
@@ -1530,6 +1538,62 @@ fn matches_filter(value: &str, filter: &str, exact: bool) -> bool {
     } else {
         value.contains(filter)
     }
+}
+
+fn apply_target_ordering(discovered: &mut DiscoveredTargets, args: &TestArgs) {
+    let Some(seed) = active_shuffle_seed(args) else {
+        return;
+    };
+
+    discovered.language_files.sort_by_cached_key(|file| {
+        let id = language_file_order_id(file);
+        (shuffle_order_key(seed, &id), id)
+    });
+    for file in &mut discovered.language_files {
+        let path_id = display_id_for_path(&file.source_path);
+        file.test_names.sort_by_cached_key(|test_name| {
+            let id = format!("{path_id}::{test_name}");
+            (shuffle_order_key(seed, &id), id)
+        });
+    }
+    discovered.fixture_targets.sort_by_cached_key(|path| {
+        let id = display_id_for_path(path);
+        (shuffle_order_key(seed, &id), id)
+    });
+    discovered.package_targets.sort_by_cached_key(|path| {
+        let id = display_id_for_path(path);
+        (shuffle_order_key(seed, &id), id)
+    });
+    discovered.doctests.sort_by_cached_key(|doctest| {
+        let id = doctest_id(doctest);
+        (shuffle_order_key(seed, &id), id)
+    });
+}
+
+fn active_shuffle_seed(args: &TestArgs) -> Option<u64> {
+    args.shuffle.then_some(args.seed.unwrap_or(0))
+}
+
+fn language_file_order_id(file: &LanguageTestFile) -> String {
+    let path_id = display_id_for_path(&file.source_path);
+    if file.compile_error.is_some() {
+        format!("{path_id}::<compile>")
+    } else {
+        path_id
+    }
+}
+
+fn shuffle_order_key(seed: u64, value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in seed.to_le_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    for byte in value.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn collect_targets(

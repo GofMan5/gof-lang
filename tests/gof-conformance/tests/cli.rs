@@ -178,6 +178,65 @@ fn parse_stdout_json(output: &[u8]) -> serde_json::Value {
     serde_json::from_slice(output).expect("stdout should contain valid JSON")
 }
 
+fn parse_stdout_listed_ids(output: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(output)
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with("listed "))
+        .map(str::to_string)
+        .collect()
+}
+
+fn listed_report_event_ids(report: &serde_json::Value) -> Vec<String> {
+    report["events"]
+        .as_array()
+        .expect("events should be an array")
+        .iter()
+        .map(|event| {
+            event["id"]
+                .as_str()
+                .expect("event id should be a string")
+                .to_string()
+        })
+        .collect()
+}
+
+fn choose_shuffle_seed(ids: &[String]) -> u64 {
+    let natural = ids.to_vec();
+    [1u64, 7, 17, 29, 53, 101, 211]
+        .into_iter()
+        .find(|seed| expected_shuffled_ids(ids, *seed) != natural)
+        .expect("one candidate seed should reorder the ids")
+}
+
+fn expected_shuffled_ids(ids: &[String], seed: u64) -> Vec<String> {
+    let mut expected = ids.to_vec();
+    expected.sort_by_cached_key(|id| (shuffle_order_key(seed, id), id.clone()));
+    expected
+}
+
+fn expected_shuffled_language_ids(ids: &[String], seed: u64) -> Vec<String> {
+    let mut expected = ids.to_vec();
+    expected.sort_by_cached_key(|id| {
+        let file_id = id.split("::").next().unwrap_or(id);
+        (shuffle_order_key(seed, file_id), file_id.to_string())
+    });
+    expected
+}
+
+fn shuffle_order_key(seed: u64, value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in seed.to_le_bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    for byte in value.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
 fn find_xml_testcase<'a, 'input>(
     doc: &'a roxmltree::Document<'input>,
     needle: &str,
@@ -196,6 +255,13 @@ fn child_element_text(node: roxmltree::Node<'_, '_>, tag: &str) -> Option<String
     node.children()
         .find(|child| child.has_tag_name(tag))
         .and_then(|child| child.text())
+        .map(str::to_string)
+}
+
+fn find_xml_property_value(doc: &roxmltree::Document<'_>, name: &str) -> Option<String> {
+    doc.descendants()
+        .find(|node| node.has_tag_name("property") && node.attribute("name") == Some(name))
+        .and_then(|node| node.attribute("value"))
         .map(str::to_string)
 }
 
@@ -2579,6 +2645,128 @@ fn gof_test_lists_opt_in_doctests() {
         .stdout(predicate::str::contains("guide.md:4::doctest#1"))
         .stdout(predicate::str::contains("guide.md:9::doctest-no-run#2"))
         .stdout(predicate::str::contains("listed 2"));
+}
+
+#[test]
+fn gof_test_seed_requires_shuffle() {
+    gof_command()
+        .arg("test")
+        .arg("--seed")
+        .arg("7")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--shuffle"));
+}
+
+#[test]
+fn gof_test_shuffle_seed_reorders_listed_language_targets_deterministically() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+
+    for case_name in ["amber", "cobalt", "ember", "jade", "onyx", "topaz"] {
+        fs::write(
+            tests_root.join(format!("{case_name}_test.gof")),
+            format!(
+                "import testing\n\ntest fn {case_name}(t: TestContext):\n    t.true(true, \"{case_name}\")\n"
+            ),
+        )
+        .expect("language test file should exist");
+    }
+
+    let baseline = gof_command()
+        .arg("test")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success();
+    let natural_ids = parse_stdout_listed_ids(&baseline.get_output().stdout);
+    assert_eq!(natural_ids.len(), 6);
+
+    let seed = choose_shuffle_seed(&natural_ids);
+    let expected_ids = expected_shuffled_language_ids(&natural_ids, seed);
+
+    let shuffled = gof_command()
+        .arg("test")
+        .arg("--list")
+        .arg("--shuffle")
+        .arg("--seed")
+        .arg(seed.to_string())
+        .arg(temp.path())
+        .assert()
+        .success();
+    let shuffled_ids = parse_stdout_listed_ids(&shuffled.get_output().stdout);
+
+    assert_eq!(shuffled_ids, expected_ids);
+}
+
+#[test]
+fn gof_test_shuffle_seed_reorders_doctest_listing_and_reports_active_seed() {
+    let temp = tempdir().expect("tempdir should exist");
+    for (name, value) in [("alpha", 1), ("beta", 2), ("gamma", 3), ("delta", 4)] {
+        fs::write(
+            temp.path().join(format!("{name}.md")),
+            format!(
+                "# {name}\n\n```gof doctest\nfn main() -> int:\n    return {value}\n```\n"
+            ),
+        )
+        .expect("markdown doctest file should exist");
+    }
+
+    let baseline = gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--json")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success();
+    let baseline_report = parse_stdout_json(&baseline.get_output().stdout);
+    let natural_ids = listed_report_event_ids(&baseline_report);
+    assert_eq!(natural_ids.len(), 4);
+
+    let seed = choose_shuffle_seed(&natural_ids);
+    let expected_ids = expected_shuffled_ids(&natural_ids, seed);
+
+    let shuffled_json = gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--json")
+        .arg("--list")
+        .arg("--shuffle")
+        .arg("--seed")
+        .arg(seed.to_string())
+        .arg(temp.path())
+        .assert()
+        .success();
+    let shuffled_report = parse_stdout_json(&shuffled_json.get_output().stdout);
+
+    assert_eq!(shuffled_report["options"]["shuffle"], true);
+    assert_eq!(shuffled_report["options"]["seed"], serde_json::Value::from(seed));
+    assert_eq!(listed_report_event_ids(&shuffled_report), expected_ids);
+
+    let shuffled_junit = gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--junit")
+        .arg("--list")
+        .arg("--shuffle")
+        .arg("--seed")
+        .arg(seed.to_string())
+        .arg(temp.path())
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&shuffled_junit.get_output().stdout).into_owned();
+    let doc = roxmltree::Document::parse(&stdout).expect("stdout should contain valid XML");
+
+    assert_eq!(find_xml_property_value(&doc, "gof.shuffle"), Some("true".to_string()));
+    assert_eq!(find_xml_property_value(&doc, "gof.seed"), Some(seed.to_string()));
+    for (index, id) in expected_ids.iter().enumerate() {
+        assert_eq!(
+            find_xml_property_value(&doc, &format!("gof.listed.{}", index + 1)),
+            Some(id.clone())
+        );
+    }
 }
 
 #[test]

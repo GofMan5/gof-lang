@@ -59,6 +59,7 @@ gof run --watch examples/geometry.gof  # rerun on edits
 gof check examples/geometry.gof        # compile-only validation
 gof test examples/testing_baseline     # run language-level tests
 gof test --list examples/testing_baseline
+gof test --shuffle --seed 17 examples/testing_baseline
 gof test --docs                        # run opt-in markdown doctests
 gof mod resolve --dir examples/package_app
 gof build app.gof --native             # build a native executable
@@ -132,11 +133,14 @@ The current shipped testing contract is still explicit and intentionally narrow:
   before `TestContext` teardown and module-scoped cleanup runs once per test file
 - tests currently return either `unit` or `Result[unit, RuntimeError]`
 - `gof test` currently ships list/filter/fail-fast/nocapture/snapshot-update/
-  docs/include-ignored/json/junit flows, language-level tests, legacy fixtures, and
+  docs/include-ignored/shuffle/seed/json/junit flows, language-level tests, legacy fixtures, and
   artifact-backed product fixtures under `tests/ui`, `tests/runtime`, and
   `tests/runtime-fail`
 - `--update-snapshots` currently rewrites both snapshots and product-fixture
   artifacts such as `.diag`, `.stdout`, `.stderr`, and `.exit`
+- `gof test --shuffle` deterministically reorders discovered language tests,
+  doctests, fixtures, and package checks; `--seed <n>` pins the active order
+  explicitly, while omitting `--seed` keeps shuffle deterministic with seed `0`
 - `gof test --json` emits a single machine-readable report with stable schema
   `gof.test.report/v1`, summary counts, per-target events, captured stdout, and
   structured diagnostics
@@ -158,6 +162,7 @@ Useful commands:
 ```text
 gof test examples/testing_baseline
 gof test --list examples/testing_baseline
+gof test --shuffle --seed 17 examples/testing_baseline
 gof test --json examples/testing_baseline
 gof test --junit examples/testing_baseline
 gof test --include-ignored path/to/project

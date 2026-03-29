@@ -22,16 +22,17 @@ Delivered in shipped slices:
 - `--update-snapshots`
 - `--docs`
 - `--include-ignored`
+- `--shuffle`
+- `--seed`
 - `--json`
 - `--junit`
 - per-test stdout capture
 - deterministic display ids based on normalized source paths
+- deterministic opt-in seeded ordering without changing the default order
 
 Planned later:
 
 - `--jobs`
-- `--shuffle`
-- `--seed`
 - `--timeout-ms`
 - `--stress`
 - dedicated `gof fuzz`
