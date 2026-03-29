@@ -170,6 +170,21 @@ The report currently includes:
 That lets CI, editor tooling, and other automation consume the same honest test
 runner contract instead of screen-scraping the human output.
 
+## JUnit reporter
+
+`gof test --junit` now emits one JUnit/xUnit XML document to stdout.
+
+Current mapping:
+
+- each executed target becomes a `<testcase>` with the stable test id as `name`
+- the normalized source path is preserved through `classname` and `file`
+- failures render as `<failure>`, skips map to `<skipped>`, and `todo` maps to
+    `<skipped type="todo">`
+- captured stdout/stderr stay visible through `<system-out>` and `<system-err>`
+
+That gives CI systems a conventional XML path without forcing them to translate
+the JSON schema first.
+
 ## Current limits
 
 This slice is intentionally narrower than the final testing platform.
@@ -177,7 +192,6 @@ This slice is intentionally narrower than the final testing platform.
 Not shipped yet:
 
 - default doctest execution for every plain `gof` markdown fence
-- JUnit reporter
 - property testing
 - fuzzing
 - concurrency stress

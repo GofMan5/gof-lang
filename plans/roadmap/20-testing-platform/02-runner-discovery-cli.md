@@ -22,6 +22,7 @@ Delivered in shipped slices:
 - `--update-snapshots`
 - `--docs`
 - `--json`
+- `--junit`
 - per-test stdout capture
 - deterministic display ids based on normalized source paths
 
@@ -31,7 +32,6 @@ Planned later:
 - `--shuffle`
 - `--seed`
 - `--timeout-ms`
-- `--format human|junit`
 - `--stress`
 - `--include-ignored`
 - dedicated `gof fuzz`

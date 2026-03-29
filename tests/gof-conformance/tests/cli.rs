@@ -175,6 +175,27 @@ fn parse_stdout_json(output: &[u8]) -> serde_json::Value {
     serde_json::from_slice(output).expect("stdout should contain valid JSON")
 }
 
+fn find_xml_testcase<'a, 'input>(
+    doc: &'a roxmltree::Document<'input>,
+    needle: &str,
+) -> roxmltree::Node<'a, 'input> {
+    doc.descendants()
+        .find(|node| {
+            node.has_tag_name("testcase")
+                && node
+                    .attribute("name")
+                    .is_some_and(|name| name.contains(needle))
+        })
+        .expect("testcase should exist")
+}
+
+fn child_element_text(node: roxmltree::Node<'_, '_>, tag: &str) -> Option<String> {
+    node.children()
+        .find(|child| child.has_tag_name(tag))
+        .and_then(|child| child.text())
+        .map(str::to_string)
+}
+
 fn expected_http_request_len(bytes: &[u8]) -> Option<usize> {
     let header_end = bytes
         .windows(4)
@@ -1714,6 +1735,48 @@ fn gof_test_json_reports_package_target_diagnostics() {
 }
 
 #[test]
+fn gof_test_junit_reports_package_target_diagnostics() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_runtime_fail_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--junit")
+        .arg(&package_root)
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let doc = roxmltree::Document::parse(&stdout).expect("stdout should contain valid XML");
+    let suite = doc
+        .descendants()
+        .find(|node| node.has_tag_name("testsuite"))
+        .expect("testsuite should exist");
+    assert_eq!(suite.attribute("tests"), Some("1"));
+    assert_eq!(suite.attribute("failures"), Some("1"));
+    assert_eq!(suite.attribute("errors"), Some("0"));
+    assert_eq!(suite.attribute("skipped"), Some("0"));
+
+    let package_case = find_xml_testcase(&doc, "src/main.gof");
+    assert!(package_case
+        .attribute("classname")
+        .is_some_and(|classname| classname.contains("src/main.gof")));
+    let failure = package_case
+        .children()
+        .find(|child| child.has_tag_name("failure"))
+        .expect("package testcase should include failure output");
+    assert!(failure
+        .text()
+        .is_some_and(|text| text.contains("GOF3068")));
+}
+
+#[test]
 fn gof_test_compile_checks_library_package_targets_without_execution() {
     let temp = tempdir().expect("tempdir should exist");
     let package_root = write_library_package(temp.path());
@@ -2135,6 +2198,68 @@ fn gof_test_json_reports_language_statuses_and_compile_failures() {
 }
 
 #[test]
+fn gof_test_junit_reports_language_statuses_and_compile_failures() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("status_test.gof"),
+        "import testing\n\ntest fn passing_case(t: TestContext):\n    print(\"alpha\")\n    t.true(true, \"expected passing case\")\n\ntest fn skipped_case(t: TestContext):\n    t.skip(\"waiting for network\")\n\ntest fn todo_case(t: TestContext):\n    t.todo(\"pending assertions\")\n",
+    )
+    .expect("status test file should exist");
+    fs::write(
+        tests_root.join("broken_test.gof"),
+        "test fn broken_case(repo):\n    return 0\n",
+    )
+    .expect("broken test file should exist");
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--junit")
+        .arg(temp.path())
+        .assert()
+        .failure();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let doc = roxmltree::Document::parse(&stdout).expect("stdout should contain valid XML");
+    let suite = doc
+        .descendants()
+        .find(|node| node.has_tag_name("testsuite"))
+        .expect("testsuite should exist");
+    assert_eq!(suite.attribute("tests"), Some("4"));
+    assert_eq!(suite.attribute("failures"), Some("1"));
+    assert_eq!(suite.attribute("errors"), Some("0"));
+    assert_eq!(suite.attribute("skipped"), Some("2"));
+
+    let passing_case = find_xml_testcase(&doc, "passing_case");
+    assert_eq!(child_element_text(passing_case, "system-out"), Some("alpha\n".to_string()));
+
+    let skipped_case = find_xml_testcase(&doc, "skipped_case");
+    let skipped = skipped_case
+        .children()
+        .find(|child| child.has_tag_name("skipped"))
+        .expect("skipped testcase should have skipped marker");
+    assert_eq!(skipped.attribute("message"), Some("waiting for network"));
+
+    let todo_case = find_xml_testcase(&doc, "todo_case");
+    let todo = todo_case
+        .children()
+        .find(|child| child.has_tag_name("skipped"))
+        .expect("todo testcase should map to skipped marker");
+    assert_eq!(todo.attribute("type"), Some("todo"));
+    assert_eq!(todo.attribute("message"), Some("pending assertions"));
+
+    let compile_case = find_xml_testcase(&doc, "<compile>");
+    let failure = compile_case
+        .children()
+        .find(|child| child.has_tag_name("failure"))
+        .expect("compile testcase should have failure output");
+    assert!(failure
+        .text()
+        .is_some_and(|text| text.contains("GOF3113")));
+}
+
+#[test]
 fn gof_test_resolves_typed_fixtures_and_reuses_module_scope() {
     let temp = tempdir().expect("tempdir should exist");
     let tests_root = temp.path().join("tests");
@@ -2339,6 +2464,51 @@ fn gof_test_json_reports_doctests_and_product_fixtures() {
         .as_array()
         .map(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "GOF3013"))
         == Some(true));
+}
+
+#[test]
+fn gof_test_junit_reports_doctests_and_product_fixtures() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    let ui_root = tests_root.join("ui");
+    fs::create_dir_all(&ui_root).expect("ui root should exist");
+    fs::write(
+        temp.path().join("README.md"),
+        "# Sample\n\n```gof doctest\nfn main() -> int:\n    return 7\n```\n",
+    )
+    .expect("README should exist");
+    fs::write(
+        ui_root.join("type_mismatch.gof"),
+        "fn main() -> int:\n    return \"oops\"\n",
+    )
+    .expect("ui fixture should exist");
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--junit")
+        .arg("--docs")
+        .arg("--update-snapshots")
+        .arg(temp.path())
+        .assert()
+        .success();
+
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
+    let doc = roxmltree::Document::parse(&stdout).expect("stdout should contain valid XML");
+    let suite = doc
+        .descendants()
+        .find(|node| node.has_tag_name("testsuite"))
+        .expect("testsuite should exist");
+    assert_eq!(suite.attribute("tests"), Some("2"));
+    assert_eq!(suite.attribute("failures"), Some("0"));
+    assert_eq!(suite.attribute("errors"), Some("0"));
+    assert_eq!(suite.attribute("skipped"), Some("0"));
+
+    let doctest_case = find_xml_testcase(&doc, "doctest#1");
+    assert_eq!(child_element_text(doctest_case, "system-out"), Some("7\n".to_string()));
+
+    let fixture_case = find_xml_testcase(&doc, "tests/ui/type_mismatch.gof");
+    assert!(child_element_text(fixture_case, "system-err")
+        .is_some_and(|text| text.contains("tests/ui/type_mismatch.gof") && text.contains("GOF3013")));
 }
 
 #[test]

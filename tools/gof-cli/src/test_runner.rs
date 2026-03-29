@@ -7,6 +7,7 @@ use gof_compiler::{
 use serde_json::json;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
+use std::fmt::Write;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -80,9 +81,18 @@ struct JsonTestReport {
     stopped_early: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MachineReportFormat {
+    Json,
+    Junit,
+}
+
 pub(crate) fn run(args: TestArgs) -> Result<()> {
     if args.json {
-        return run_json(args);
+        return run_machine_report(args, MachineReportFormat::Json);
+    }
+    if args.junit {
+        return run_machine_report(args, MachineReportFormat::Junit);
     }
     run_human(args)
 }
@@ -266,35 +276,36 @@ fn run_human(args: TestArgs) -> Result<()> {
     }
 }
 
-fn run_json(args: TestArgs) -> Result<()> {
+fn run_machine_report(args: TestArgs, format: MachineReportFormat) -> Result<()> {
     let started = Instant::now();
-    let discovered = match discover_targets(&args) {
+    let report = collect_machine_report(&args);
+    let should_fail = report.harness_error.is_some() || !report.failures.is_empty();
+    emit_machine_report_and_exit(&args, report, started, format, should_fail)
+}
+
+fn collect_machine_report(args: &TestArgs) -> JsonTestReport {
+    let discovered = match discover_targets(args) {
         Ok(discovered) => discovered,
-        Err(error) => return emit_json_and_exit(&args, JsonTestReport {
-            harness_error: Some(error.to_string()),
-            ..JsonTestReport::default()
-        }, started, true),
+        Err(error) => {
+            return JsonTestReport {
+                harness_error: Some(error.to_string()),
+                ..JsonTestReport::default()
+            };
+        }
     };
 
     if discovered_targets_is_empty(&discovered) {
-        let ok = args.list;
-        let harness_error = if ok {
-            None
-        } else {
-            Some(
-                "no language tests, fixtures, package targets, or doctests matched the provided filters"
-                    .to_string(),
-            )
-        };
-        return emit_json_and_exit(
-            &args,
-            JsonTestReport {
-                harness_error,
-                ..JsonTestReport::default()
+        return JsonTestReport {
+            harness_error: if args.list {
+                None
+            } else {
+                Some(
+                    "no language tests, fixtures, package targets, or doctests matched the provided filters"
+                        .to_string(),
+                )
             },
-            started,
-            !ok,
-        );
+            ..JsonTestReport::default()
+        };
     }
 
     let DiscoveredTargets {
@@ -355,7 +366,7 @@ fn run_json(args: TestArgs) -> Result<()> {
             );
         }
 
-        return emit_json_and_exit(&args, report, started, false);
+        return report;
     }
 
     'language: for file in language_files {
@@ -514,17 +525,21 @@ fn run_json(args: TestArgs) -> Result<()> {
         }
     }
 
-    let should_fail = report.harness_error.is_some() || !report.failures.is_empty();
-    emit_json_and_exit(&args, report, started, should_fail)
+    report
 }
 
-fn emit_json_and_exit(
+fn emit_machine_report_and_exit(
     args: &TestArgs,
     report: JsonTestReport,
     started: Instant,
+    format: MachineReportFormat,
     should_fail: bool,
 ) -> Result<()> {
-    emit_json_test_report(args, &report, started.elapsed().as_millis() as u64)?;
+    let duration_ms = started.elapsed().as_millis() as u64;
+    match format {
+        MachineReportFormat::Json => emit_json_test_report(args, &report, duration_ms)?,
+        MachineReportFormat::Junit => emit_junit_test_report(args, &report, duration_ms)?,
+    }
     if should_fail {
         std::process::exit(1);
     }
@@ -572,6 +587,284 @@ fn emit_json_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: 
         }))?
     );
     Ok(())
+}
+
+fn emit_junit_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: u64) -> Result<()> {
+    let inputs = if args.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        args.paths.clone()
+    };
+    let input_ids = inputs
+        .into_iter()
+        .map(|path| display_id_for_path(&path))
+        .collect::<Vec<_>>();
+
+    let tests = report.summary.executed() + usize::from(report.harness_error.is_some());
+    let failures = report.summary.failed;
+    let errors = usize::from(report.harness_error.is_some());
+    let skipped = report.summary.skipped + report.summary.todo;
+    let mut xml = String::new();
+
+    writeln!(&mut xml, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>")?;
+    write!(
+        &mut xml,
+        "<testsuites name=\"gof\" tests=\"{}\" failures=\"{}\" errors=\"{}\" skipped=\"{}\" time=\"{}\">",
+        tests,
+        failures,
+        errors,
+        skipped,
+        junit_seconds(duration_ms)
+    )?;
+    write!(
+        &mut xml,
+        "<testsuite name=\"gof\" package=\"gof\" tests=\"{}\" failures=\"{}\" errors=\"{}\" skipped=\"{}\" time=\"{}\">",
+        tests,
+        failures,
+        errors,
+        skipped,
+        junit_seconds(duration_ms)
+    )?;
+    xml.push_str("<properties>");
+    write_junit_property(&mut xml, "gof.reporter", "junit")?;
+    write_junit_property(&mut xml, "gof.summary.executed", &report.summary.executed().to_string())?;
+    write_junit_property(&mut xml, "gof.summary.passed", &report.summary.passed.to_string())?;
+    write_junit_property(&mut xml, "gof.summary.failed", &report.summary.failed.to_string())?;
+    write_junit_property(&mut xml, "gof.summary.skipped", &report.summary.skipped.to_string())?;
+    write_junit_property(&mut xml, "gof.summary.todo", &report.summary.todo.to_string())?;
+    write_junit_property(&mut xml, "gof.summary.listed", &report.summary.listed.to_string())?;
+    write_junit_property(&mut xml, "gof.stoppedEarly", if report.stopped_early { "true" } else { "false" })?;
+    if let Some(filter) = &args.filter {
+        write_junit_property(&mut xml, "gof.filter", filter)?;
+    }
+    write_junit_property(&mut xml, "gof.exact", if args.exact { "true" } else { "false" })?;
+    write_junit_property(&mut xml, "gof.list", if args.list { "true" } else { "false" })?;
+    write_junit_property(&mut xml, "gof.failFast", if args.fail_fast { "true" } else { "false" })?;
+    write_junit_property(&mut xml, "gof.noCapture", if args.nocapture { "true" } else { "false" })?;
+    write_junit_property(&mut xml, "gof.updateSnapshots", if args.update_snapshots { "true" } else { "false" })?;
+    write_junit_property(&mut xml, "gof.docs", if args.docs { "true" } else { "false" })?;
+    for (index, input_id) in input_ids.iter().enumerate() {
+        write_junit_property(&mut xml, &format!("gof.input.{}", index + 1), input_id)?;
+    }
+    if args.list {
+        for (index, id) in report
+            .events
+            .iter()
+            .filter_map(|event| event.get("id").and_then(serde_json::Value::as_str))
+            .enumerate()
+        {
+            write_junit_property(&mut xml, &format!("gof.listed.{}", index + 1), id)?;
+        }
+    }
+    xml.push_str("</properties>");
+
+    for event in report.events.iter().filter(|event| event_status(event) != "listed") {
+        write_junit_testcase(&mut xml, event)?;
+    }
+
+    if let Some(error) = &report.harness_error {
+        xml.push_str("<testcase classname=\"gof.harness\" name=\"__harness__\" time=\"0\">");
+        write!(
+            &mut xml,
+            "<error message=\"{}\">{}</error>",
+            escape_xml_attribute(error),
+            escape_xml_text(error)
+        )?;
+        xml.push_str("</testcase>");
+    }
+
+    xml.push_str("</testsuite></testsuites>");
+    println!("{xml}");
+    Ok(())
+}
+
+fn write_junit_testcase(xml: &mut String, event: &serde_json::Value) -> Result<()> {
+    let source_path = event_source_path(event);
+    write!(
+        xml,
+        "<testcase classname=\"{}\" name=\"{}\" file=\"{}\" time=\"{}\"",
+        escape_xml_attribute(source_path),
+        escape_xml_attribute(event_id(event)),
+        escape_xml_attribute(source_path),
+        junit_seconds(event_duration_ms(event))
+    )?;
+    if let Some(line) = event_line(event) {
+        write!(xml, " line=\"{}\"", line)?;
+    }
+    xml.push('>');
+
+    match event_status(event) {
+        "failed" => {
+            let message = event_message(event).unwrap_or_else(|| event_id(event).to_string());
+            let body = junit_failure_body(event);
+            write!(
+                xml,
+                "<failure type=\"{}\" message=\"{}\">{}</failure>",
+                escape_xml_attribute(event_kind(event)),
+                escape_xml_attribute(&message),
+                escape_xml_text(&body)
+            )?;
+            if !event_stdout(event).is_empty() {
+                write!(
+                    xml,
+                    "<system-out>{}</system-out>",
+                    escape_xml_text(event_stdout(event))
+                )?;
+            }
+        }
+        "skipped" => {
+            let message = event_message(event).unwrap_or_default();
+            write!(
+                xml,
+                "<skipped message=\"{}\" />",
+                escape_xml_attribute(&message)
+            )?;
+            write_junit_case_output(xml, event)?;
+        }
+        "todo" => {
+            let message = event_message(event).unwrap_or_default();
+            write!(
+                xml,
+                "<skipped type=\"todo\" message=\"{}\" />",
+                escape_xml_attribute(&message)
+            )?;
+            write_junit_case_output(xml, event)?;
+        }
+        _ => write_junit_case_output(xml, event)?,
+    }
+
+    xml.push_str("</testcase>");
+    Ok(())
+}
+
+fn write_junit_case_output(xml: &mut String, event: &serde_json::Value) -> Result<()> {
+    if !event_stdout(event).is_empty() {
+        write!(
+            xml,
+            "<system-out>{}</system-out>",
+            escape_xml_text(event_stdout(event))
+        )?;
+    }
+    if !event_stderr(event).is_empty() {
+        write!(
+            xml,
+            "<system-err>{}</system-err>",
+            escape_xml_text(event_stderr(event))
+        )?;
+    }
+    Ok(())
+}
+
+fn write_junit_property(xml: &mut String, name: &str, value: &str) -> Result<()> {
+    write!(
+        xml,
+        "<property name=\"{}\" value=\"{}\" />",
+        escape_xml_attribute(name),
+        escape_xml_attribute(value)
+    )?;
+    Ok(())
+}
+
+fn junit_failure_body(event: &serde_json::Value) -> String {
+    if !event_stderr(event).is_empty() {
+        return event_stderr(event).to_string();
+    }
+    if let Some(message) = event_message(event) {
+        return message;
+    }
+    let diagnostics = event
+        .get("diagnostics")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|diagnostic| {
+            let code = diagnostic.get("code").and_then(serde_json::Value::as_str)?;
+            let message = diagnostic.get("message").and_then(serde_json::Value::as_str)?;
+            Some(format!("{code}: {message}"))
+        })
+        .collect::<Vec<_>>();
+    if diagnostics.is_empty() {
+        event_id(event).to_string()
+    } else {
+        diagnostics.join("\n")
+    }
+}
+
+fn event_id(event: &serde_json::Value) -> &str {
+    event
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+}
+
+fn event_kind(event: &serde_json::Value) -> &str {
+    event
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+}
+
+fn event_status(event: &serde_json::Value) -> &str {
+    event
+        .get("status")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+}
+
+fn event_source_path(event: &serde_json::Value) -> &str {
+    event
+        .get("sourcePath")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+}
+
+fn event_line(event: &serde_json::Value) -> Option<u64> {
+    event.get("line").and_then(serde_json::Value::as_u64)
+}
+
+fn event_duration_ms(event: &serde_json::Value) -> u64 {
+    event
+        .get("durationMs")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default()
+}
+
+fn event_stdout(event: &serde_json::Value) -> &str {
+    event
+        .get("stdout")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+fn event_stderr(event: &serde_json::Value) -> &str {
+    event
+        .get("stderr")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("")
+}
+
+fn event_message(event: &serde_json::Value) -> Option<String> {
+    event
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn junit_seconds(duration_ms: u64) -> String {
+    format!("{:.3}", duration_ms as f64 / 1000.0)
+}
+
+fn escape_xml_attribute(value: &str) -> String {
+    escape_xml_text(value)
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn escape_xml_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn discover_targets(args: &TestArgs) -> Result<DiscoveredTargets> {

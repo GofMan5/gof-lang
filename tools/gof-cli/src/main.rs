@@ -104,8 +104,10 @@ pub(crate) struct TestArgs {
     update_snapshots: bool,
     #[arg(long)]
     docs: bool,
-    #[arg(long)]
+    #[arg(long, conflicts_with = "junit")]
     json: bool,
+    #[arg(long, conflicts_with = "json")]
+    junit: bool,
 }
 
 #[derive(Subcommand)]

@@ -80,7 +80,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` / `http_request(...)` | bootstrap |
 | Same-directory imports, reserved shipped stdlib imports (`bytes` / `io` / `time` / `net` / `http` / `testing`), initial `Bytes` / stream / deadline / TCP stdlib foundation, and manifest-resolved local path packages with deterministic `gof.lock` | bootstrap |
 | `go`, `await`, `await_result(task[, token])`, typed channels, `close`, capacity-aware channels, cancellation tokens, `select` | bootstrap |
-| `test fn`, `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware and JSON-reporting `gof test`, opt-in markdown doctests, and hybrid discovery across `*_test.gof`, `tests/**/*.gof`, and legacy repo fixtures | bootstrap |
+| `test fn`, `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware plus JSON/JUnit-reporting `gof test`, opt-in markdown doctests, and hybrid discovery across `*_test.gof`, `tests/**/*.gof`, and legacy repo fixtures | bootstrap |
 | `gof build --native` | bootstrap (wraps evaluator) |
 | `gof check --json [--stdin]` | stable compiler-backed diagnostics contract |
 | `gof run --watch [--debounce-ms] <target> [-- ...args]` | bootstrap serial edit-run loop for scripts and executable packages |
@@ -132,14 +132,17 @@ The current shipped testing contract is still explicit and intentionally narrow:
   before `TestContext` teardown and module-scoped cleanup runs once per test file
 - tests currently return either `unit` or `Result[unit, RuntimeError]`
 - `gof test` currently ships list/filter/fail-fast/nocapture/snapshot-update/
-  docs/json flows, language-level tests, legacy fixtures, and artifact-backed
-  product fixtures under `tests/ui`, `tests/runtime`, and `tests/runtime-fail`
+  docs/json/junit flows, language-level tests, legacy fixtures, and
+  artifact-backed product fixtures under `tests/ui`, `tests/runtime`, and
+  `tests/runtime-fail`
 - `--update-snapshots` currently rewrites both snapshots and product-fixture
   artifacts such as `.diag`, `.stdout`, `.stderr`, and `.exit`
 - `gof test --json` emits a single machine-readable report with stable schema
   `gof.test.report/v1`, summary counts, per-target events, captured stdout, and
   structured diagnostics
-- JUnit reporting, property/fuzz/stress, and benchmark integration stay
+- `gof test --junit` emits a JUnit/xUnit XML document to stdout with testcase
+  ids, source paths, durations, stdout/stderr, and failure or skipped markers
+- dedicated exit codes, property/fuzz/stress, and benchmark integration stay
   on the roadmap rather than being implied as done
 
 Useful commands:
@@ -148,6 +151,7 @@ Useful commands:
 gof test examples/testing_baseline
 gof test --list examples/testing_baseline
 gof test --json examples/testing_baseline
+gof test --junit examples/testing_baseline
 gof test --docs
 gof test --update-snapshots path/to/project
 ```

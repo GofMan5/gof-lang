@@ -171,6 +171,20 @@ stable schema `gof.test.report/v1`.
 Это дает CI, editor tooling и automation один и тот же честный контракт runner-а,
 вместо screen-scraping человекочитаемого вывода.
 
+## JUnit reporter
+
+`gof test --junit` теперь выводит один JUnit/xUnit XML document в stdout.
+
+Текущий mapping:
+
+- каждый выполненный target становится `<testcase>` со stable test id в `name`
+- нормализованный source path сохраняется через `classname` и `file`
+- failures рендерятся как `<failure>`, skips как `<skipped>`, а `todo` как
+    `<skipped type="todo">`
+- captured stdout/stderr остаются видимыми через `<system-out>` и `<system-err>`
+
+Это дает CI-системам обычный XML path без промежуточного перевода из JSON schema.
+
 ## Что еще не shipped
 
 Этот срез уже полезный, но сознательно далек от финальной платформы.
@@ -178,7 +192,6 @@ stable schema `gof.test.report/v1`.
 Пока еще не shipped:
 
 - автоматический doctest для каждого обычного markdown-блока `gof`
-- JUnit reporter
 - property testing
 - fuzzing
 - concurrency stress
