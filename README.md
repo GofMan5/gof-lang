@@ -143,6 +143,10 @@ The current shipped testing contract is still explicit and intentionally narrow:
 - human `gof test --list` now enumerates language tests, doctests, fixtures,
   and package targets instead of silently listing only the language/doctest
   subset
+- `gof test --exact` now accepts stable leaf ids across target kinds, so exact
+  filters can match values such as `case.gof::test_name`,
+  `README.md:4::doctest#1`, `hello.gof`, or `main.gof` without requiring the
+  full normalized source path
 - `--update-snapshots` currently rewrites both snapshots and product-fixture
   artifacts such as `.diag`, `.stdout`, `.stderr`, and `.exit`
 - `gof test --shuffle` deterministically reorders discovered language tests,

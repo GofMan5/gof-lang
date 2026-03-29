@@ -46,6 +46,11 @@ The human `gof test --list` path now enumerates language tests, doctests,
 fixtures, and package targets through the same normalized ids the machine
 reporters use.
 
+`gof test --exact` now also accepts stable leaf ids across target kinds, so
+you can match entries like `exact_test.gof::alpha_case`,
+`README.md:4::doctest#1`, `hello.gof`, or `main.gof` without spelling the full
+normalized path.
+
 ## `TestContext`
 
 The shipped `testing` stdlib currently exposes these baseline helpers:

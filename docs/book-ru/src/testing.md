@@ -47,6 +47,11 @@ Human path у `gof test --list` теперь перечисляет language tes
 fixtures и package targets через те же normalized ids, что и machine
 reporter-ы.
 
+`gof test --exact` теперь тоже принимает stable leaf ids across target kinds,
+так что можно матчить `exact_test.gof::alpha_case`,
+`README.md:4::doctest#1`, `hello.gof` или `main.gof` без полного normalized
+path.
+
 ## `TestContext`
 
 В shipped `testing` module сейчас есть базовые helper-ы:

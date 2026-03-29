@@ -1558,7 +1558,8 @@ fn filter_doctests(doctests: Vec<DocTestCase>, args: &TestArgs) -> Vec<DocTestCa
         .filter(|doctest| {
             args.filter.as_ref().is_none_or(|filter| {
                 let id = doctest_id(doctest);
-                matches_filter(&id, filter, args.exact)
+                let leaf_id = doctest_leaf_id(doctest);
+                matches_filter_aliases(filter, args.exact, [id.as_str(), leaf_id.as_str()])
             })
         })
         .collect()
@@ -1606,16 +1607,28 @@ fn filter_language_tests(files: Vec<LanguageTestFile>, args: &TestArgs) -> Vec<L
         .filter_map(|mut file| {
             if let Some(filter) = &args.filter {
                 let path_id = display_id_for_path(&file.source_path);
+                let leaf_path_id = display_leaf_id(&file.source_path);
                 if file.compile_error.is_some() {
-                    if matches_filter(&format!("{path_id}::<compile>"), filter, args.exact) {
+                    let compile_id = format!("{path_id}::<compile>");
+                    let leaf_compile_id = format!("{leaf_path_id}::<compile>");
+                    if matches_filter_aliases(
+                        filter,
+                        args.exact,
+                        [compile_id.as_str(), leaf_compile_id.as_str()],
+                    ) {
                         return Some(file);
                     }
                     return None;
                 }
 
                 file.test_names.retain(|test_name| {
-                    matches_filter(&format!("{path_id}::{test_name}"), filter, args.exact)
-                        || matches_filter(test_name, filter, args.exact)
+                    let id = format!("{path_id}::{test_name}");
+                    let leaf_id = format!("{leaf_path_id}::{test_name}");
+                    matches_filter_aliases(
+                        filter,
+                        args.exact,
+                        [id.as_str(), leaf_id.as_str(), test_name.as_str()],
+                    )
                 });
             }
 
@@ -1637,10 +1650,21 @@ where
         .filter(|path| {
             args.filter.as_ref().is_none_or(|filter| {
                 let id = id_fn(path);
-                matches_filter(&id, filter, args.exact)
+                let leaf_id = display_leaf_id(path);
+                matches_filter_aliases(filter, args.exact, [id.as_str(), leaf_id.as_str()])
             })
         })
         .collect()
+}
+
+fn matches_filter_aliases<'a>(
+    filter: &str,
+    exact: bool,
+    aliases: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    aliases
+        .into_iter()
+        .any(|alias| matches_filter(alias, filter, exact))
 }
 
 fn matches_filter(value: &str, filter: &str, exact: bool) -> bool {
@@ -1957,6 +1981,13 @@ fn display_id_for_path(path: &Path) -> String {
     .replace('\\', "/")
 }
 
+fn display_leaf_id(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| display_id_for_path(path))
+}
+
 fn snapshot_group_for_source(path: &Path) -> PathBuf {
     let normalized = normalize_source_path(path);
     let project_root = project_root_for_source(&normalized);
@@ -2236,12 +2267,7 @@ fn markdown_line_span(line_number: usize, raw_line: &str) -> Span {
 }
 
 fn doctest_id(doctest: &DocTestCase) -> String {
-    let mode = match doctest.mode {
-        DocTestMode::Run => "doctest",
-        DocTestMode::NoRun => "doctest-no-run",
-        DocTestMode::CompileFail => "doctest-compile-fail",
-        DocTestMode::RuntimeFail => "doctest-runtime-fail",
-    };
+    let mode = doctest_mode_label(&doctest.mode);
     format!(
         "{}:{}::{}#{}",
         display_id_for_path(&doctest.markdown_path),
@@ -2249,6 +2275,25 @@ fn doctest_id(doctest: &DocTestCase) -> String {
         mode,
         doctest.ordinal
     )
+}
+
+fn doctest_leaf_id(doctest: &DocTestCase) -> String {
+    format!(
+        "{}:{}::{}#{}",
+        display_leaf_id(&doctest.markdown_path),
+        doctest.line,
+        doctest_mode_label(&doctest.mode),
+        doctest.ordinal
+    )
+}
+
+fn doctest_mode_label(mode: &DocTestMode) -> &'static str {
+    match mode {
+        DocTestMode::Run => "doctest",
+        DocTestMode::NoRun => "doctest-no-run",
+        DocTestMode::CompileFail => "doctest-compile-fail",
+        DocTestMode::RuntimeFail => "doctest-runtime-fail",
+    }
 }
 
 fn compile_mode_for_doctest(doctest: &DocTestCase) -> CompileMode {

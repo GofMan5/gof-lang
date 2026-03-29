@@ -2274,6 +2274,123 @@ fn gof_test_lists_fixture_and_package_targets_without_language_tests() {
 }
 
 #[test]
+fn gof_test_exact_filter_matches_leaf_ids_in_human_list_mode() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    let runtime_root = tests_root.join("runtime");
+    fs::create_dir_all(&runtime_root).expect("runtime root should exist");
+    fs::write(
+        tests_root.join("exact_test.gof"),
+        "import testing\n\ntest fn alpha_case(t: TestContext):\n    t.true(true, \"alpha\")\n",
+    )
+    .expect("language-level test file should exist");
+    fs::write(
+        temp.path().join("README.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 0\n```\n",
+    )
+    .expect("README should exist");
+    fs::write(
+        runtime_root.join("hello.gof"),
+        "fn main() -> int:\n    return 0\n",
+    )
+    .expect("runtime fixture should exist");
+    let package_root = write_executable_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    let assert_exact = |filter: &str, expected_suffix: &str| {
+        let assert = gof_command()
+            .arg("test")
+            .arg("--docs")
+            .arg("--list")
+            .arg("--filter")
+            .arg(filter)
+            .arg("--exact")
+            .arg(temp.path())
+            .arg(&package_root)
+            .assert()
+            .success();
+        let listed = parse_stdout_listed_ids(&assert.get_output().stdout);
+        assert_eq!(listed.len(), 1, "expected one listed id for filter {filter}");
+        assert!(
+            listed[0].ends_with(expected_suffix),
+            "expected listed id {:?} to end with {:?}",
+            listed[0],
+            expected_suffix
+        );
+    };
+
+    assert_exact("exact_test.gof::alpha_case", "exact_test.gof::alpha_case");
+    assert_exact("README.md:4::doctest#1", "README.md:4::doctest#1");
+    assert_exact("hello.gof", "tests/runtime/hello.gof");
+    assert_exact("main.gof", "src/main.gof");
+}
+
+#[test]
+fn gof_test_json_list_exact_filter_matches_leaf_ids() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    let runtime_root = tests_root.join("runtime");
+    fs::create_dir_all(&runtime_root).expect("runtime root should exist");
+    fs::write(
+        tests_root.join("exact_test.gof"),
+        "import testing\n\ntest fn alpha_case(t: TestContext):\n    t.true(true, \"alpha\")\n",
+    )
+    .expect("language-level test file should exist");
+    fs::write(
+        temp.path().join("README.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 0\n```\n",
+    )
+    .expect("README should exist");
+    fs::write(
+        runtime_root.join("hello.gof"),
+        "fn main() -> int:\n    return 0\n",
+    )
+    .expect("runtime fixture should exist");
+    let package_root = write_executable_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    let assert_exact = |filter: &str, expected_suffix: &str| {
+        let assert = gof_command()
+            .arg("test")
+            .arg("--json")
+            .arg("--docs")
+            .arg("--list")
+            .arg("--filter")
+            .arg(filter)
+            .arg("--exact")
+            .arg(temp.path())
+            .arg(&package_root)
+            .assert()
+            .success();
+        let report = parse_stdout_json(&assert.get_output().stdout);
+        let listed = listed_report_event_ids(&report);
+        assert_eq!(report["options"]["exact"], true);
+        assert_eq!(listed.len(), 1, "expected one listed id for filter {filter}");
+        assert!(
+            listed[0].ends_with(expected_suffix),
+            "expected listed id {:?} to end with {:?}",
+            listed[0],
+            expected_suffix
+        );
+    };
+
+    assert_exact("exact_test.gof::alpha_case", "exact_test.gof::alpha_case");
+    assert_exact("README.md:4::doctest#1", "README.md:4::doctest#1");
+    assert_exact("hello.gof", "tests/runtime/hello.gof");
+    assert_exact("main.gof", "src/main.gof");
+}
+
+#[test]
 fn gof_test_reports_skip_and_todo_statuses() {
     let temp = tempdir().expect("tempdir should exist");
     let tests_root = temp.path().join("tests");

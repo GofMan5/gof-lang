@@ -218,6 +218,7 @@ The bootstrap compiler in this repository currently supports:
 - `gof test` currently discovers language-level tests from `*_test.gof` and `tests/**/*.gof`
 - `gof test --docs` currently discovers markdown doctests from fenced ` ```gof doctest ... ` blocks plus whole-file plain ` ```gof ` examples that start with top-level declarations; ` ```gof ignore ` and ` ```gof text ` force prose-only opt-out
 - human `gof test --list` currently enumerates language tests, doctests, fixtures, and package targets through stable display ids
+- `gof test --exact` currently accepts stable leaf ids across language tests, doctests, fixtures, and package targets in addition to the full normalized display ids
 - human `gof test --nocapture` currently surfaces captured stdout/stderr for language tests, doctests, fixtures, and package targets, while the default human path keeps passing target output captured unless the target fails
 - `TestContext.fail(message)` currently fails the running test immediately
 - `TestContext.equal(actual, expected, message)` and `TestContext.not_equal(actual, expected, message)` currently compare rendered values inside the test runner
