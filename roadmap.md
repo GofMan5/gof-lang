@@ -360,6 +360,7 @@ Hard sequencing rule:
 - `[x]` CP-M10-2b: bootstrap `Bytes`, stream, deadline, socket-address, listener, and TCP-duplex foundations through shipped stdlib modules
 - `[x]` CP-M10-2c: shipped `http` stdlib response helpers for typed inspection, status classification, success checks, content-type access, and JSON-body decoding of structured `http_request(...)` reports
 - `[x]` CP-M10-2d: shipped `net` stdlib loopback bind/connect helpers plus typed `SocketAddr` dialing wrappers to remove repeated address-string plumbing in local service workers
+- `[x]` CP-M10-2e: shipped `io`/`net` timeout wrappers over explicit deadline controls so common service paths can arm streams, listeners, and TCP dials without restitching `deadline_after(...)` by hand
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

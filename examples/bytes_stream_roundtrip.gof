@@ -8,13 +8,13 @@ fn main() -> Result[int, RuntimeError]:
     payload = bytes_from_string("gof-stdlib")
 
     mut writer = open_write_stream(path)?
-    writer = writer.with_deadline(deadline)
+    writer = writer.with_timeout(1500)?
     writer.write_all(payload)?
     writer.flush()?
     writer.close()?
 
     mut reader = open_read_stream(path)?
-    reader = reader.with_deadline(deadline)
+    reader = reader.with_timeout(1500)?
     echoed = reader.read_all()?
     reader.close()?
 

@@ -21,14 +21,15 @@ Current shipped foundation in this slice:
 - `io`
   - `ReadStream`, `WriteStream`
   - `open_read_stream`, `open_write_stream`
-  - explicit read/write/flush/close plus deadline/cancel wrappers
+  - explicit read/write/flush/close plus deadline/cancel/timeout wrappers
 - `time`
   - `NetDeadline`
   - `deadline_after`, `deadline_at_unix_millis`
 - `net`
   - `DuplexStream`, `TcpListener`, `SocketAddr`
-  - `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_loopback_with_control`
-  - `listen_tcp`, `listen_tcp_loopback`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`
+  - `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`
+  - `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`
+  - `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`
 - `http`
   - `response_status`, `response_status_class`, `response_is_success`
   - `response_body`, `response_json`, `response_method`, `response_url`
@@ -41,6 +42,10 @@ surface still belongs to the next network slices.
 The `net` module now also ships loopback bind/connect wrappers and typed
 `SocketAddr` connection helpers so local service workers do not have to rebuild
 `"127.0.0.1:" + to_string(port)` or `address.text()` manually.
+
+The shipped `io` and `net` modules now also expose Result-returning timeout
+wrappers that collapse the common `deadline_after(...)` plus `.with_deadline(...)`
+pattern without hiding the fact that timeout setup itself can fail.
 
 Planned first-wave areas:
 

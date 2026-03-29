@@ -22,6 +22,10 @@ fn ReadStream.with_deadline(self: ReadStream, deadline: NetDeadline) -> ReadStre
 fn ReadStream.with_cancel(self: ReadStream, token: cancel_token) -> ReadStream:
     return __gof_internal_read_stream_with_cancel(self, token)
 
+fn ReadStream.with_timeout(self: ReadStream, milliseconds: int) -> Result[ReadStream, RuntimeError]:
+    deadline = __gof_internal_deadline_after(milliseconds)?
+    return Result.Ok(self.with_deadline(deadline))
+
 fn WriteStream.write(self: WriteStream, bytes: Bytes) -> Result[int, RuntimeError]:
     return __gof_internal_write_stream_write(self, bytes)
 
@@ -39,3 +43,7 @@ fn WriteStream.with_deadline(self: WriteStream, deadline: NetDeadline) -> WriteS
 
 fn WriteStream.with_cancel(self: WriteStream, token: cancel_token) -> WriteStream:
     return __gof_internal_write_stream_with_cancel(self, token)
+
+fn WriteStream.with_timeout(self: WriteStream, milliseconds: int) -> Result[WriteStream, RuntimeError]:
+    deadline = __gof_internal_deadline_after(milliseconds)?
+    return Result.Ok(self.with_deadline(deadline))

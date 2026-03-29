@@ -1,29 +1,23 @@
 import bytes
 import net
-import time
 
 fn serve(listener: TcpListener) -> Result[int, RuntimeError]:
-    accept_deadline = deadline_after(5000)?
-    armed_listener = listener.with_deadline(accept_deadline)
-
-    conn = armed_listener.accept()?
+    conn = listener.accept()?
     payload = conn.read_exact(5)?
     conn.write_all(payload)?
     peer = conn.peer_addr()?
     conn.close()?
-    armed_listener.close()?
+    listener.close()?
     return Result.Ok(peer.port() - peer.port() + bytes_len(payload))
 
 fn main() -> Result[int, RuntimeError]:
-    deadline = deadline_after(5000)?
-    token: cancel_token = timeout_token(5000)
     mut listener = listen_tcp_loopback(0)?
-    listener = listener.with_deadline(deadline)
+    listener = listener.with_timeout(5000)?
     address = listener.local_addr()?
     server: task[Result[int, RuntimeError]] = go serve(listener)
 
-    mut client = address.connect_tcp_with_control(deadline, token)?
-    client = client.with_deadline(deadline)
+    mut client = address.connect_tcp_with_timeout(5000)?
+    client = client.with_timeout(5000)?
     payload = bytes_from_string("ping!")
 
     client.write_all(payload)?

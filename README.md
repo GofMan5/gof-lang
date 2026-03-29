@@ -187,9 +187,9 @@ The first shipped stdlib networking foundation now lives behind those reserved
 imports instead of behind ever-growing global builtins:
 
 - `bytes`: `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
-- `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
+- `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`, `ReadStream.with_timeout`, `WriteStream.with_timeout`
 - `time`: `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
-- `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_loopback_with_control`, `listen_tcp`, `listen_tcp_loopback`
+- `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp_with_timeout`
 - `http`: `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, `response_content_type`
 
 This is still bootstrap surface, not the final network platform. The current
@@ -201,6 +201,12 @@ The shipped `net` surface now also includes typed `SocketAddr.connect_tcp(...)`
 and `SocketAddr.connect_tcp_with_control(...)` wrappers so loopback service code
 does not have to bounce through raw `address.text()` plumbing when it already
 has a typed socket address.
+
+The shipped `io` and `net` modules now also add explicit timeout wrappers such
+as `writer.with_timeout(...)`, `listener.with_timeout(...)`, and
+`address.connect_tcp_with_timeout(...)` for the common service path that wants a
+single timeout budget without manually re-stitching `deadline_after(...)` into
+every stream/listener setup call.
 
 `gof run --watch` now gives a script-first fast edit-run loop for single-file
 scripts and executable packages. It keeps exactly one run in flight, batches

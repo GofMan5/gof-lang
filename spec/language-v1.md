@@ -133,9 +133,9 @@ The bootstrap compiler in this repository currently supports:
 - reserved stdlib import names `bytes`, `io`, `time`, `net`, `http`, and `testing` currently resolve to shipped modules under `stdlib/` instead of local files or dependency aliases
 - local files, package-root modules, and dependency aliases that try to use reserved stdlib names are currently rejected with an explicit diagnostic instead of shadowing the shipped stdlib
 - the shipped `bytes` module currently exposes `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, and `bytes_concat`
-- the shipped `io` module currently exposes `ReadStream`, `WriteStream`, `open_read_stream`, and `open_write_stream`
+- the shipped `io` module currently exposes `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`, `ReadStream.with_timeout`, and `WriteStream.with_timeout`
 - the shipped `time` module currently exposes `NetDeadline`, `deadline_after`, and `deadline_at_unix_millis`
-- the shipped `net` module currently exposes `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_loopback_with_control`, `listen_tcp`, `listen_tcp_loopback`, `SocketAddr.connect_tcp`, and `SocketAddr.connect_tcp_with_control`
+- the shipped `net` module currently exposes `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, and `SocketAddr.connect_tcp_with_timeout`
 - the shipped `http` module currently exposes `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, and `response_content_type`
 - the shipped `testing` module currently exposes `TestContext`, `TempDir`, `TempFile`, `TestContext.fail`, `TestContext.equal`, `TestContext.not_equal`, `TestContext.true`, `TestContext.false`, `TestContext.ok`, `TestContext.err`, `TestContext.match_snapshot`, `TestContext.case`, `TestContext.temp_dir`, `TestContext.temp_file`, `TestContext.env`, `TestContext.skip`, `TestContext.todo`, `TempDir.path`, and `TempFile.path`
 - `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, `NetDeadline`, `TestContext`, `TempDir`, and `TempFile` are currently opaque shipped-stdlib types rather than user-declarable language types
@@ -287,9 +287,11 @@ The bootstrap compiler in this repository currently supports:
 - `ReadStream.read_all()` currently returns `Result[Bytes, RuntimeError]`
 - `ReadStream.close()` currently returns `Result[unit, RuntimeError]`
 - `ReadStream.with_deadline(deadline)` and `ReadStream.with_cancel(token)` currently return a new `ReadStream` wrapper with explicit blocking control
+- `ReadStream.with_timeout(milliseconds)` currently accepts a non-negative `int` and returns `Result[ReadStream, RuntimeError]`
 - `WriteStream.write(bytes)` and `WriteStream.write_all(bytes)` currently return `Result[int, RuntimeError]`
 - `WriteStream.flush()` and `WriteStream.close()` currently return `Result[unit, RuntimeError]`
 - `WriteStream.with_deadline(deadline)` and `WriteStream.with_cancel(token)` currently return a new `WriteStream` wrapper with explicit blocking control
+- `WriteStream.with_timeout(milliseconds)` currently accepts a non-negative `int` and returns `Result[WriteStream, RuntimeError]`
 - `deadline_after(milliseconds)` currently accepts a non-negative `int` and returns `Result[NetDeadline, RuntimeError]`
 - `deadline_at_unix_millis(unix_millis)` currently accepts exactly one `int` and returns `Result[NetDeadline, RuntimeError]`
 - `NetDeadline.unix_millis()` currently returns `int`
@@ -297,20 +299,25 @@ The bootstrap compiler in this repository currently supports:
 - `connect_tcp(address)` currently accepts exactly one string address and returns `Result[DuplexStream, RuntimeError]`
 - `connect_tcp_loopback(port)` currently accepts exactly one `int` port and returns `Result[DuplexStream, RuntimeError]`
 - `connect_tcp_with_control(address, deadline, token)` currently accepts `(string, NetDeadline, cancel_token)` and returns `Result[DuplexStream, RuntimeError]`
+- `connect_tcp_with_timeout(address, milliseconds)` currently accepts `(string, int)` and returns `Result[DuplexStream, RuntimeError]`
 - `connect_tcp_loopback_with_control(port, deadline, token)` currently accepts `(int, NetDeadline, cancel_token)` and returns `Result[DuplexStream, RuntimeError]`
+- `connect_tcp_loopback_with_timeout(port, milliseconds)` currently accepts `(int, int)` and returns `Result[DuplexStream, RuntimeError]`
 - `listen_tcp(address)` currently accepts exactly one string address and returns `Result[TcpListener, RuntimeError]`
 - `listen_tcp_loopback(port)` currently accepts exactly one `int` port and returns `Result[TcpListener, RuntimeError]`
 - `DuplexStream.read(max_bytes)`, `DuplexStream.read_exact(bytes)`, and `DuplexStream.read_all()` currently return `Result[Bytes, RuntimeError]`
 - `DuplexStream.write(bytes)` and `DuplexStream.write_all(bytes)` currently return `Result[int, RuntimeError]`
 - `DuplexStream.flush()` and `DuplexStream.close()` currently return `Result[unit, RuntimeError]`
 - `DuplexStream.with_deadline(deadline)` and `DuplexStream.with_cancel(token)` currently return a new `DuplexStream` wrapper with explicit blocking control
+- `DuplexStream.with_timeout(milliseconds)` currently accepts a non-negative `int` and returns `Result[DuplexStream, RuntimeError]`
 - `DuplexStream.peer_addr()` and `DuplexStream.local_addr()` currently return `Result[SocketAddr, RuntimeError]`
 - `TcpListener.accept()` currently returns `Result[DuplexStream, RuntimeError]`
 - `TcpListener.close()` currently returns `Result[unit, RuntimeError]`
 - `TcpListener.with_deadline(deadline)` and `TcpListener.with_cancel(token)` currently return a new `TcpListener` wrapper with explicit blocking control
+- `TcpListener.with_timeout(milliseconds)` currently accepts a non-negative `int` and returns `Result[TcpListener, RuntimeError]`
 - `TcpListener.local_addr()` currently returns `Result[SocketAddr, RuntimeError]`
 - `SocketAddr.connect_tcp()` currently returns `Result[DuplexStream, RuntimeError]`
 - `SocketAddr.connect_tcp_with_control(deadline, token)` currently accepts `(NetDeadline, cancel_token)` and returns `Result[DuplexStream, RuntimeError]`
+- `SocketAddr.connect_tcp_with_timeout(milliseconds)` currently accepts exactly one non-negative `int` and returns `Result[DuplexStream, RuntimeError]`
 - `SocketAddr.text()` currently returns `string`
 - `SocketAddr.port()` currently returns `int`
 - `argv` currently accepts no arguments and returns `list[string]`

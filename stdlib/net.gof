@@ -4,11 +4,19 @@ fn connect_tcp(address: string) -> Result[DuplexStream, RuntimeError]:
 fn connect_tcp_loopback(port: int) -> Result[DuplexStream, RuntimeError]:
     return connect_tcp("127.0.0.1:" + to_string(port))
 
+fn connect_tcp_with_timeout(address: string, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    deadline = __gof_internal_deadline_after(milliseconds)?
+    token: cancel_token = timeout_token(milliseconds)
+    return connect_tcp_with_control(address, deadline, token)
+
 fn connect_tcp_with_control(address: string, deadline: NetDeadline, token: cancel_token) -> Result[DuplexStream, RuntimeError]:
     return __gof_internal_connect_tcp_with_control(address, deadline, token)
 
 fn connect_tcp_loopback_with_control(port: int, deadline: NetDeadline, token: cancel_token) -> Result[DuplexStream, RuntimeError]:
     return connect_tcp_with_control("127.0.0.1:" + to_string(port), deadline, token)
+
+fn connect_tcp_loopback_with_timeout(port: int, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    return connect_tcp_with_timeout("127.0.0.1:" + to_string(port), milliseconds)
 
 fn listen_tcp(address: string) -> Result[TcpListener, RuntimeError]:
     return __gof_internal_listen_tcp(address)
@@ -43,6 +51,10 @@ fn DuplexStream.with_deadline(self: DuplexStream, deadline: NetDeadline) -> Dupl
 fn DuplexStream.with_cancel(self: DuplexStream, token: cancel_token) -> DuplexStream:
     return __gof_internal_duplex_stream_with_cancel(self, token)
 
+fn DuplexStream.with_timeout(self: DuplexStream, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    deadline = __gof_internal_deadline_after(milliseconds)?
+    return Result.Ok(self.with_deadline(deadline))
+
 fn DuplexStream.peer_addr(self: DuplexStream) -> Result[SocketAddr, RuntimeError]:
     return __gof_internal_duplex_stream_peer_addr(self)
 
@@ -61,11 +73,18 @@ fn TcpListener.with_deadline(self: TcpListener, deadline: NetDeadline) -> TcpLis
 fn TcpListener.with_cancel(self: TcpListener, token: cancel_token) -> TcpListener:
     return __gof_internal_tcp_listener_with_cancel(self, token)
 
+fn TcpListener.with_timeout(self: TcpListener, milliseconds: int) -> Result[TcpListener, RuntimeError]:
+    deadline = __gof_internal_deadline_after(milliseconds)?
+    return Result.Ok(self.with_deadline(deadline))
+
 fn TcpListener.local_addr(self: TcpListener) -> Result[SocketAddr, RuntimeError]:
     return __gof_internal_tcp_listener_local_addr(self)
 
 fn SocketAddr.connect_tcp(self: SocketAddr) -> Result[DuplexStream, RuntimeError]:
     return connect_tcp(self.text())
+
+fn SocketAddr.connect_tcp_with_timeout(self: SocketAddr, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    return connect_tcp_with_timeout(self.text(), milliseconds)
 
 fn SocketAddr.connect_tcp_with_control(self: SocketAddr, deadline: NetDeadline, token: cancel_token) -> Result[DuplexStream, RuntimeError]:
     return connect_tcp_with_control(self.text(), deadline, token)

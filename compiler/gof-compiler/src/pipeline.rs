@@ -1632,7 +1632,7 @@ mod tests {
 
         fs::write(
             &main_path,
-            "import bytes\nimport io\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    payload = bytes_from_string(\"gof\")\n    mut writer = open_write_stream(\"out.bin\")?\n    writer = writer.with_deadline(deadline)\n    text = bytes_to_string(payload)?\n    return Result.Ok(bytes_len(payload) + len(text) + deadline.unix_millis() - deadline.unix_millis())\n",
+            "import bytes\nimport io\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    payload = bytes_from_string(\"gof\")\n    mut writer = open_write_stream(\"out.bin\")?\n    writer = writer.with_timeout(1000)?\n    text = bytes_to_string(payload)?\n    return Result.Ok(bytes_len(payload) + len(text) + deadline.unix_millis() - deadline.unix_millis())\n",
         )
         .expect("main module should exist");
 
@@ -1673,7 +1673,7 @@ mod tests {
 
         fs::write(
             &main_path,
-            "import net\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    token: cancel_token = timeout_token(1000)\n    mut listener = listen_tcp_loopback(0)?\n    listener = listener.with_deadline(deadline)\n    address = listener.local_addr()?\n    client = address.connect_tcp_with_control(deadline, token)?\n    local = client.local_addr()?\n    return Result.Ok(address.port() + local.port() - local.port())\n",
+            "import net\n\nfn main() -> Result[int, RuntimeError]:\n    mut listener = listen_tcp_loopback(0)?\n    listener = listener.with_timeout(1000)?\n    address = listener.local_addr()?\n    client = address.connect_tcp_with_timeout(1000)?\n    local = client.local_addr()?\n    return Result.Ok(address.port() + local.port() - local.port())\n",
         )
         .expect("main module should exist");
 
@@ -1689,29 +1689,17 @@ mod tests {
 
         match &main.body[0] {
             crate::typed_hir::TypedStmt::Bind { value, .. } => {
-                assert_eq!(value.ty, Type::Opaque("NetDeadline".to_string()));
-            }
-            other => panic!("expected deadline bind, got {other:?}"),
-        }
-        match &main.body[1] {
-            crate::typed_hir::TypedStmt::Bind { value, .. } => {
-                assert_eq!(value.ty, Type::CancelToken);
-            }
-            other => panic!("expected cancel token bind, got {other:?}"),
-        }
-        match &main.body[2] {
-            crate::typed_hir::TypedStmt::Bind { value, .. } => {
                 assert_eq!(value.ty, Type::Opaque("TcpListener".to_string()));
             }
             other => panic!("expected listener bind, got {other:?}"),
         }
-        match &main.body[4] {
+        match &main.body[2] {
             crate::typed_hir::TypedStmt::Bind { value, .. } => {
                 assert_eq!(value.ty, Type::Opaque("SocketAddr".to_string()));
             }
             other => panic!("expected socket addr bind, got {other:?}"),
         }
-        match &main.body[5] {
+        match &main.body[3] {
             crate::typed_hir::TypedStmt::Bind { value, .. } => {
                 assert_eq!(value.ty, Type::Opaque("DuplexStream".to_string()));
             }
