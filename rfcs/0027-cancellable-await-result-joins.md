@@ -49,8 +49,8 @@ cancel a blocked task join without rewriting the callee contract.
 - task completion wins over cancellation when the task outcome is already
   available at the moment the join checks readiness
 
-This is still a bootstrap polling baseline, not a final scheduler-integrated
-structured-concurrency model.
+This is still a bootstrap direct-wakeup baseline, not a final
+scheduler-integrated structured-concurrency model.
 
 ## Diagnostics
 

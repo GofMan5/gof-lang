@@ -77,7 +77,7 @@ code that already rely on `channel()`.
 ## Out of scope
 
 - send-arms inside `select`
-- scheduler-level fairness guarantees beyond the existing round-robin polling
+- scheduler-level fairness guarantees beyond the existing round-robin ready-arm
   baseline
 - richer buffering policies or named channel constructors
 - final memory-model guarantees for production-native backends

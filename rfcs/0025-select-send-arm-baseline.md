@@ -22,7 +22,7 @@ threads or fake probe channels.
 After RFC 0023 and RFC 0024, `gof` already had:
 
 - a real receive-based `select` baseline
-- deterministic round-robin polling start rotation
+- deterministic round-robin ready-arm start rotation
 - explicit channel capacities through `channel(capacity)`
 
 What was still missing was the symmetric operational half of the model:
@@ -59,12 +59,12 @@ That hides intent and makes service-style concurrency less honest.
 ## Semantics
 
 - `select` prepares each send/receive operation once at select-entry
-- the runtime then polls those prepared operations until one becomes ready
+- the runtime then blocks on channel/token wakeups between polling passes until one becomes ready
 - when a send arm wins, its body sees the same `Result[unit, RuntimeError]`
   value that a normal `send(...)` expression would produce
 - `default:` still executes immediately when no send/receive arm is ready in
   the current polling pass
-- the existing deterministic round-robin polling start rotation now applies to
+- the existing deterministic round-robin ready-arm start rotation now applies to
   all prepared operation arms, not only receives
 
 Preparing operations once is part of the contract for this bootstrap baseline:
@@ -77,7 +77,7 @@ arm expressions with side effects are not re-evaluated on every polling pass.
 
 ## Out of scope
 
-- scheduler-level fairness guarantees beyond the current round-robin polling
+- scheduler-level fairness guarantees beyond the current round-robin ready-arm
   baseline
 - richer rendezvous handoff semantics between independent `select` expressions
 - deadline/context propagation beyond token-based cancellation

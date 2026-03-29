@@ -23,7 +23,7 @@ use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
 
@@ -37,6 +37,7 @@ thread_local! {
 }
 
 static NEXT_TEST_TEMP_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_SELECT_WAIT_ID: AtomicU64 = AtomicU64::new(1);
 
 const STDLIB_BRIDGE_PREFIX: &str = "__gof_internal_";
 const FIXTURE_CLEANUP_METHOD_NAME: &str = "cleanup";
@@ -51,6 +52,10 @@ fn next_select_arm_start(arm_count: usize) -> usize {
         counter.set(current.wrapping_add(1));
         current % arm_count
     })
+}
+
+fn next_select_wait_id() -> u64 {
+    NEXT_SELECT_WAIT_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 fn is_stdlib_bridge_builtin(name: &str) -> bool {
@@ -973,12 +978,101 @@ pub struct EnumValue {
     payloads: Vec<(String, Value)>,
 }
 
+#[derive(Debug)]
+struct WaitSignal {
+    generation: Mutex<u64>,
+    ready: Condvar,
+}
+
+impl WaitSignal {
+    fn new() -> Self {
+        Self {
+            generation: Mutex::new(0),
+            ready: Condvar::new(),
+        }
+    }
+
+    fn generation(&self) -> u64 {
+        *self
+            .generation
+            .lock()
+            .expect("wait signal mutex should not be poisoned")
+    }
+
+    fn notify(&self) {
+        let mut generation = self
+            .generation
+            .lock()
+            .expect("wait signal mutex should not be poisoned");
+        *generation = generation.wrapping_add(1);
+        self.ready.notify_all();
+    }
+
+    fn wait_for_change(&self, generation: u64) {
+        let mut current = self
+            .generation
+            .lock()
+            .expect("wait signal mutex should not be poisoned");
+        while *current == generation {
+            current = self
+                .ready
+                .wait(current)
+                .expect("wait signal condvar should not be poisoned");
+        }
+    }
+}
+
+fn register_wait_signal(waiters: &mut Vec<Weak<WaitSignal>>, signal: &Arc<WaitSignal>) {
+    let mut already_registered = false;
+    waiters.retain(|waiter| match waiter.upgrade() {
+        Some(existing) => {
+            if Arc::ptr_eq(&existing, signal) {
+                already_registered = true;
+            }
+            true
+        }
+        None => false,
+    });
+    if !already_registered {
+        waiters.push(Arc::downgrade(signal));
+    }
+}
+
+fn collect_live_wait_signals(waiters: &mut Vec<Weak<WaitSignal>>) -> Vec<Arc<WaitSignal>> {
+    let mut live = Vec::new();
+    waiters.retain(|waiter| match waiter.upgrade() {
+        Some(signal) => {
+            if !live.iter().any(|existing| Arc::ptr_eq(existing, &signal)) {
+                live.push(signal);
+            }
+            true
+        }
+        None => false,
+    });
+    live
+}
+
+fn notify_registered_wait_signals(waiters: &mut Vec<Weak<WaitSignal>>) {
+    for signal in collect_live_wait_signals(waiters) {
+        signal.notify();
+    }
+}
+
+#[derive(Debug)]
+struct CancellationState {
+    cancelled: AtomicBool,
+    waiters: Mutex<Vec<Weak<WaitSignal>>>,
+}
+
 #[derive(Clone)]
-pub struct CancelTokenValue(Arc<AtomicBool>);
+pub struct CancelTokenValue(Arc<CancellationState>);
 
 impl CancelTokenValue {
     fn new() -> Self {
-        Self(Arc::new(AtomicBool::new(false)))
+        Self(Arc::new(CancellationState {
+            cancelled: AtomicBool::new(false),
+            waiters: Mutex::new(Vec::new()),
+        }))
     }
 
     fn ptr_eq(&self, other: &Self) -> bool {
@@ -986,11 +1080,34 @@ impl CancelTokenValue {
     }
 
     fn cancel(&self) {
-        self.0.store(true, Ordering::SeqCst);
+        if self.0.cancelled.swap(true, Ordering::SeqCst) {
+            return;
+        }
+
+        let mut waiters = self
+            .0
+            .waiters
+            .lock()
+            .expect("cancel token waiter mutex should not be poisoned");
+        notify_registered_wait_signals(&mut waiters);
     }
 
     fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
+        self.0.cancelled.load(Ordering::SeqCst)
+    }
+
+    fn register_waiter(&self, signal: &Arc<WaitSignal>) {
+        let mut waiters = self
+            .0
+            .waiters
+            .lock()
+            .expect("cancel token waiter mutex should not be poisoned");
+        register_wait_signal(&mut waiters, signal);
+        drop(waiters);
+
+        if self.is_cancelled() {
+            signal.notify();
+        }
     }
 
     fn cancel_after(&self, millis: i64) {
@@ -1410,6 +1527,18 @@ impl ChannelValue {
         Arc::ptr_eq(&self.0, &other.0)
     }
 
+    fn register_listener(&self, signal: &Arc<WaitSignal>) {
+        self.0.register_listener(signal);
+    }
+
+    fn begin_select_recv_wait(&self, select_wait_id: u64) -> bool {
+        self.0.begin_select_recv_wait(select_wait_id)
+    }
+
+    fn end_select_recv_wait(&self, select_wait_id: u64) {
+        self.0.end_select_recv_wait(select_wait_id);
+    }
+
     fn close(&self) {
         self.0.close();
     }
@@ -1426,12 +1555,13 @@ impl ChannelValue {
         self.0.try_recv(token)
     }
 
-    fn try_send(
+    fn try_select_send(
         &self,
         value: Value,
         token: Option<&CancelTokenValue>,
+        select_wait_id: u64,
     ) -> Option<ChannelReceiveState> {
-        self.0.try_send(value, token)
+        self.0.try_select_send(value, token, select_wait_id)
     }
 }
 
@@ -1475,7 +1605,8 @@ enum TaskOutcome {
 #[derive(Debug)]
 struct TaskHandle {
     boundary: TaskBoundary,
-    result: Arc<(Mutex<Option<TaskOutcome>>, Condvar)>,
+    result: Mutex<Option<TaskOutcome>>,
+    listeners: Mutex<Vec<Weak<WaitSignal>>>,
 }
 
 #[derive(Debug)]
@@ -1484,13 +1615,14 @@ struct ChannelState {
     rendezvous_slot: Option<Value>,
     closed: bool,
     capacity: Option<usize>,
-    waiting_receivers: usize,
+    blocking_receivers: usize,
+    select_waiting_receivers: HashMap<u64, usize>,
+    listeners: Vec<Weak<WaitSignal>>,
 }
 
 #[derive(Debug)]
 struct ChannelHandle {
     state: Mutex<ChannelState>,
-    ready: Condvar,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1589,17 +1721,35 @@ impl TaskHandle {
     fn new(boundary: TaskBoundary) -> Self {
         Self {
             boundary,
-            result: Arc::new((Mutex::new(None), Condvar::new())),
+            result: Mutex::new(None),
+            listeners: Mutex::new(Vec::new()),
         }
     }
 
+    fn notify_listeners(&self) {
+        let mut listeners = self
+            .listeners
+            .lock()
+            .expect("task waiter mutex should not be poisoned");
+        notify_registered_wait_signals(&mut listeners);
+    }
+
+    fn register_listener(&self, signal: &Arc<WaitSignal>) {
+        let mut listeners = self
+            .listeners
+            .lock()
+            .expect("task waiter mutex should not be poisoned");
+        register_wait_signal(&mut listeners, signal);
+    }
+
     fn store(&self, outcome: TaskOutcome) {
-        let (lock, ready) = &*self.result;
-        let mut slot = lock
+        let mut slot = self
+            .result
             .lock()
             .expect("task result mutex should not be poisoned");
         *slot = Some(outcome);
-        ready.notify_all();
+        drop(slot);
+        self.notify_listeners();
     }
 
     fn store_value(&self, value: Value) {
@@ -1615,27 +1765,49 @@ impl TaskHandle {
     }
 
     fn wait_outcome(&self, token: Option<&CancelTokenValue>) -> Option<TaskOutcome> {
-        let (lock, ready) = &*self.result;
-        let mut slot = lock
-            .lock()
-            .expect("task result mutex should not be poisoned");
+        let mut wait_signal: Option<Arc<WaitSignal>> = None;
+
         loop {
+            let slot = self
+                .result
+                .lock()
+                .expect("task result mutex should not be poisoned");
             if let Some(outcome) = slot.as_ref() {
                 return Some(outcome.clone());
             }
             if token.is_some_and(CancelTokenValue::is_cancelled) {
                 return None;
             }
-            if token.is_some() {
-                let (next_slot, _) = ready
-                    .wait_timeout(slot, Duration::from_millis(5))
-                    .expect("task result wait_timeout should not be poisoned");
-                slot = next_slot;
-            } else {
-                slot = ready
-                    .wait(slot)
-                    .expect("task result wait should not be poisoned");
+            drop(slot);
+
+            if wait_signal.is_none() {
+                let signal = Arc::new(WaitSignal::new());
+                self.register_listener(&signal);
+                if let Some(token) = token {
+                    token.register_waiter(&signal);
+                }
+                wait_signal = Some(signal);
+                continue;
             }
+
+            let signal = wait_signal
+                .as_ref()
+                .expect("task wait signal should be registered before blocking")
+                .clone();
+            let generation = signal.generation();
+
+            let slot = self
+                .result
+                .lock()
+                .expect("task result mutex should not be poisoned");
+            if let Some(outcome) = slot.as_ref() {
+                return Some(outcome.clone());
+            }
+            if token.is_some_and(CancelTokenValue::is_cancelled) {
+                return None;
+            }
+            drop(slot);
+            signal.wait_for_change(generation);
         }
     }
 
@@ -1682,10 +1854,74 @@ impl ChannelHandle {
                 rendezvous_slot: None,
                 closed: false,
                 capacity,
-                waiting_receivers: 0,
+                blocking_receivers: 0,
+                select_waiting_receivers: HashMap::new(),
+                listeners: Vec::new(),
             }),
-            ready: Condvar::new(),
         }
+    }
+
+    fn notify_waiters_locked(&self, state: &mut ChannelState) {
+        notify_registered_wait_signals(&mut state.listeners);
+    }
+
+    fn register_listener(&self, signal: &Arc<WaitSignal>) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("channel state mutex should not be poisoned");
+        register_wait_signal(&mut state.listeners, signal);
+    }
+
+    fn begin_select_recv_wait(&self, select_wait_id: u64) -> bool {
+        let mut state = self
+            .state
+            .lock()
+            .expect("channel state mutex should not be poisoned");
+        if !matches!(state.capacity, Some(0)) {
+            return false;
+        }
+        *state
+            .select_waiting_receivers
+            .entry(select_wait_id)
+            .or_insert(0) += 1;
+        self.notify_waiters_locked(&mut state);
+        true
+    }
+
+    fn end_select_recv_wait(&self, select_wait_id: u64) {
+        let mut state = self
+            .state
+            .lock()
+            .expect("channel state mutex should not be poisoned");
+        if !matches!(state.capacity, Some(0)) {
+            return;
+        }
+        let remove_wait_group = {
+            let count = state
+                .select_waiting_receivers
+                .get_mut(&select_wait_id)
+                .expect("select receiver wait should remain balanced");
+            *count = count
+                .checked_sub(1)
+                .expect("select receiver wait should remain balanced");
+            *count == 0
+        };
+        if remove_wait_group {
+            state.select_waiting_receivers.remove(&select_wait_id);
+        }
+        self.notify_waiters_locked(&mut state);
+    }
+
+    fn has_waiting_receiver(
+        state: &ChannelState,
+        excluded_select_wait_id: Option<u64>,
+    ) -> bool {
+        state.blocking_receivers > 0
+            || state
+                .select_waiting_receivers
+                .iter()
+                .any(|(wait_id, count)| *count > 0 && Some(*wait_id) != excluded_select_wait_id)
     }
 
     fn can_send(state: &ChannelState) -> bool {
@@ -1702,7 +1938,7 @@ impl ChannelHandle {
             .lock()
             .expect("channel state mutex should not be poisoned");
         state.closed = true;
-        self.ready.notify_all();
+        self.notify_waiters_locked(&mut state);
     }
 
     fn send(&self, value: Value, token: Option<&CancelTokenValue>) -> ChannelReceiveState {
@@ -1712,25 +1948,26 @@ impl ChannelHandle {
 
         let mut pending = Some(value);
         let mut rendezvous_enqueued = false;
-        let mut state = self
-            .state
-            .lock()
-            .expect("channel state mutex should not be poisoned");
+        let mut wait_signal: Option<Arc<WaitSignal>> = None;
         loop {
+            let mut state = self
+                .state
+                .lock()
+                .expect("channel state mutex should not be poisoned");
             if rendezvous_enqueued && state.rendezvous_slot.is_none() {
                 return ChannelReceiveState::Value(Value::Unit);
             }
             if state.closed {
                 if rendezvous_enqueued && state.rendezvous_slot.is_some() {
                     state.rendezvous_slot = None;
-                    self.ready.notify_all();
+                    self.notify_waiters_locked(&mut state);
                 }
                 return ChannelReceiveState::Closed;
             }
             if token.is_some_and(CancelTokenValue::is_cancelled) {
                 if rendezvous_enqueued && state.rendezvous_slot.is_some() {
                     state.rendezvous_slot = None;
-                    self.ready.notify_all();
+                    self.notify_waiters_locked(&mut state);
                 }
                 return ChannelReceiveState::Cancelled;
             }
@@ -1743,7 +1980,8 @@ impl ChannelHandle {
                                 .expect("pending rendezvous send value should exist"),
                         );
                         rendezvous_enqueued = true;
-                        self.ready.notify_all();
+                        self.notify_waiters_locked(&mut state);
+                        continue;
                     }
                 }
                 _ => {
@@ -1753,71 +1991,111 @@ impl ChannelHandle {
                                 .take()
                                 .expect("pending channel send value should exist"),
                         );
-                        self.ready.notify_all();
+                        self.notify_waiters_locked(&mut state);
                         return ChannelReceiveState::Value(Value::Unit);
                     }
                 }
             }
-            let (next_state, _) = self
-                .ready
-                .wait_timeout(state, Duration::from_millis(10))
-                .expect("channel wait should not be poisoned");
-            state = next_state;
+
+            if wait_signal.is_none() {
+                let signal = Arc::new(WaitSignal::new());
+                register_wait_signal(&mut state.listeners, &signal);
+                if let Some(token) = token {
+                    token.register_waiter(&signal);
+                }
+                wait_signal = Some(signal);
+                drop(state);
+                continue;
+            }
+
+            let signal = wait_signal
+                .as_ref()
+                .expect("channel send wait signal should be registered before blocking")
+                .clone();
+            let generation = signal.generation();
+            drop(state);
+            signal.wait_for_change(generation);
         }
     }
 
     fn recv(&self, token: Option<&CancelTokenValue>) -> ChannelReceiveState {
-        let mut state = self
-            .state
-            .lock()
-            .expect("channel state mutex should not be poisoned");
         let mut waiting_registered = false;
+        let mut wait_signal: Option<Arc<WaitSignal>> = None;
         loop {
+            let mut state = self
+                .state
+                .lock()
+                .expect("channel state mutex should not be poisoned");
             if let Some(value) = state.queue.pop_front() {
                 if waiting_registered {
-                    state.waiting_receivers -= 1;
+                    state.blocking_receivers -= 1;
                 }
-                self.ready.notify_all();
+                self.notify_waiters_locked(&mut state);
                 return ChannelReceiveState::Value(value);
             }
             if let Some(value) = state.rendezvous_slot.take() {
                 if waiting_registered {
-                    state.waiting_receivers -= 1;
+                    state.blocking_receivers -= 1;
                 }
-                self.ready.notify_all();
+                self.notify_waiters_locked(&mut state);
                 return ChannelReceiveState::Value(value);
             }
             if state.closed {
                 if waiting_registered {
-                    state.waiting_receivers -= 1;
-                    self.ready.notify_all();
+                    state.blocking_receivers -= 1;
+                    self.notify_waiters_locked(&mut state);
                 }
                 return ChannelReceiveState::Closed;
             }
             if token.is_some_and(CancelTokenValue::is_cancelled) {
                 if waiting_registered {
-                    state.waiting_receivers -= 1;
-                    self.ready.notify_all();
+                    state.blocking_receivers -= 1;
+                    self.notify_waiters_locked(&mut state);
                 }
                 return ChannelReceiveState::Cancelled;
             }
             if matches!(state.capacity, Some(0)) && !waiting_registered {
-                state.waiting_receivers += 1;
+                state.blocking_receivers += 1;
                 waiting_registered = true;
-                self.ready.notify_all();
+                self.notify_waiters_locked(&mut state);
+                continue;
             }
-            let (next_state, _) = self
-                .ready
-                .wait_timeout(state, Duration::from_millis(10))
-                .expect("channel wait should not be poisoned");
-            state = next_state;
+
+            if wait_signal.is_none() {
+                let signal = Arc::new(WaitSignal::new());
+                register_wait_signal(&mut state.listeners, &signal);
+                if let Some(token) = token {
+                    token.register_waiter(&signal);
+                }
+                wait_signal = Some(signal);
+                drop(state);
+                continue;
+            }
+
+            let signal = wait_signal
+                .as_ref()
+                .expect("channel recv wait signal should be registered before blocking")
+                .clone();
+            let generation = signal.generation();
+            drop(state);
+            signal.wait_for_change(generation);
         }
     }
 
-    fn try_send(
+    fn try_select_send(
         &self,
         value: Value,
         token: Option<&CancelTokenValue>,
+        select_wait_id: u64,
+    ) -> Option<ChannelReceiveState> {
+        self.try_send_internal(value, token, Some(select_wait_id))
+    }
+
+    fn try_send_internal(
+        &self,
+        value: Value,
+        token: Option<&CancelTokenValue>,
+        excluded_select_wait_id: Option<u64>,
     ) -> Option<ChannelReceiveState> {
         if token.is_some_and(CancelTokenValue::is_cancelled) {
             return Some(ChannelReceiveState::Cancelled);
@@ -1834,13 +2112,15 @@ impl ChannelHandle {
         match state.capacity {
             None => {
                 state.queue.push_back(value);
-                self.ready.notify_all();
+                self.notify_waiters_locked(&mut state);
                 Some(ChannelReceiveState::Value(Value::Unit))
             }
             Some(0) => {
-                if state.waiting_receivers > 0 && state.rendezvous_slot.is_none() {
+                if Self::has_waiting_receiver(&state, excluded_select_wait_id)
+                    && state.rendezvous_slot.is_none()
+                {
                     state.rendezvous_slot = Some(value);
-                    self.ready.notify_all();
+                    self.notify_waiters_locked(&mut state);
                     Some(ChannelReceiveState::Value(Value::Unit))
                 } else {
                     None
@@ -1849,7 +2129,7 @@ impl ChannelHandle {
             Some(capacity) => {
                 if state.queue.len() < capacity {
                     state.queue.push_back(value);
-                    self.ready.notify_all();
+                    self.notify_waiters_locked(&mut state);
                     Some(ChannelReceiveState::Value(Value::Unit))
                 } else {
                     None
@@ -1859,22 +2139,20 @@ impl ChannelHandle {
     }
 
     fn try_recv(&self, token: Option<&CancelTokenValue>) -> Option<ChannelReceiveState> {
-        if token.is_some_and(CancelTokenValue::is_cancelled) {
-            return Some(ChannelReceiveState::Cancelled);
-        }
-
         let mut state = self
             .state
             .lock()
             .expect("channel state mutex should not be poisoned");
         if let Some(value) = state.queue.pop_front() {
-            self.ready.notify_all();
+            self.notify_waiters_locked(&mut state);
             Some(ChannelReceiveState::Value(value))
         } else if let Some(value) = state.rendezvous_slot.take() {
-            self.ready.notify_all();
+            self.notify_waiters_locked(&mut state);
             Some(ChannelReceiveState::Value(value))
         } else if state.closed {
             Some(ChannelReceiveState::Closed)
+        } else if token.is_some_and(CancelTokenValue::is_cancelled) {
+            Some(ChannelReceiveState::Cancelled)
         } else {
             None
         }
@@ -3567,12 +3845,18 @@ fn eval_stmt(
                 }
             }
 
+            let select_wait_id = next_select_wait_id();
+            let wait_signal = Arc::new(WaitSignal::new());
+            for (_, prepared) in &prepared_arms {
+                prepared.register_wait_signal(&wait_signal);
+            }
+
             let mut start_index = next_select_arm_start(prepared_arms.len());
             loop {
                 for offset in 0..prepared_arms.len() {
                     let (arm, prepared) =
                         &prepared_arms[(start_index + offset) % prepared_arms.len()];
-                    if let Some(received) = poll_select_operation(prepared) {
+                    if let Some(received) = poll_select_operation(prepared, select_wait_id) {
                         return eval_select_arm_body(
                             arm,
                             Some(received),
@@ -3603,8 +3887,34 @@ fn eval_stmt(
                     );
                 }
 
+                let wait_guards = prepared_arms
+                    .iter()
+                    .filter_map(|(_, prepared)| prepared.begin_blocking_wait(select_wait_id))
+                    .collect::<Vec<_>>();
+                let wait_generation = wait_signal.generation();
+
+                for offset in 0..prepared_arms.len() {
+                    let (arm, prepared) =
+                        &prepared_arms[(start_index + offset) % prepared_arms.len()];
+                    if let Some(received) = poll_select_operation(prepared, select_wait_id) {
+                        return eval_select_arm_body(
+                            arm,
+                            Some(received),
+                            scopes,
+                            functions,
+                            methods,
+                            structs,
+                            enums,
+                            output,
+                            loop_depth,
+                            source_path,
+                        );
+                    }
+                }
+
                 start_index = (start_index + 1) % prepared_arms.len();
-                std::thread::yield_now();
+                wait_signal.wait_for_change(wait_generation);
+                drop(wait_guards);
             }
         }
         Stmt::Expr(expr, _) => {
@@ -8565,6 +8875,65 @@ enum PreparedSelectOperation {
     },
 }
 
+struct SelectRecvWaitGuard {
+    channel: ChannelValue,
+    select_wait_id: u64,
+    active: bool,
+}
+
+impl SelectRecvWaitGuard {
+    fn new(channel: &ChannelValue, select_wait_id: u64) -> Self {
+        Self {
+            channel: channel.clone(),
+            select_wait_id,
+            active: channel.begin_select_recv_wait(select_wait_id),
+        }
+    }
+}
+
+impl Drop for SelectRecvWaitGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.channel.end_select_recv_wait(self.select_wait_id);
+        }
+    }
+}
+
+impl PreparedSelectOperation {
+    fn register_wait_signal(&self, signal: &Arc<WaitSignal>) {
+        match self {
+            PreparedSelectOperation::Recv {
+                channel,
+                cancel_token,
+            } => {
+                channel.register_listener(signal);
+                if let Some(token) = cancel_token {
+                    token.register_waiter(signal);
+                }
+            }
+            PreparedSelectOperation::Send {
+                channel,
+                cancel_token,
+                ..
+            } => {
+                channel.register_listener(signal);
+                if let Some(token) = cancel_token {
+                    token.register_waiter(signal);
+                }
+            }
+        }
+    }
+
+    fn begin_blocking_wait(&self, select_wait_id: u64) -> Option<SelectRecvWaitGuard> {
+        match self {
+            PreparedSelectOperation::Recv { channel, .. } => {
+                Some(SelectRecvWaitGuard::new(channel, select_wait_id))
+            }
+            PreparedSelectOperation::Send { .. } => None,
+        }
+    }
+}
+
 fn prepare_select_operation(
     operation: &Expr,
     scopes: &ScopeStack,
@@ -8728,7 +9097,7 @@ fn prepare_select_operation(
     }
 }
 
-fn poll_select_operation(operation: &PreparedSelectOperation) -> Option<Value> {
+fn poll_select_operation(operation: &PreparedSelectOperation, select_wait_id: u64) -> Option<Value> {
     match operation {
         PreparedSelectOperation::Recv {
             channel,
@@ -8745,7 +9114,7 @@ fn poll_select_operation(operation: &PreparedSelectOperation) -> Option<Value> {
             value,
             cancel_token,
         } => channel
-            .try_send(value.clone(), cancel_token.as_ref())
+            .try_select_send(value.clone(), cancel_token.as_ref(), select_wait_id)
             .map(|state| match state {
                 ChannelReceiveState::Value(_) => result_ok(Value::Unit),
                 ChannelReceiveState::Closed => result_err(runtime_channel_closed_error()),
@@ -13539,7 +13908,7 @@ mod tests {
     use std::net::TcpListener;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::time::{Duration, Instant, UNIX_EPOCH};
     use tempfile::tempdir;
 
     fn run_source(text: &str) -> Result<Value, crate::diagnostics::Diagnostics> {
@@ -14091,6 +14460,36 @@ mod tests {
         .expect("await_result should surface cancellation as a runtime error result");
 
         assert_eq!(value.cli_text().as_deref(), Some("RuntimeError.Cancelled"));
+    }
+
+    #[test]
+    fn await_result_cancellation_wakes_without_polling_floor() {
+        let started = Instant::now();
+
+        for _ in 0..10 {
+            let token = CancelTokenValue::new();
+            let wait_token = token.clone();
+            let waiter = std::thread::spawn(move || {
+                let task = TaskHandle::new(TaskBoundary::Direct);
+                task.await_result_value(Some(&wait_token))
+            });
+
+            std::thread::sleep(Duration::from_millis(2));
+            token.cancel();
+
+            let outcome = waiter
+                .join()
+                .expect("await_result waiter thread should join after cancellation");
+            assert_eq!(
+                outcome.cli_text().as_deref(),
+                Some("Result.Err(error: RuntimeError.Cancelled)")
+            );
+        }
+
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "await_result cancellation should not depend on a fixed polling floor"
+        );
     }
 
     #[test]
@@ -14753,6 +15152,82 @@ mod tests {
     }
 
     #[test]
+    fn select_recv_wait_groups_exclude_same_select_send_readiness() {
+        let channel = ChannelHandle::new(Some(0));
+
+        assert!(channel.begin_select_recv_wait(1));
+        assert_eq!(channel.try_select_send(Value::Int(7), None, 1), None);
+        assert_eq!(
+            channel.try_select_send(Value::Int(7), None, 2),
+            Some(ChannelReceiveState::Value(Value::Unit))
+        );
+        assert_eq!(
+            channel.try_recv(None),
+            Some(ChannelReceiveState::Value(Value::Int(7)))
+        );
+
+        channel.end_select_recv_wait(1);
+    }
+
+    #[test]
+    fn send_cancellation_wakes_without_polling_floor() {
+        let started = Instant::now();
+
+        for _ in 0..6 {
+            let channel = Arc::new(ChannelHandle::new(Some(0)));
+            let wait_channel = Arc::clone(&channel);
+            let token = CancelTokenValue::new();
+            let wait_token = token.clone();
+            let waiter = std::thread::spawn(move || {
+                wait_channel.send(Value::Int(7), Some(&wait_token))
+            });
+
+            std::thread::sleep(Duration::from_millis(2));
+            token.cancel();
+
+            assert_eq!(
+                waiter
+                    .join()
+                    .expect("send waiter thread should join after cancellation"),
+                ChannelReceiveState::Cancelled
+            );
+        }
+
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "send cancellation should not depend on a fixed polling floor"
+        );
+    }
+
+    #[test]
+    fn recv_cancellation_wakes_without_polling_floor() {
+        let started = Instant::now();
+
+        for _ in 0..6 {
+            let channel = Arc::new(ChannelHandle::new(None));
+            let wait_channel = Arc::clone(&channel);
+            let token = CancelTokenValue::new();
+            let wait_token = token.clone();
+            let waiter = std::thread::spawn(move || wait_channel.recv(Some(&wait_token)));
+
+            std::thread::sleep(Duration::from_millis(2));
+            token.cancel();
+
+            assert_eq!(
+                waiter
+                    .join()
+                    .expect("recv waiter thread should join after cancellation"),
+                ChannelReceiveState::Cancelled
+            );
+        }
+
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "recv cancellation should not depend on a fixed polling floor"
+        );
+    }
+
+    #[test]
     fn evaluates_select_default_arm_when_no_receive_is_ready() {
         let value = run_source(
             "fn main() -> Result[int, RuntimeError]:\n    ch: channel = channel()\n    select:\n        received = recv(ch):\n            return received\n        default:\n            return Result.Ok(7)\n",
@@ -14789,9 +15264,75 @@ mod tests {
     }
 
     #[test]
+    fn blocked_rendezvous_selects_coordinate_without_busy_spinning() {
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        std::thread::spawn(move || {
+            let outcome = run_source(
+                "fn sender(ch: channel[int]) -> Result[unit, RuntimeError]:\n    select:\n        sent = send(ch, 7):\n            return sent\n\nfn main() -> Result[int, RuntimeError]:\n    ch: channel[int] = channel(0)\n    sender_task = go sender(ch)\n    select:\n        received = recv(ch):\n            send_outcome = await sender_task\n            match send_outcome:\n                Result.Ok(_):\n                    return Result.Ok(received?)\n                Result.Err(error):\n                    return Result.Err(error)\n",
+            )
+            .map(|value| {
+                value
+                    .cli_text()
+                    .unwrap_or_else(|| "unit".to_string())
+            })
+            .map_err(|diagnostics| diagnostics.codes());
+
+            result_tx
+                .send(outcome)
+                .expect("select rendezvous result should be sent");
+        });
+
+        let outcome = result_rx
+            .recv_timeout(Duration::from_millis(500))
+            .expect("blocked rendezvous selects should wake and complete");
+
+        assert_eq!(
+            outcome.expect("rendezvous select program should succeed"),
+            "Result.Ok(value: 7)"
+        );
+    }
+
+    #[test]
+    fn same_select_send_and_recv_do_not_self_match_on_rendezvous_channels() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel[int] = channel(0)\n    token = timeout_token(5)\n    select:\n        sent = send(ch, 7, token):\n            sent?\n            return Result.Ok(1)\n        received = recv(ch, token):\n            return Result.Ok(received?)\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(
+            value.cli_text().as_deref(),
+            Some("Result.Err(error: RuntimeError.Cancelled)")
+        );
+    }
+
+    #[test]
+    fn blocked_select_receive_propagates_token_cancellation() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel[int] = channel(0)\n    token = timeout_token(5)\n    select:\n        received = recv(ch, token):\n            return Result.Ok(received?)\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(
+            value.cli_text().as_deref(),
+            Some("Result.Err(error: RuntimeError.Cancelled)")
+        );
+    }
+
+    #[test]
+    fn select_recv_prefers_ready_values_over_cancelled_tokens() {
+        let value = run_source(
+            "fn main() -> Result[int, RuntimeError]:\n    ch: channel[int] = channel()\n    send(ch, 1)?\n    token = timeout_token(0)\n    select:\n        received = recv(ch, token):\n            return Result.Ok(received?)\n",
+        )
+        .expect("program should run");
+
+        assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 1)"));
+    }
+
+    #[test]
     fn rotates_select_arm_priority_when_multiple_receives_are_ready() {
         let value = run_source(
-            "fn main() -> Result[int, RuntimeError]:\n    mut left_hits = 0\n    mut right_hits = 0\n    mut i = 0\n    while i < 16:\n        left: channel = channel()\n        right: channel = channel()\n        send(left, 1)?\n        send(right, 1)?\n        select:\n            received = recv(left):\n                left_hits = left_hits + received?\n            received = recv(right):\n                right_hits = right_hits + received?\n        i = i + 1\n    assert(left_hits == 8, \"expected round-robin select polling to choose the left arm exactly eight times\")\n    assert(right_hits == 8, \"expected round-robin select polling to choose the right arm exactly eight times\")\n    return Result.Ok(left_hits + right_hits)\n",
+            "fn main() -> Result[int, RuntimeError]:\n    mut left_hits = 0\n    mut right_hits = 0\n    mut i = 0\n    while i < 16:\n        left: channel = channel()\n        right: channel = channel()\n        send(left, 1)?\n        send(right, 1)?\n        select:\n            received = recv(left):\n                left_hits = left_hits + received?\n            received = recv(right):\n                right_hits = right_hits + received?\n        i = i + 1\n    assert(left_hits == 8, \"expected round-robin select to choose the left arm exactly eight times\")\n    assert(right_hits == 8, \"expected round-robin select to choose the right arm exactly eight times\")\n    return Result.Ok(left_hits + right_hits)\n",
         )
         .expect("program should run");
         assert_eq!(value.cli_text().as_deref(), Some("Result.Ok(value: 16)"));

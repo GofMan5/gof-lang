@@ -709,6 +709,23 @@ fn gof_mod_resolve_writes_lockfile_for_local_packages() {
 }
 
 #[test]
+fn gof_mod_resolve_reports_lockfile_write_failures_honestly() {
+    let temp = tempdir().expect("tempdir should exist");
+    let (app_root, _) = write_local_package_pair(temp.path());
+
+    fs::create_dir(app_root.join("gof.lock")).expect("lockfile collision directory should exist");
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&app_root)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("GOF3091"))
+        .stderr(predicate::str::contains("failed to write lockfile"))
+        .stderr(predicate::str::contains("writable"));
+}
+
+#[test]
 fn gof_run_requires_lockfile_for_manifest_backed_packages() {
     let temp = tempdir().expect("tempdir should exist");
     let (app_root, _) = write_local_package_pair(temp.path());

@@ -15,3 +15,7 @@ criterion = "0.7.0"
 name = "bootstrap_pipeline"
 harness = false
 
+[[bench]]
+name = "concurrency_runtime"
+harness = false
+

@@ -92,7 +92,7 @@ or postpone a package invariant that Phase 1 already needs.
 ## diagnostics impact
 
 - `GOF3090`: missing lockfile for manifest-backed package execution, build, or test
-- `GOF3091`: stale or unreadable lockfile for a manifest-backed package
+- `GOF3091`: stale, unreadable, or unwritable lockfile for a manifest-backed package
 - `GOF3092`: conflicting package identity or metadata in the local dependency graph
 
 ## test plan

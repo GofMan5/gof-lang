@@ -217,7 +217,7 @@ When you point `gof test` at an explicit package root, that package target now
 still runs even if the package also contains internal `tests/` targets or
 fixtures.
 
-`select` now rotates its polling start arm in a deterministic round-robin
+`select` now rotates its ready-arm start index in a deterministic round-robin
 baseline when multiple send/receive arms are already ready, but scheduler-level
 fairness is still a roadmap item rather than a finished guarantee.
 
@@ -225,9 +225,9 @@ fairness is still a roadmap item rather than a finished guarantee.
 `send(channel, value)` arms, so non-blocking fallback loops and bounded-channel
 backpressure paths do not need to fake readiness through helper channels.
 
-`select` currently prepares each send/receive operation once at select-entry
-before polling, so arm expressions with side effects are not re-evaluated on
-every poll pass.
+`select` currently prepares each send/receive operation once at select-entry,
+then blocks on channel/token wakeups between polling passes, so arm expressions
+with side effects are not re-evaluated on every poll pass.
 
 The automation stdlib now also has an explicit process orchestration baseline
 through `run_process(program, args)`, which executes a program directly without

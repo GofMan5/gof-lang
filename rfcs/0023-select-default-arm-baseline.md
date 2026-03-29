@@ -9,7 +9,7 @@ helper tasks.
 ## Motivation
 
 Current `select` already has real receive semantics, typed channels, and a
-deterministic round-robin polling baseline when multiple receive arms are
+deterministic round-robin ready-arm baseline when multiple receive arms are
 ready. What it still lacks is the canonical operational fallback shape that
 real worker and service loops need:
 
@@ -28,11 +28,11 @@ Without `default:` the language forces awkward workarounds that hide intent.
   - `value = recv(channel, token):`
 - at most one `default:` arm is allowed in a given `select`
 - if one or more receive arms are ready, the runtime chooses among ready receive
-  arms using the existing deterministic round-robin polling baseline
+  arms using the existing deterministic round-robin ready-arm baseline
 - if no receive arm is ready during the current polling pass and a `default:`
   arm exists, the runtime executes `default:` immediately
 - if no receive arm is ready and no `default:` arm exists, the current blocking
-  polling behavior remains unchanged
+  wakeup behavior remains unchanged
 
 ## Diagnostics
 

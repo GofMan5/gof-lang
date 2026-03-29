@@ -1267,6 +1267,11 @@ fn render_package_error_with_operation(error: PackageGraphError, operation: &str
             display_path(&path),
             message
         )),
+        PackageGraphError::LockfileWrite { path, message } => anyhow!(format!(
+            "error[GOF3091]: failed to write lockfile `{}`\n  note: {}\n  help: ensure the lockfile path is writable and rerun `gof mod resolve`",
+            display_path(&path),
+            message
+        )),
         PackageGraphError::DependencyCycle { cycle } => anyhow!(format!(
             "error: local package dependency cycle detected during `{operation}`\n  note: {}\n  help: break the cycle by extracting shared code into an acyclic package",
             cycle
@@ -1304,6 +1309,7 @@ fn package_error_code(error: &PackageGraphError) -> &'static str {
         PackageGraphError::MissingLockfile { .. } => "GOF3090",
         PackageGraphError::StaleLockfile { .. }
         | PackageGraphError::LockfileParse { .. }
+        | PackageGraphError::LockfileWrite { .. }
         | PackageGraphError::LockfileRead { .. } => "GOF3091",
         PackageGraphError::ConflictingModuleIdentity { .. }
         | PackageGraphError::ConflictingPackageMetadata { .. } => "GOF3092",

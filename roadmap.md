@@ -459,7 +459,7 @@ Hard sequencing rule:
 - keep direct codegen milestones honest in docs and tooling
 
 4. `[~]` Deepen concurrency semantics:
-- deterministic round-robin select polling baseline plus send/default arms, then stronger fairness and blocking semantics
+- deterministic round-robin select baseline plus send/default arms and honest blocking wakeups, then stronger fairness semantics
 - finish task propagation over plain `task[T]`, `Result`, and panic boundaries
 - concurrency contract tests and benchmarks
 

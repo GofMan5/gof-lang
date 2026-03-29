@@ -102,7 +102,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3088`: invalid operand for sequence helpers
 - `GOF3089`: invalid package manifest or local dependency configuration
 - `GOF3090`: missing lockfile for manifest-backed package execution, build, or test
-- `GOF3091`: stale or unreadable lockfile for a manifest-backed package
+- `GOF3091`: stale, unreadable, or unwritable lockfile for a manifest-backed package
 - `GOF3092`: conflicting package identity or metadata in the local dependency graph
 - `GOF3093`: invalid operand for timeout-backed cancellation helpers
 - `GOF3094`: invalid negative duration for timeout-backed cancellation helpers

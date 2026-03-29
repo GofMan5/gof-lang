@@ -110,6 +110,8 @@ pub enum PackageGraphError {
     MissingRootManifest { start: PathBuf },
     #[error("failed to read lockfile `{path}`: {message}")]
     LockfileRead { path: PathBuf, message: String },
+    #[error("failed to write lockfile `{path}`: {message}")]
+    LockfileWrite { path: PathBuf, message: String },
     #[error("failed to parse lockfile `{path}`: {message}")]
     LockfileParse { path: PathBuf, message: String },
     #[error("manifest-backed package `{module}` is missing `{path}`")]
@@ -230,7 +232,7 @@ pub fn write_lockfile_for_directory(directory: &Path) -> Result<PathBuf, Package
     let (lockfile_path, lockfile) = resolve_lockfile_for_directory(directory)?;
     let serialized = serialize_lockfile(&lockfile)?;
     std::fs::write(&lockfile_path, serialized).map_err(|error| {
-        PackageGraphError::LockfileRead {
+        PackageGraphError::LockfileWrite {
             path: lockfile_path.clone(),
             message: error.to_string(),
         }

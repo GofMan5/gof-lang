@@ -107,8 +107,8 @@ Current `select` contract:
 - receive arms must be `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
 - send arms must be `send(channel, value):`, `value = send(channel, value):`, `send(channel, value, token):`, or `value = send(channel, value, token):`
 - `default:` executes immediately when no send/receive arm is ready during the current polling pass
-- the bootstrap runtime prepares each send/receive operation once at select-entry, then polls those prepared operations until one resolves to `Result.Ok(...)` or `Result.Err(...)`
-- when multiple send/receive arms are already ready, the bootstrap runtime rotates the polling start arm in a deterministic round-robin baseline so the first source arm does not always win
+- the bootstrap runtime prepares each send/receive operation once at select-entry, then blocks on channel/token wakeups between polling passes until one resolves to `Result.Ok(...)` or `Result.Err(...)`
+- when multiple send/receive arms are already ready, the bootstrap runtime rotates the ready-arm start index in a deterministic round-robin baseline so the first source arm does not always win
 
 That is enough to model simple message-passing choices, which is already more honest
 than adding pretty syntax with no execution model behind it.
@@ -130,7 +130,7 @@ Current cancellation baseline:
 - `is_cancelled(token)` reports the current state
 - `timeout_token(milliseconds)` creates a token that cancels itself after a non-negative delay
 - `cancel_after(token, milliseconds)` schedules cancellation for an existing token after a non-negative delay
-- `send(..., token)` and `recv(..., token)` observe that token while blocking
+- `send(..., token)`, `recv(..., token)`, and `await_result(task, token)` wake promptly when that token flips instead of waiting for fixed timeout polling ticks
 
 ## What is still missing
 
@@ -138,7 +138,7 @@ This is a real concurrency baseline, but not the final story.
 
 Still missing:
 
-- production-grade fairness guarantees beyond the current round-robin polling baseline
+- production-grade fairness guarantees beyond the current round-robin ready-arm baseline
 - automatic task panic and boundary-failure preservation for plain `await task` joins without opting into `await_result(task)`
 - deadline/context propagation beyond timeout-backed token baselines
 - production scheduler hardening

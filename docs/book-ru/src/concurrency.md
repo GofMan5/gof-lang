@@ -105,8 +105,8 @@ fn main() -> Result[int, RuntimeError]:
 - receive arm должен быть `recv(channel):`, `value = recv(channel):`, `recv(channel, token):` или `value = recv(channel, token):`
 - send arm должен быть `send(channel, value):`, `value = send(channel, value):`, `send(channel, value, token):` или `value = send(channel, value, token):`
 - `default:` выполняется сразу, если в текущем проходе опроса ни один send/receive arm не готов
-- bootstrap runtime подготавливает каждую send/receive операцию один раз на входе в `select`, а затем опрашивает уже подготовленные операции, пока одна из них не вернет `Result.Ok(...)` или `Result.Err(...)`
-- если несколько send/receive arms уже готовы, bootstrap runtime вращает стартовый arm по детерминированному round-robin baseline, чтобы первый arm в исходнике не выигрывал всегда
+- bootstrap runtime подготавливает каждую send/receive операцию один раз на входе в `select`, а затем блокируется на wakeup-сигналах channel/token между проходами опроса, пока одна из них не вернет `Result.Ok(...)` или `Result.Err(...)`
+- если несколько send/receive arms уже готовы, bootstrap runtime вращает стартовый индекс ready-arm по детерминированному round-robin baseline, чтобы первый arm в исходнике не выигрывал всегда
 
 Этого уже хватает для честного message-passing выбора без красивого синтаксиса,
 за которым ничего нет.
@@ -128,7 +128,7 @@ fn main() -> bool:
 - `is_cancelled(token)` читает текущее состояние
 - `timeout_token(milliseconds)` создает token, который сам отменяется после неотрицательной задержки
 - `cancel_after(token, milliseconds)` планирует отмену уже существующего token через неотрицательную задержку
-- `send(..., token)` и `recv(..., token)` наблюдают token во время блокировки
+- `send(..., token)`, `recv(..., token)` и `await_result(task, token)` просыпаются сразу после отмены token, а не ждут фиксированные polling ticks
 
 ## Чего еще не хватает
 
@@ -136,7 +136,7 @@ fn main() -> bool:
 
 Еще не хватает:
 
-- production-grade fairness гарантий сверх текущего round-robin polling baseline
+- production-grade fairness гарантий сверх текущего round-robin ready-arm baseline
 - автоматического сохранения task panic и boundary failures для plain `await task` joins без явного `await_result(task)`
 - deadline/context propagation сверх timeout-backed token baseline
 - production scheduler hardening

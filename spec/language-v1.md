@@ -361,15 +361,15 @@ The bootstrap compiler in this repository currently supports:
 - `await_result(task, token)` currently accepts a task value plus an optional cancellation token and returns `Result[value, RuntimeError]`
 - when a spawned function explicitly declares `Result[..., RuntimeError]`, task-boundary evaluator failures surface at `await` as `Result.Err(RuntimeError.TaskFailed(...))` and panics surface as `Result.Err(RuntimeError.TaskPanicked(...))`
 - `await_result(task)` currently preserves task-boundary evaluator failures for any task as `Result.Err(RuntimeError.TaskFailed(...))` and task panics as `Result.Err(RuntimeError.TaskPanicked(...))`
-- `await_result(task, token)` currently also returns `Result.Err(RuntimeError.Cancelled)` when the join token is cancelled before the task completes
+- `await_result(task, token)` currently also returns `Result.Err(RuntimeError.Cancelled)` when the join token is cancelled before the task completes, and blocked joins now wake on that token directly instead of relying on fixed polling delays
 - `channel()` currently creates a bootstrap channel value backed by the unbounded runtime queue model
 - `channel(0)` currently creates a rendezvous channel baseline that blocks `send(...)` until a receiver takes the value
 - `channel(n)` for `n > 0` currently creates a bounded channel baseline that blocks `send(...)` while the buffer is full
 - `close(channel)` currently closes the channel and wakes blocked receive operations
 - `send(channel, value)` currently returns `Result[unit, RuntimeError]`
-- `send(channel, value, token)` currently supports cooperative cancellation for blocked send operations
+- `send(channel, value, token)` currently supports cooperative cancellation for blocked send operations and wakes on direct token notification
 - `recv(channel)` currently returns `Result[value, RuntimeError]`
-- `recv(channel, token)` currently supports cooperative cancellation for blocked receive operations
+- `recv(channel, token)` currently supports cooperative cancellation for blocked receive operations and wakes on direct token notification
 - `cancel_token()` currently creates a cooperative cancellation token
 - `cancel(token)` currently marks the token as cancelled
 - `is_cancelled(token)` currently reports whether the token was cancelled
@@ -379,9 +379,9 @@ The bootstrap compiler in this repository currently supports:
 - each receive `select` arm currently must be written as either `recv(channel):`, `value = recv(channel):`, `recv(channel, token):`, or `value = recv(channel, token):`
 - each send `select` arm currently must be written as either `send(channel, value):`, `value = send(channel, value):`, `send(channel, value, token):`, or `value = send(channel, value, token):`
 - at most one `default:` arm is allowed in a single `select`
-- `select` currently prepares each send/receive operation once at select-entry and then polls those prepared operations until one resolves to either `Result.Ok(...)` or `Result.Err(...)`
+- `select` currently prepares each send/receive operation once at select-entry and then blocks on channel/token wakeups between polling passes until one resolves to either `Result.Ok(...)` or `Result.Err(...)`
 - `select` executes its `default:` arm immediately when no send/receive arm is ready during the current polling pass
-- `select` currently rotates its polling start arm in a deterministic round-robin baseline when multiple send/receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
+- `select` currently rotates its ready-arm start index in a deterministic round-robin baseline when multiple send/receive arms are already ready, but stronger scheduler-level fairness is still not guaranteed
 - `gof build --native` currently packages the bootstrap evaluator plus a deterministic embedded source bundle for the entry source, reachable same-directory imports, and manifest-backed local package imports
 - bootstrap-native executables currently preserve supported import and local package behavior independently of the binary launch working directory
 - channels currently expose an explicit capacity baseline only through `channel(capacity)`; richer buffering policies are still future work
