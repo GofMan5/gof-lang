@@ -155,6 +155,22 @@ gof test --update-snapshots path/to/project
 Так compile/runtime product fixtures теперь живут под тем же CLI entrypoint,
 что и language-level tests, вместо разъезда по отдельным одноразовым harness-скриптам.
 
+## JSON reporter
+
+`gof test --json` теперь выводит один machine-readable report в stdout со
+stable schema `gof.test.report/v1`.
+
+Сейчас этот report включает:
+
+- нормализованные input paths и активные CLI options
+- summary counts и общее wall-clock duration
+- per-target events для language tests, compile failures, doctests, fixtures и
+    package targets
+- стабильные ids, source paths, captured stdout/stderr и structured diagnostics
+
+Это дает CI, editor tooling и automation один и тот же честный контракт runner-а,
+вместо screen-scraping человекочитаемого вывода.
+
 ## Что еще не shipped
 
 Этот срез уже полезный, но сознательно далек от финальной платформы.
@@ -162,7 +178,7 @@ gof test --update-snapshots path/to/project
 Пока еще не shipped:
 
 - автоматический doctest для каждого обычного markdown-блока `gof`
-- JSON и JUnit reporters
+- JUnit reporter
 - property testing
 - fuzzing
 - concurrency stress

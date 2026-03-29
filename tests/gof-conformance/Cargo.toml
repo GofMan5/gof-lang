@@ -11,5 +11,6 @@ gof-compiler = { path = "../../compiler/gof-compiler" }
 [dev-dependencies]
 assert_cmd.workspace = true
 predicates.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 

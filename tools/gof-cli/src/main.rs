@@ -104,6 +104,8 @@ pub(crate) struct TestArgs {
     update_snapshots: bool,
     #[arg(long)]
     docs: bool,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Subcommand)]
@@ -364,24 +366,65 @@ fn resolve_package_test_input(input: &Path) -> Result<Option<PathBuf>> {
 }
 
 fn run_package_test(entry_path: &Path) -> Result<()> {
-    let source = SourceFile::from_path(entry_path)?;
-    let mode = compile_mode_for_entry_path(entry_path);
-    match mode {
-        CompileMode::Library => {
-            compile_source(&source, mode).map_err(|error| render_error(&source, error))?;
-        }
-        CompileMode::Executable => {
-            let result =
-                run_module_with_output(&source).map_err(|error| render_error(&source, error))?;
-            if !result.stdout.is_empty() {
-                print!("{}", result.stdout);
-            }
-            if let Some(rendered) = result.value.cli_text() {
-                println!("{rendered}");
-            }
-        }
+    let report = run_package_test_report(entry_path);
+    if !report.stdout.is_empty() {
+        print!("{}", report.stdout);
+    }
+    if let Some(error) = report.failure_message {
+        bail!(error);
     }
     Ok(())
+}
+
+pub(crate) fn run_package_test_report(entry_path: &Path) -> PackageTestReport {
+    let source = match SourceFile::from_path(entry_path) {
+        Ok(source) => source,
+        Err(error) => {
+            return PackageTestReport {
+                stdout: String::new(),
+                stderr: error.to_string(),
+                diagnostics: Vec::new(),
+                failure_message: Some(error.to_string()),
+            };
+        }
+    };
+    let mode = compile_mode_for_entry_path(entry_path);
+    match mode {
+        CompileMode::Library => match compile_source(&source, mode) {
+            Ok(_) => PackageTestReport {
+                stdout: String::new(),
+                stderr: String::new(),
+                diagnostics: Vec::new(),
+                failure_message: None,
+            },
+            Err(error) => {
+                let stderr = render_error(&source, error.clone()).to_string();
+                PackageTestReport {
+                    stdout: String::new(),
+                    stderr: stderr.clone(),
+                    diagnostics: diagnostics_to_json(&source, &error),
+                    failure_message: Some(stderr),
+                }
+            }
+        },
+        CompileMode::Executable => match run_module_with_output(&source) {
+            Ok(result) => PackageTestReport {
+                stdout: render_execution_stdout(&result),
+                stderr: String::new(),
+                diagnostics: Vec::new(),
+                failure_message: None,
+            },
+            Err(error) => {
+                let stderr = render_error(&source, error.clone()).to_string();
+                PackageTestReport {
+                    stdout: String::new(),
+                    stderr: stderr.clone(),
+                    diagnostics: diagnostics_to_json(&source, &error),
+                    failure_message: Some(stderr),
+                }
+            }
+        },
+    }
 }
 
 fn execute_run_target(target: &RunTarget, program_args: &[String]) -> Result<()> {
@@ -646,6 +689,22 @@ struct FixtureArtifacts {
     diag_codes: Vec<&'static str>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct FixtureRunReport {
+    pub stdout: String,
+    pub stderr: String,
+    pub diagnostics: Vec<serde_json::Value>,
+    pub failure_message: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PackageTestReport {
+    pub stdout: String,
+    pub stderr: String,
+    pub diagnostics: Vec<serde_json::Value>,
+    pub failure_message: Option<String>,
+}
+
 fn classify_fixture_harness(path: &Path) -> FixtureHarnessKind {
     let in_legacy_fixture_tree = path
         .components()
@@ -685,6 +744,14 @@ fn classify_fixture_harness(path: &Path) -> FixtureHarnessKind {
 }
 
 fn run_fixture(path: &Path, update_expected_artifacts: bool) -> Result<()> {
+    let report = run_fixture_report(path, update_expected_artifacts);
+    if let Some(error) = report.failure_message {
+        bail!(error);
+    }
+    Ok(())
+}
+
+pub(crate) fn run_fixture_report(path: &Path, update_expected_artifacts: bool) -> FixtureRunReport {
     let harness = classify_fixture_harness(path);
     if matches!(
         harness,
@@ -692,84 +759,215 @@ fn run_fixture(path: &Path, update_expected_artifacts: bool) -> Result<()> {
             | FixtureHarnessKind::RuntimePass
             | FixtureHarnessKind::RuntimeFail
     ) {
-        return run_product_fixture(path, harness, update_expected_artifacts);
+        return run_product_fixture_report(path, harness, update_expected_artifacts);
     }
 
-    let source = SourceFile::from_path(path)?;
-
-    match compile_source(&source, CompileMode::Executable) {
-        Ok(_) if harness == FixtureHarnessKind::LegacyCompileFail => {
-            bail!("expected fixture to fail during compilation")
-        }
-        Ok(_) if harness == FixtureHarnessKind::LegacyRuntimeFail => match run_module_with_output(&source) {
-            Ok(result) => bail!(
-                "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
-                result.stdout,
-                result.value.cli_text()
-            ),
-            Err(error) => validate_expected_diagnostics(path, &error, update_expected_artifacts),
-        },
-        Ok(_) => Ok(()),
-        Err(error) if harness == FixtureHarnessKind::LegacyCompileFail => {
-            validate_expected_diagnostics(path, &error, update_expected_artifacts)
-        }
-        Err(error) if harness == FixtureHarnessKind::LegacyRuntimeFail => Err(anyhow!(
-            "expected runtime failure, but compilation failed instead:\n{}",
-            render_error(&source, error)
-        )),
-        Err(error) => Err(render_error(&source, error)),
-    }
-}
-
-fn run_product_fixture(
-    path: &Path,
-    harness: FixtureHarnessKind,
-    update_expected_artifacts: bool,
-) -> Result<()> {
-    let source = SourceFile::from_path(path)?;
-    let actual = match harness {
-        FixtureHarnessKind::UiCompileFail => match compile_source(&source, CompileMode::Executable) {
-            Ok(_) => bail!("expected ui fixture to fail during compilation"),
-            Err(error) => FixtureArtifacts {
+    let source = match SourceFile::from_path(path) {
+        Ok(source) => source,
+        Err(error) => {
+            return FixtureRunReport {
                 stdout: String::new(),
-                stderr: render_fixture_diagnostics(path, &source, &error),
-                exit_code: 1,
-                diag_codes: error.codes(),
-            },
-        },
-        FixtureHarnessKind::RuntimePass => match run_module_with_output(&source) {
-            Ok(result) => FixtureArtifacts {
-                stdout: render_execution_stdout(&result),
-                stderr: String::new(),
-                exit_code: 0,
-                diag_codes: Vec::new(),
-            },
-            Err(error) => bail!(
-                "expected runtime fixture to succeed, but it failed instead:\n{}",
-                render_fixture_diagnostics(path, &source, &error)
-            ),
-        },
-        FixtureHarnessKind::RuntimeFail => match run_module_with_output(&source) {
-            Ok(result) => bail!(
-                "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
-                result.stdout,
-                result.value.cli_text()
-            ),
-            Err(error) => FixtureArtifacts {
-                stdout: String::new(),
-                stderr: render_fixture_diagnostics(path, &source, &error),
-                exit_code: 1,
-                diag_codes: error.codes(),
-            },
-        },
-        FixtureHarnessKind::LegacyPass
-        | FixtureHarnessKind::LegacyCompileFail
-        | FixtureHarnessKind::LegacyRuntimeFail => {
-            bail!("product fixture runner received a legacy fixture kind")
+                stderr: error.to_string(),
+                diagnostics: Vec::new(),
+                failure_message: Some(error.to_string()),
+            };
         }
     };
 
-    validate_product_fixture_artifacts(path, harness, &actual, update_expected_artifacts)
+    match compile_source(&source, CompileMode::Executable) {
+        Ok(_) if harness == FixtureHarnessKind::LegacyCompileFail => FixtureRunReport {
+            stdout: String::new(),
+            stderr: "expected fixture to fail during compilation".to_string(),
+            diagnostics: Vec::new(),
+            failure_message: Some("expected fixture to fail during compilation".to_string()),
+        },
+        Ok(_) if harness == FixtureHarnessKind::LegacyRuntimeFail => match run_module_with_output(&source) {
+            Ok(result) => {
+                let stdout = render_execution_stdout(&result);
+                let message = format!(
+                    "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
+                    result.stdout,
+                    result.value.cli_text()
+                );
+                FixtureRunReport {
+                    stdout,
+                    stderr: message.clone(),
+                    diagnostics: Vec::new(),
+                    failure_message: Some(message),
+                }
+            }
+            Err(error) => {
+                let stderr = render_fixture_diagnostics(path, &source, &error);
+                let failure_message = validate_expected_diagnostics(path, &error, update_expected_artifacts)
+                    .err()
+                    .map(|error| error.to_string());
+                FixtureRunReport {
+                    stdout: String::new(),
+                    stderr,
+                    diagnostics: diagnostics_to_json(&source, &error),
+                    failure_message,
+                }
+            }
+        },
+        Ok(_) => FixtureRunReport {
+            stdout: String::new(),
+            stderr: String::new(),
+            diagnostics: Vec::new(),
+            failure_message: None,
+        },
+        Err(error) if harness == FixtureHarnessKind::LegacyCompileFail => {
+            let stderr = render_fixture_diagnostics(path, &source, &error);
+            let failure_message = validate_expected_diagnostics(path, &error, update_expected_artifacts)
+                .err()
+                .map(|error| error.to_string());
+            FixtureRunReport {
+                stdout: String::new(),
+                stderr,
+                diagnostics: diagnostics_to_json(&source, &error),
+                failure_message,
+            }
+        }
+        Err(error) if harness == FixtureHarnessKind::LegacyRuntimeFail => {
+            let rendered = render_error(&source, error.clone()).to_string();
+            FixtureRunReport {
+                stdout: String::new(),
+                stderr: rendered.clone(),
+                diagnostics: diagnostics_to_json(&source, &error),
+                failure_message: Some(format!(
+                    "expected runtime failure, but compilation failed instead:\n{rendered}"
+                )),
+            }
+        }
+        Err(error) => {
+            let rendered = render_error(&source, error.clone()).to_string();
+            FixtureRunReport {
+                stdout: String::new(),
+                stderr: rendered.clone(),
+                diagnostics: diagnostics_to_json(&source, &error),
+                failure_message: Some(rendered),
+            }
+        }
+    }
+}
+
+fn run_product_fixture_report(
+    path: &Path,
+    harness: FixtureHarnessKind,
+    update_expected_artifacts: bool,
+) -> FixtureRunReport {
+    let source = match SourceFile::from_path(path) {
+        Ok(source) => source,
+        Err(error) => {
+            return FixtureRunReport {
+                stdout: String::new(),
+                stderr: error.to_string(),
+                diagnostics: Vec::new(),
+                failure_message: Some(error.to_string()),
+            };
+        }
+    };
+    let (actual, diagnostics, failure_message) = match harness {
+        FixtureHarnessKind::UiCompileFail => match compile_source(&source, CompileMode::Executable) {
+            Ok(_) => (
+                FixtureArtifacts {
+                    stdout: String::new(),
+                    stderr: "expected ui fixture to fail during compilation".to_string(),
+                    exit_code: 0,
+                    diag_codes: Vec::new(),
+                },
+                Vec::new(),
+                Some("expected ui fixture to fail during compilation".to_string()),
+            ),
+            Err(error) => (
+                FixtureArtifacts {
+                    stdout: String::new(),
+                    stderr: render_fixture_diagnostics(path, &source, &error),
+                    exit_code: 1,
+                    diag_codes: error.codes(),
+                },
+                diagnostics_to_json(&source, &error),
+                None,
+            ),
+        },
+        FixtureHarnessKind::RuntimePass => match run_module_with_output(&source) {
+            Ok(result) => (
+                FixtureArtifacts {
+                    stdout: render_execution_stdout(&result),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    diag_codes: Vec::new(),
+                },
+                Vec::new(),
+                None,
+            ),
+            Err(error) => {
+                let stderr = render_fixture_diagnostics(path, &source, &error);
+                (
+                    FixtureArtifacts {
+                        stdout: String::new(),
+                        stderr: stderr.clone(),
+                        exit_code: 1,
+                        diag_codes: error.codes(),
+                    },
+                    diagnostics_to_json(&source, &error),
+                    Some(format!(
+                        "expected runtime fixture to succeed, but it failed instead:\n{stderr}"
+                    )),
+                )
+            }
+        },
+        FixtureHarnessKind::RuntimeFail => match run_module_with_output(&source) {
+            Ok(result) => (
+                FixtureArtifacts {
+                    stdout: render_execution_stdout(&result),
+                    stderr: String::new(),
+                    exit_code: 0,
+                    diag_codes: Vec::new(),
+                },
+                Vec::new(),
+                Some(format!(
+                    "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
+                    result.stdout,
+                    result.value.cli_text()
+                )),
+            ),
+            Err(error) => (
+                FixtureArtifacts {
+                    stdout: String::new(),
+                    stderr: render_fixture_diagnostics(path, &source, &error),
+                    exit_code: 1,
+                    diag_codes: error.codes(),
+                },
+                diagnostics_to_json(&source, &error),
+                None,
+            ),
+        },
+        FixtureHarnessKind::LegacyPass
+        | FixtureHarnessKind::LegacyCompileFail
+        | FixtureHarnessKind::LegacyRuntimeFail => (
+            FixtureArtifacts {
+                stdout: String::new(),
+                stderr: "product fixture runner received a legacy fixture kind".to_string(),
+                exit_code: 1,
+                diag_codes: Vec::new(),
+            },
+            Vec::new(),
+            Some("product fixture runner received a legacy fixture kind".to_string()),
+        ),
+    };
+
+    let failure_message = failure_message.or_else(|| {
+        validate_product_fixture_artifacts(path, harness, &actual, update_expected_artifacts)
+            .err()
+            .map(|error| error.to_string())
+    });
+
+    FixtureRunReport {
+        stdout: actual.stdout,
+        stderr: actual.stderr,
+        diagnostics,
+        failure_message,
+    }
 }
 
 fn render_execution_stdout(result: &gof_compiler::ExecutionResult) -> String {

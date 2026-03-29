@@ -7,7 +7,7 @@ quality gates.
 
 ## Contract
 
-Delivered in slice 1:
+Delivered in shipped slices:
 
 - deterministic discovery for:
   - `*_test.gof`
@@ -20,6 +20,8 @@ Delivered in slice 1:
 - `--fail-fast`
 - `--nocapture`
 - `--update-snapshots`
+- `--docs`
+- `--json`
 - per-test stdout capture
 - deterministic display ids based on normalized source paths
 
@@ -29,8 +31,7 @@ Planned later:
 - `--shuffle`
 - `--seed`
 - `--timeout-ms`
-- `--format human|json|junit`
-- `--docs`
+- `--format human|junit`
 - `--stress`
 - `--include-ignored`
 - dedicated `gof fuzz`

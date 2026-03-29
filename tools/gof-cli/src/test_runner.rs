@@ -4,10 +4,12 @@ use gof_compiler::{
     TestRuntimeOptions, cleanup_test_module_fixtures_with_output, compile_source,
     normalize_source_path, run_module_with_output, run_test_function_with_output,
 };
+use serde_json::json;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::TestArgs;
 
@@ -17,6 +19,15 @@ struct LanguageTestFile {
     snapshot_group: PathBuf,
     test_names: Vec<String>,
     compile_error: Option<Diagnostics>,
+    compile_duration_ms: u64,
+}
+
+#[derive(Debug)]
+struct DiscoveredTargets {
+    language_files: Vec<LanguageTestFile>,
+    fixture_targets: Vec<PathBuf>,
+    package_targets: Vec<PathBuf>,
+    doctests: Vec<DocTestCase>,
 }
 
 #[derive(Debug, Default)]
@@ -26,6 +37,12 @@ struct RunSummary {
     skipped: usize,
     todo: usize,
     listed: usize,
+}
+
+impl RunSummary {
+    fn executed(&self) -> usize {
+        self.passed + self.failed + self.skipped + self.todo
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,61 +63,33 @@ struct DocTestCase {
     source: String,
 }
 
+#[derive(Debug, Clone)]
+struct DoctestRunReport {
+    stdout: String,
+    stderr: String,
+    diagnostics: Vec<serde_json::Value>,
+    failure_message: Option<String>,
+}
+
+#[derive(Debug, Default)]
+struct JsonTestReport {
+    summary: RunSummary,
+    failures: Vec<String>,
+    events: Vec<serde_json::Value>,
+    harness_error: Option<String>,
+    stopped_early: bool,
+}
+
 pub(crate) fn run(args: TestArgs) -> Result<()> {
-    let inputs = if args.paths.is_empty() {
-        vec![PathBuf::from(".")]
-    } else {
-        args.paths.clone()
-    };
-
-    let mut language_candidates = BTreeSet::new();
-    let mut fixture_targets = BTreeSet::new();
-    let mut package_targets = BTreeSet::new();
-    let mut doctest_candidates = BTreeSet::new();
-
-    for input in &inputs {
-        collect_targets(
-            input,
-            &mut language_candidates,
-            &mut fixture_targets,
-            &mut package_targets,
-        )?;
-        if args.docs {
-            collect_doctest_targets(input, &mut doctest_candidates)?;
-        }
+    if args.json {
+        return run_json(args);
     }
+    run_human(args)
+}
 
-    let mut language_files = language_candidates
-        .into_iter()
-        .map(discover_language_test_file)
-        .collect::<Result<Vec<_>>>()?;
-    language_files.sort_by(|left, right| left.source_path.cmp(&right.source_path));
-
-    let filtered_language_files = filter_language_tests(language_files, &args);
-    let filtered_fixture_targets =
-        filter_paths(fixture_targets.into_iter().collect(), &args, |path| {
-            display_id_for_path(path)
-        });
-    let filtered_package_targets =
-        filter_paths(package_targets.into_iter().collect(), &args, |path| {
-            display_id_for_path(path)
-        });
-    let filtered_doctests = filter_doctests(
-        doctest_candidates
-            .into_iter()
-            .map(discover_doctests_in_markdown)
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .flatten()
-            .collect(),
-        &args,
-    );
-
-    if filtered_language_files.is_empty()
-        && filtered_fixture_targets.is_empty()
-        && filtered_package_targets.is_empty()
-        && filtered_doctests.is_empty()
-    {
+fn run_human(args: TestArgs) -> Result<()> {
+    let discovered = discover_targets(&args)?;
+    if discovered_targets_is_empty(&discovered) {
         if args.list {
             return Ok(());
         }
@@ -108,6 +97,13 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
             "no language tests, fixtures, package targets, or doctests matched the provided filters"
         );
     }
+
+    let DiscoveredTargets {
+        language_files: filtered_language_files,
+        fixture_targets: filtered_fixture_targets,
+        package_targets: filtered_package_targets,
+        doctests: filtered_doctests,
+    } = discovered;
 
     let mut summary = RunSummary::default();
     let mut failures = Vec::new();
@@ -270,6 +266,748 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
     }
 }
 
+fn run_json(args: TestArgs) -> Result<()> {
+    let started = Instant::now();
+    let discovered = match discover_targets(&args) {
+        Ok(discovered) => discovered,
+        Err(error) => return emit_json_and_exit(&args, JsonTestReport {
+            harness_error: Some(error.to_string()),
+            ..JsonTestReport::default()
+        }, started, true),
+    };
+
+    if discovered_targets_is_empty(&discovered) {
+        let ok = args.list;
+        let harness_error = if ok {
+            None
+        } else {
+            Some(
+                "no language tests, fixtures, package targets, or doctests matched the provided filters"
+                    .to_string(),
+            )
+        };
+        return emit_json_and_exit(
+            &args,
+            JsonTestReport {
+                harness_error,
+                ..JsonTestReport::default()
+            },
+            started,
+            !ok,
+        );
+    }
+
+    let DiscoveredTargets {
+        language_files,
+        fixture_targets,
+        package_targets,
+        doctests,
+    } = discovered;
+    let mut report = JsonTestReport::default();
+
+    if args.list {
+        for file in language_files {
+            if file.compile_error.is_some() {
+                push_json_listed_event(
+                    &mut report,
+                    &format!("{}::<compile>", display_id_for_path(&file.source_path)),
+                    "language-compile",
+                    &file.source_path,
+                    None,
+                );
+                continue;
+            }
+            for test_name in &file.test_names {
+                push_json_listed_event(
+                    &mut report,
+                    &format!("{}::{test_name}", display_id_for_path(&file.source_path)),
+                    "language-test",
+                    &file.source_path,
+                    None,
+                );
+            }
+        }
+        for doctest in doctests {
+            push_json_listed_event(
+                &mut report,
+                &doctest_id(&doctest),
+                "doctest",
+                &doctest.markdown_path,
+                Some(doctest.line),
+            );
+        }
+        for path in fixture_targets {
+            push_json_listed_event(
+                &mut report,
+                &display_id_for_path(&path),
+                "fixture",
+                &path,
+                None,
+            );
+        }
+        for entry_path in package_targets {
+            push_json_listed_event(
+                &mut report,
+                &display_id_for_path(&entry_path),
+                "package",
+                &entry_path,
+                None,
+            );
+        }
+
+        return emit_json_and_exit(&args, report, started, false);
+    }
+
+    'language: for file in language_files {
+        if let Some(error) = &file.compile_error {
+            let source = match SourceFile::from_path(&file.source_path) {
+                Ok(source) => source,
+                Err(source_error) => {
+                    report.harness_error = Some(source_error.to_string());
+                    break;
+                }
+            };
+            push_json_language_compile_event(
+                &mut report,
+                &format!("{}::<compile>", display_id_for_path(&file.source_path)),
+                &source,
+                error,
+                file.compile_duration_ms,
+            );
+            if args.fail_fast {
+                report.stopped_early = true;
+                break;
+            }
+            continue;
+        }
+
+        let source = match SourceFile::from_path(&file.source_path) {
+            Ok(source) => source,
+            Err(error) => {
+                report.harness_error = Some(error.to_string());
+                break;
+            }
+        };
+        if let Err(error) = crate::ensure_package_lockfile(&file.source_path, "test") {
+            report.harness_error = Some(error.to_string());
+            break;
+        }
+        let compiled = match compile_source(&source, CompileMode::Library) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                report.harness_error = Some(crate::render_error(&source, error).to_string());
+                break;
+            }
+        };
+        let mut module_state = TestModuleState::default();
+
+        for test_name in &file.test_names {
+            let id = format!("{}::{test_name}", display_id_for_path(&file.source_path));
+            let started_test = Instant::now();
+            let result = match run_test_function_with_output(
+                &compiled.ast,
+                &compiled.typed_hir,
+                test_name,
+                TestRuntimeOptions {
+                    snapshot_root: snapshot_root_for_source(&file.source_path),
+                    snapshot_group: file.snapshot_group.clone(),
+                    update_snapshots: args.update_snapshots,
+                    program_args: Vec::new(),
+                },
+                &mut module_state,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    report.harness_error = Some(crate::render_error(&source, error).to_string());
+                    break 'language;
+                }
+            };
+            push_json_language_test_event(
+                &mut report,
+                &id,
+                &source,
+                started_test.elapsed().as_millis() as u64,
+                result,
+            );
+            if args.fail_fast && report.failures.last().is_some_and(|failure| failure == &id) {
+                report.stopped_early = true;
+                break 'language;
+            }
+        }
+
+        let cleanup_id = format!("{}::<cleanup>", display_id_for_path(&file.source_path));
+        let cleanup_started = Instant::now();
+        let cleanup_result = cleanup_test_module_fixtures_with_output(&compiled.ast, &mut module_state);
+        if cleanup_result.error.is_some() {
+            push_json_cleanup_event(
+                &mut report,
+                &cleanup_id,
+                &file.source_path,
+                cleanup_started.elapsed().as_millis() as u64,
+                cleanup_result,
+            );
+            if args.fail_fast {
+                report.stopped_early = true;
+                break;
+            }
+        }
+    }
+
+    if report.harness_error.is_none() && !report.stopped_early {
+        for doctest in doctests {
+            let id = doctest_id(&doctest);
+            let started_doctest = Instant::now();
+            let result = run_doctest_report(&doctest);
+            push_json_doctest_event(
+                &mut report,
+                &id,
+                &doctest,
+                started_doctest.elapsed().as_millis() as u64,
+                result,
+            );
+            if args.fail_fast && report.failures.last().is_some_and(|failure| failure == &id) {
+                report.stopped_early = true;
+                break;
+            }
+        }
+    }
+
+    if report.harness_error.is_none() && !report.stopped_early {
+        for path in fixture_targets {
+            let id = display_id_for_path(&path);
+            let started_fixture = Instant::now();
+            let result = crate::run_fixture_report(&path, args.update_snapshots);
+            push_json_fixture_event(
+                &mut report,
+                &id,
+                &path,
+                started_fixture.elapsed().as_millis() as u64,
+                result,
+            );
+            if args.fail_fast && report.failures.last().is_some_and(|failure| failure == &id) {
+                report.stopped_early = true;
+                break;
+            }
+        }
+    }
+
+    if report.harness_error.is_none() && !report.stopped_early {
+        for entry_path in package_targets {
+            if let Err(error) = crate::ensure_package_lockfile(&entry_path, "test") {
+                report.harness_error = Some(error.to_string());
+                break;
+            }
+            let id = display_id_for_path(&entry_path);
+            let started_package = Instant::now();
+            let result = crate::run_package_test_report(&entry_path);
+            push_json_package_event(
+                &mut report,
+                &id,
+                &entry_path,
+                started_package.elapsed().as_millis() as u64,
+                result,
+            );
+            if args.fail_fast && report.failures.last().is_some_and(|failure| failure == &id) {
+                report.stopped_early = true;
+                break;
+            }
+        }
+    }
+
+    let should_fail = report.harness_error.is_some() || !report.failures.is_empty();
+    emit_json_and_exit(&args, report, started, should_fail)
+}
+
+fn emit_json_and_exit(
+    args: &TestArgs,
+    report: JsonTestReport,
+    started: Instant,
+    should_fail: bool,
+) -> Result<()> {
+    emit_json_test_report(args, &report, started.elapsed().as_millis() as u64)?;
+    if should_fail {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn emit_json_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: u64) -> Result<()> {
+    let inputs = if args.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        args.paths.clone()
+    };
+    let input_ids = inputs
+        .into_iter()
+        .map(|path| display_id_for_path(&path))
+        .collect::<Vec<_>>();
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "schema": "gof.test.report/v1",
+            "ok": report.harness_error.is_none() && report.failures.is_empty(),
+            "inputs": input_ids,
+            "options": {
+                "filter": args.filter.clone(),
+                "exact": args.exact,
+                "list": args.list,
+                "failFast": args.fail_fast,
+                "noCapture": args.nocapture,
+                "updateSnapshots": args.update_snapshots,
+                "docs": args.docs
+            },
+            "summary": {
+                "executed": report.summary.executed(),
+                "passed": report.summary.passed,
+                "failed": report.summary.failed,
+                "skipped": report.summary.skipped,
+                "todo": report.summary.todo,
+                "listed": report.summary.listed,
+                "durationMs": duration_ms
+            },
+            "stoppedEarly": report.stopped_early,
+            "harnessError": report.harness_error.clone(),
+            "failures": report.failures.clone(),
+            "events": report.events.clone()
+        }))?
+    );
+    Ok(())
+}
+
+fn discover_targets(args: &TestArgs) -> Result<DiscoveredTargets> {
+    let inputs = if args.paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        args.paths.clone()
+    };
+
+    let mut language_candidates = BTreeSet::new();
+    let mut fixture_targets = BTreeSet::new();
+    let mut package_targets = BTreeSet::new();
+    let mut doctest_candidates = BTreeSet::new();
+
+    for input in &inputs {
+        collect_targets(
+            input,
+            &mut language_candidates,
+            &mut fixture_targets,
+            &mut package_targets,
+        )?;
+        if args.docs {
+            collect_doctest_targets(input, &mut doctest_candidates)?;
+        }
+    }
+
+    let mut language_files = language_candidates
+        .into_iter()
+        .map(discover_language_test_file)
+        .collect::<Result<Vec<_>>>()?;
+    language_files.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+
+    Ok(DiscoveredTargets {
+        language_files: filter_language_tests(language_files, args),
+        fixture_targets: filter_paths(fixture_targets.into_iter().collect(), args, |path| {
+            display_id_for_path(path)
+        }),
+        package_targets: filter_paths(package_targets.into_iter().collect(), args, |path| {
+            display_id_for_path(path)
+        }),
+        doctests: filter_doctests(
+            doctest_candidates
+                .into_iter()
+                .map(discover_doctests_in_markdown)
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect(),
+            args,
+        ),
+    })
+}
+
+fn discovered_targets_is_empty(discovered: &DiscoveredTargets) -> bool {
+    discovered.language_files.is_empty()
+        && discovered.fixture_targets.is_empty()
+        && discovered.package_targets.is_empty()
+        && discovered.doctests.is_empty()
+}
+
+fn build_json_event(
+    id: &str,
+    kind: &str,
+    status: &str,
+    source_path: &Path,
+    line: Option<usize>,
+    duration_ms: u64,
+    stdout: String,
+    stderr: String,
+    message: Option<String>,
+    diagnostics: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    json!({
+        "id": id,
+        "kind": kind,
+        "status": status,
+        "sourcePath": display_id_for_path(source_path),
+        "line": line,
+        "durationMs": duration_ms,
+        "stdout": stdout,
+        "stderr": stderr,
+        "message": message,
+        "diagnostics": diagnostics
+    })
+}
+
+fn push_json_listed_event(
+    report: &mut JsonTestReport,
+    id: &str,
+    kind: &str,
+    source_path: &Path,
+    line: Option<usize>,
+) {
+    report.summary.listed += 1;
+    report.events.push(build_json_event(
+        id,
+        kind,
+        "listed",
+        source_path,
+        line,
+        0,
+        String::new(),
+        String::new(),
+        None,
+        Vec::new(),
+    ));
+}
+
+fn push_json_language_compile_event(
+    report: &mut JsonTestReport,
+    id: &str,
+    source: &SourceFile,
+    diagnostics: &Diagnostics,
+    duration_ms: u64,
+) {
+    report.summary.failed += 1;
+    report.failures.push(id.to_string());
+    report.events.push(build_json_event(
+        id,
+        "language-compile",
+        "failed",
+        source.path(),
+        None,
+        duration_ms,
+        String::new(),
+        diagnostics.render(source),
+        Some(diagnostics.to_string()),
+        crate::diagnostics_to_json(source, diagnostics),
+    ));
+}
+
+fn push_json_language_test_event(
+    report: &mut JsonTestReport,
+    id: &str,
+    source: &SourceFile,
+    duration_ms: u64,
+    result: gof_compiler::TestExecutionResult,
+) {
+    let mut status = "passed";
+    let stdout = result.stdout.clone();
+    let mut stderr = String::new();
+    let mut message = None;
+    let mut diagnostics = Vec::new();
+
+    if let Some(cleanup_error) = result.cleanup_error {
+        report.summary.failed += 1;
+        report.failures.push(id.to_string());
+        status = "failed";
+        match result.outcome {
+            TestExecutionOutcome::Passed => {}
+            TestExecutionOutcome::Skipped(skip_message) => {
+                stderr.push_str(&format!(
+                    "note: test requested skip before teardown: {skip_message}"
+                ));
+            }
+            TestExecutionOutcome::Todo(todo_message) => {
+                stderr.push_str(&format!(
+                    "note: test was marked todo before teardown: {todo_message}"
+                ));
+            }
+            TestExecutionOutcome::Failed(failure_message) => {
+                stderr.push_str(&failure_message);
+            }
+            TestExecutionOutcome::FailedDiagnostics(failed_diagnostics) => {
+                diagnostics = crate::diagnostics_to_json(source, &failed_diagnostics);
+                stderr.push_str(&failed_diagnostics.render(source));
+            }
+        }
+        if !stderr.is_empty() {
+            stderr.push('\n');
+        }
+        stderr.push_str(&cleanup_error);
+        message = Some(cleanup_error);
+    } else {
+        match result.outcome {
+            TestExecutionOutcome::Passed => {
+                report.summary.passed += 1;
+            }
+            TestExecutionOutcome::Skipped(skip_message) => {
+                report.summary.skipped += 1;
+                status = "skipped";
+                message = Some(skip_message);
+            }
+            TestExecutionOutcome::Todo(todo_message) => {
+                report.summary.todo += 1;
+                status = "todo";
+                message = Some(todo_message);
+            }
+            TestExecutionOutcome::Failed(failure_message) => {
+                report.summary.failed += 1;
+                report.failures.push(id.to_string());
+                status = "failed";
+                stderr = failure_message.clone();
+                message = Some(failure_message);
+            }
+            TestExecutionOutcome::FailedDiagnostics(failed_diagnostics) => {
+                report.summary.failed += 1;
+                report.failures.push(id.to_string());
+                status = "failed";
+                stderr = failed_diagnostics.render(source);
+                diagnostics = crate::diagnostics_to_json(source, &failed_diagnostics);
+                message = Some(failed_diagnostics.to_string());
+            }
+        }
+    }
+
+    report.events.push(build_json_event(
+        id,
+        "language-test",
+        status,
+        source.path(),
+        None,
+        duration_ms,
+        stdout,
+        stderr,
+        message,
+        diagnostics,
+    ));
+}
+
+fn push_json_cleanup_event(
+    report: &mut JsonTestReport,
+    id: &str,
+    source_path: &Path,
+    duration_ms: u64,
+    result: gof_compiler::FixtureCleanupResult,
+) {
+    let Some(error) = result.error else {
+        return;
+    };
+    report.summary.failed += 1;
+    report.failures.push(id.to_string());
+    report.events.push(build_json_event(
+        id,
+        "module-cleanup",
+        "failed",
+        source_path,
+        None,
+        duration_ms,
+        result.stdout,
+        error.clone(),
+        Some(error),
+        Vec::new(),
+    ));
+}
+
+fn push_json_doctest_event(
+    report: &mut JsonTestReport,
+    id: &str,
+    doctest: &DocTestCase,
+    duration_ms: u64,
+    result: DoctestRunReport,
+) {
+    let status = if result.failure_message.is_some() {
+        report.summary.failed += 1;
+        report.failures.push(id.to_string());
+        "failed"
+    } else {
+        report.summary.passed += 1;
+        "passed"
+    };
+    report.events.push(build_json_event(
+        id,
+        "doctest",
+        status,
+        &doctest.markdown_path,
+        Some(doctest.line),
+        duration_ms,
+        result.stdout,
+        result.stderr,
+        result.failure_message,
+        result.diagnostics,
+    ));
+}
+
+fn push_json_fixture_event(
+    report: &mut JsonTestReport,
+    id: &str,
+    path: &Path,
+    duration_ms: u64,
+    result: crate::FixtureRunReport,
+) {
+    let status = if result.failure_message.is_some() {
+        report.summary.failed += 1;
+        report.failures.push(id.to_string());
+        "failed"
+    } else {
+        report.summary.passed += 1;
+        "passed"
+    };
+    report.events.push(build_json_event(
+        id,
+        "fixture",
+        status,
+        path,
+        None,
+        duration_ms,
+        result.stdout,
+        result.stderr,
+        result.failure_message,
+        result.diagnostics,
+    ));
+}
+
+fn push_json_package_event(
+    report: &mut JsonTestReport,
+    id: &str,
+    entry_path: &Path,
+    duration_ms: u64,
+    result: crate::PackageTestReport,
+) {
+    let status = if result.failure_message.is_some() {
+        report.summary.failed += 1;
+        report.failures.push(id.to_string());
+        "failed"
+    } else {
+        report.summary.passed += 1;
+        "passed"
+    };
+    report.events.push(build_json_event(
+        id,
+        "package",
+        status,
+        entry_path,
+        None,
+        duration_ms,
+        result.stdout,
+        result.stderr,
+        result.failure_message,
+        result.diagnostics,
+    ));
+}
+
+fn run_doctest_report(doctest: &DocTestCase) -> DoctestRunReport {
+    let source = SourceFile::new(&doctest.synthetic_source_path, &doctest.source);
+    let compile_mode = compile_mode_for_doctest(doctest);
+    match doctest.mode {
+        DocTestMode::CompileFail => match compile_source(&source, compile_mode) {
+            Ok(_) => DoctestRunReport {
+                stdout: String::new(),
+                stderr: format!(
+                    "expected doctest compile failure at {}:{} but compilation succeeded",
+                    display_id_for_path(&doctest.markdown_path),
+                    doctest.line
+                ),
+                diagnostics: Vec::new(),
+                failure_message: Some(format!(
+                    "expected doctest compile failure at {}:{} but compilation succeeded",
+                    display_id_for_path(&doctest.markdown_path),
+                    doctest.line
+                )),
+            },
+            Err(error) => DoctestRunReport {
+                stdout: String::new(),
+                stderr: error.render(&source),
+                diagnostics: crate::diagnostics_to_json(&source, &error),
+                failure_message: None,
+            },
+        },
+        DocTestMode::NoRun => match compile_source(&source, compile_mode) {
+            Ok(_) => DoctestRunReport {
+                stdout: String::new(),
+                stderr: String::new(),
+                diagnostics: Vec::new(),
+                failure_message: None,
+            },
+            Err(error) => {
+                let stderr = format!(
+                    "doctest compile failed at {}:{}\n{}",
+                    display_id_for_path(&doctest.markdown_path),
+                    doctest.line,
+                    error.render(&source)
+                );
+                DoctestRunReport {
+                    stdout: String::new(),
+                    stderr,
+                    diagnostics: crate::diagnostics_to_json(&source, &error),
+                    failure_message: Some(format!(
+                        "doctest compile failed at {}:{}",
+                        display_id_for_path(&doctest.markdown_path),
+                        doctest.line
+                    )),
+                }
+            }
+        },
+        DocTestMode::Run => match run_module_with_output(&source) {
+            Ok(result) => DoctestRunReport {
+                stdout: crate::render_execution_stdout(&result),
+                stderr: String::new(),
+                diagnostics: Vec::new(),
+                failure_message: None,
+            },
+            Err(error) => {
+                let stderr = format!(
+                    "doctest execution failed at {}:{}\n{}",
+                    display_id_for_path(&doctest.markdown_path),
+                    doctest.line,
+                    error.render(&source)
+                );
+                DoctestRunReport {
+                    stdout: String::new(),
+                    stderr,
+                    diagnostics: crate::diagnostics_to_json(&source, &error),
+                    failure_message: Some(format!(
+                        "doctest execution failed at {}:{}",
+                        display_id_for_path(&doctest.markdown_path),
+                        doctest.line
+                    )),
+                }
+            }
+        },
+        DocTestMode::RuntimeFail => match run_module_with_output(&source) {
+            Ok(result) => DoctestRunReport {
+                stdout: crate::render_execution_stdout(&result),
+                stderr: format!(
+                    "expected doctest runtime failure at {}:{} but execution succeeded",
+                    display_id_for_path(&doctest.markdown_path),
+                    doctest.line
+                ),
+                diagnostics: Vec::new(),
+                failure_message: Some(format!(
+                    "expected doctest runtime failure at {}:{} but execution succeeded",
+                    display_id_for_path(&doctest.markdown_path),
+                    doctest.line
+                )),
+            },
+            Err(error) => DoctestRunReport {
+                stdout: String::new(),
+                stderr: error.render(&source),
+                diagnostics: crate::diagnostics_to_json(&source, &error),
+                failure_message: None,
+            },
+        },
+    }
+}
+
 fn report_language_test_result(
     id: &str,
     source: &SourceFile,
@@ -387,6 +1125,7 @@ fn discover_language_test_file(path: PathBuf) -> Result<LanguageTestFile> {
     crate::ensure_package_lockfile(&path, "test")?;
     let source = SourceFile::from_path(&path)?;
     let snapshot_group = snapshot_group_for_source(&path);
+    let started = Instant::now();
     match compile_source(&source, CompileMode::Library) {
         Ok(compiled) => {
             let mut test_names = compiled
@@ -405,6 +1144,7 @@ fn discover_language_test_file(path: PathBuf) -> Result<LanguageTestFile> {
                 snapshot_group,
                 test_names,
                 compile_error: None,
+                compile_duration_ms: started.elapsed().as_millis() as u64,
             })
         }
         Err(error) => Ok(LanguageTestFile {
@@ -412,6 +1152,7 @@ fn discover_language_test_file(path: PathBuf) -> Result<LanguageTestFile> {
             snapshot_group,
             test_names: vec!["<compile>".to_string()],
             compile_error: Some(error),
+            compile_duration_ms: started.elapsed().as_millis() as u64,
         }),
     }
 }
@@ -810,46 +1551,11 @@ fn doctest_id(doctest: &DocTestCase) -> String {
 }
 
 fn run_doctest(doctest: &DocTestCase) -> Result<()> {
-    let source = SourceFile::new(&doctest.synthetic_source_path, &doctest.source);
-    let compile_mode = compile_mode_for_doctest(doctest);
-    match doctest.mode {
-        DocTestMode::CompileFail => match compile_source(&source, compile_mode) {
-            Ok(_) => bail!(
-                "expected doctest compile failure at {}:{} but compilation succeeded",
-                display_id_for_path(&doctest.markdown_path),
-                doctest.line
-            ),
-            Err(_) => Ok(()),
-        },
-        DocTestMode::NoRun => compile_source(&source, compile_mode)
-            .map(|_| ())
-            .map_err(|error| {
-                anyhow!(
-                    "doctest compile failed at {}:{}\n{}",
-                    display_id_for_path(&doctest.markdown_path),
-                    doctest.line,
-                    error.render(&source)
-                )
-            }),
-        DocTestMode::Run => run_module_with_output(&source)
-            .map(|_| ())
-            .map_err(|error| {
-                anyhow!(
-                    "doctest execution failed at {}:{}\n{}",
-                    display_id_for_path(&doctest.markdown_path),
-                    doctest.line,
-                    error.render(&source)
-                )
-            }),
-        DocTestMode::RuntimeFail => match run_module_with_output(&source) {
-            Ok(_) => bail!(
-                "expected doctest runtime failure at {}:{} but execution succeeded",
-                display_id_for_path(&doctest.markdown_path),
-                doctest.line
-            ),
-            Err(_) => Ok(()),
-        },
+    let report = run_doctest_report(doctest);
+    if let Some(error) = report.failure_message {
+        bail!(error);
     }
+    Ok(())
 }
 
 fn compile_mode_for_doctest(doctest: &DocTestCase) -> CompileMode {

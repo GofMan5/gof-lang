@@ -171,6 +171,10 @@ fn normalize_path_for_assert(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+fn parse_stdout_json(output: &[u8]) -> serde_json::Value {
+    serde_json::from_slice(output).expect("stdout should contain valid JSON")
+}
+
 fn expected_http_request_len(bytes: &[u8]) -> Option<usize> {
     let header_end = bytes
         .windows(4)
@@ -1673,6 +1677,43 @@ fn gof_test_executes_manifest_backed_executable_targets_honestly() {
 }
 
 #[test]
+fn gof_test_json_reports_package_target_diagnostics() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_runtime_fail_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--json")
+        .arg(&package_root)
+        .assert()
+        .failure();
+
+    let report = parse_stdout_json(&assert.get_output().stdout);
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["summary"]["failed"], 1);
+
+    let package_event = report["events"]
+        .as_array()
+        .and_then(|events| events.iter().find(|event| event["kind"] == "package"))
+        .expect("package event should exist");
+    assert_eq!(package_event["status"], "failed");
+    assert!(package_event["sourcePath"]
+        .as_str()
+        .map(|path| path.contains("src/main.gof"))
+        == Some(true));
+    assert!(package_event["diagnostics"]
+        .as_array()
+        .map(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "GOF3068"))
+        == Some(true));
+}
+
+#[test]
 fn gof_test_compile_checks_library_package_targets_without_execution() {
     let temp = tempdir().expect("tempdir should exist");
     let package_root = write_library_package(temp.path());
@@ -2034,6 +2075,66 @@ fn gof_test_reports_skip_and_todo_statuses() {
 }
 
 #[test]
+fn gof_test_json_reports_language_statuses_and_compile_failures() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    fs::create_dir_all(&tests_root).expect("tests root should exist");
+    fs::write(
+        tests_root.join("status_test.gof"),
+        "import testing\n\ntest fn passing_case(t: TestContext):\n    print(\"alpha\")\n    t.true(true, \"expected passing case\")\n\ntest fn skipped_case(t: TestContext):\n    t.skip(\"waiting for network\")\n\ntest fn todo_case(t: TestContext):\n    t.todo(\"pending assertions\")\n",
+    )
+    .expect("status test file should exist");
+    fs::write(
+        tests_root.join("broken_test.gof"),
+        "test fn broken_case(repo):\n    return 0\n",
+    )
+    .expect("broken test file should exist");
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--json")
+        .arg(temp.path())
+        .assert()
+        .failure();
+
+    let report = parse_stdout_json(&assert.get_output().stdout);
+    assert_eq!(report["schema"], "gof.test.report/v1");
+    assert_eq!(report["ok"], false);
+    assert_eq!(report["summary"]["passed"], 1);
+    assert_eq!(report["summary"]["failed"], 1);
+    assert_eq!(report["summary"]["skipped"], 1);
+    assert_eq!(report["summary"]["todo"], 1);
+
+    let events = report["events"]
+        .as_array()
+        .expect("events should be an array");
+    assert!(events.iter().any(|event| {
+        event["kind"] == "language-test"
+            && event["status"] == "passed"
+            && event["id"].as_str().map(|id| id.contains("passing_case")) == Some(true)
+            && event["stdout"] == "alpha\n"
+    }));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "language-test"
+            && event["status"] == "skipped"
+            && event["message"] == "waiting for network"
+    }));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "language-test"
+            && event["status"] == "todo"
+            && event["message"] == "pending assertions"
+    }));
+    assert!(events.iter().any(|event| {
+        event["kind"] == "language-compile"
+            && event["status"] == "failed"
+            && event["diagnostics"]
+                .as_array()
+                .map(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "GOF3113"))
+                == Some(true)
+    }));
+}
+
+#[test]
 fn gof_test_resolves_typed_fixtures_and_reuses_module_scope() {
     let temp = tempdir().expect("tempdir should exist");
     let tests_root = temp.path().join("tests");
@@ -2183,6 +2284,61 @@ fn gof_test_runs_opt_in_doctests() {
         .stdout(predicate::str::contains(
             "4 passed; 0 failed; 0 skipped; 0 todo",
         ));
+}
+
+#[test]
+fn gof_test_json_reports_doctests_and_product_fixtures() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    let ui_root = tests_root.join("ui");
+    fs::create_dir_all(&ui_root).expect("ui root should exist");
+    fs::write(
+        temp.path().join("README.md"),
+        "# Sample\n\n```gof doctest\nfn main() -> int:\n    return 7\n```\n",
+    )
+    .expect("README should exist");
+    fs::write(
+        ui_root.join("type_mismatch.gof"),
+        "fn main() -> int:\n    return \"oops\"\n",
+    )
+    .expect("ui fixture should exist");
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--json")
+        .arg("--docs")
+        .arg("--update-snapshots")
+        .arg(temp.path())
+        .assert()
+        .success();
+
+    let report = parse_stdout_json(&assert.get_output().stdout);
+    assert_eq!(report["ok"], true);
+    assert_eq!(report["summary"]["passed"], 2);
+
+    let events = report["events"]
+        .as_array()
+        .expect("events should be an array");
+    let doctest_event = events
+        .iter()
+        .find(|event| event["kind"] == "doctest")
+        .expect("doctest event should exist");
+    assert_eq!(doctest_event["status"], "passed");
+    assert_eq!(doctest_event["stdout"], "7\n");
+
+    let fixture_event = events
+        .iter()
+        .find(|event| event["kind"] == "fixture")
+        .expect("fixture event should exist");
+    assert_eq!(fixture_event["status"], "passed");
+    assert!(fixture_event["stderr"]
+        .as_str()
+        .map(|stderr| stderr.contains("tests/ui/type_mismatch.gof"))
+        == Some(true));
+    assert!(fixture_event["diagnostics"]
+        .as_array()
+        .map(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "GOF3013"))
+        == Some(true));
 }
 
 #[test]

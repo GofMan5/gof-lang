@@ -154,6 +154,22 @@ gof test --update-snapshots path/to/project
 That keeps compile/runtime product fixtures under the same CLI entrypoint as
 language-level tests instead of splitting the contract across ad hoc scripts.
 
+## JSON reporter
+
+`gof test --json` now emits one machine-readable report to stdout with stable
+schema `gof.test.report/v1`.
+
+The report currently includes:
+
+- the normalized input paths and active CLI options
+- summary counts plus total wall-clock duration
+- per-target events for language tests, compile failures, doctests, fixtures,
+  and package targets
+- stable ids, source paths, captured stdout/stderr, and structured diagnostics
+
+That lets CI, editor tooling, and other automation consume the same honest test
+runner contract instead of screen-scraping the human output.
+
 ## Current limits
 
 This slice is intentionally narrower than the final testing platform.
@@ -161,7 +177,7 @@ This slice is intentionally narrower than the final testing platform.
 Not shipped yet:
 
 - default doctest execution for every plain `gof` markdown fence
-- JSON and JUnit reporters
+- JUnit reporter
 - property testing
 - fuzzing
 - concurrency stress

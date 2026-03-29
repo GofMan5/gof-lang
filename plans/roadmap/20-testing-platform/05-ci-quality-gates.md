@@ -7,11 +7,16 @@ local runs to CI, IDE tooling, and release criteria.
 
 ## Contract
 
-Planned deliverables:
+Delivered in this slice:
 
-- JSON reporter
+- JSON reporter through `gof test --json`
+- stable machine-readable report schema `gof.test.report/v1`
+- summary counts, per-target events, captured stdout/stderr, and structured
+  diagnostics in one stdout payload
+
+Planned remaining deliverables:
+
 - JUnit reporter
-- stable machine-readable summaries
 - dedicated exit codes for test failures vs harness failures
 - CI wiring for snapshots, UI/runtime fixtures, property/fuzz/stress, and
   benchmarks
