@@ -225,3 +225,14 @@ stable schema `gof.test.report/v1`.
 
 Это позволяет честно проверять runnable примеры, не делая вид, что каждый
 старый учебный фрагмент уже автоматически готов к doctest execution.
+
+Когда `gof test --docs` запускается на корне репозитория, repo-wide discovery
+теперь ограничен canonical teaching sources:
+
+- `README.md`
+- `docs/book/src/**/*.md`
+- `docs/book-ru/src/**/*.md`
+
+Это держит покрытие репозиторной документации сфокусированным на source of
+truth, а не затягивает в CI случайные article drafts или временные markdown
+файлы.

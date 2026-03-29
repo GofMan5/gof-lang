@@ -225,3 +225,13 @@ Those items are tracked in:
 
 That keeps the current books honest without pretending every old teaching
 fragment is already safe to run as a doctest.
+
+When `gof test --docs` targets the repository root, repo-wide markdown
+discovery is now scoped to the canonical teaching sources:
+
+- `README.md`
+- `docs/book/src/**/*.md`
+- `docs/book-ru/src/**/*.md`
+
+That keeps repository docs coverage focused on the sources of truth instead of
+accidentally sweeping arbitrary article drafts or scratch markdown into CI.

@@ -7,7 +7,7 @@ predictable harness.
 
 ## Contract
 
-Delivered in slice 1:
+Delivered in shipped slices:
 
 - deterministic snapshots under `tests/snapshots/`
 - explicit update flow via `--update-snapshots`
@@ -18,13 +18,13 @@ Delivered in slice 1:
 - fixture cleanup hooks through receiver method `cleanup() -> unit | Result[unit, RuntimeError]`
 - unified `tests/ui`, `tests/runtime`, and `tests/runtime-fail` product contract under `gof test`
 - explicit update flow for `.diag`, `.stdout`, `.stderr`, and `.exit` artifacts
+- canonical repo-doc extraction for `README.md`, `docs/book/src/**/*.md`, and
+  `docs/book-ru/src/**/*.md` when `gof test --docs` targets the repository root
 
 Planned next:
 
-- doctest extraction from:
-  - `README.md`
-  - `docs/book/**/*.md`
-  - `docs/book-ru/**/*.md`
+- default doctest behavior for plain ` ```gof ` fences where the examples are
+  intended to become executable contracts instead of prose-only snippets
 
 ## Non-goals
 

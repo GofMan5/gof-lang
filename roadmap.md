@@ -307,7 +307,7 @@ Hard sequencing rule:
 ### M8. Reliability, Tooling, and Production Discipline
 
 - `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery
-- `[x]` opt-in markdown doctest baseline through `gof test --docs`
+- `[x]` opt-in markdown doctest baseline through `gof test --docs`, plus canonical repo-doc discovery for `README.md` and the mdBook sources
 - `[~]` typed fixtures through `fixture(test|module) fn`, DAG-backed injection, runtime caching, cleanup hooks, artifact-backed product fixtures under `tests/ui|runtime`, plus shipped `gof test --json` / `--junit` reporters and dedicated failure vs harness exit codes
 - `[ ]` richer diagnostics coverage
 - `[ ]` fuzzing for parser, resolver, and type layer
@@ -316,7 +316,7 @@ Hard sequencing rule:
 - `[ ]` observability and debuggability improvements
 - Checkpoints:
 - `[x]` CP-M8-0: hybrid testing platform slice 1
-- `[~]` CP-M8-1: typed fixtures, cleanup hooks, doctests, product fixtures, shipped JSON/JUnit reporter slices, and dedicated test exit codes
+- `[~]` CP-M8-1: typed fixtures, cleanup hooks, canonical repo-doc doctest discovery, product fixtures, shipped JSON/JUnit reporter slices, and dedicated test exit codes
 - `[ ]` CP-M8-2: property, fuzz, stress, and benchmark integration
 - Exit criteria:
 - production engineering quality is visible in tooling, not just language design

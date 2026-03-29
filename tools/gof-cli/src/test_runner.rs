@@ -1565,11 +1565,39 @@ fn collect_doctest_targets(input: &Path, doctest_candidates: &mut BTreeSet<PathB
     }
 
     if input.is_dir() {
+        if collect_repository_doctest_targets(input, doctest_candidates)? {
+            return Ok(());
+        }
         collect_doctest_dir_targets(input, doctest_candidates)?;
         return Ok(());
     }
 
     bail!("doctest target does not exist: {}", input.display());
+}
+
+fn collect_repository_doctest_targets(
+    root: &Path,
+    doctest_candidates: &mut BTreeSet<PathBuf>,
+) -> Result<bool> {
+    let readme_path = root.join("README.md");
+    let book_src = root.join("docs").join("book").join("src");
+    let book_ru_src = root.join("docs").join("book-ru").join("src");
+    let has_book_docs = book_src.is_dir() || book_ru_src.is_dir();
+    if !has_book_docs {
+        return Ok(false);
+    }
+
+    if readme_path.is_file() {
+        doctest_candidates.insert(normalize_source_path(&readme_path));
+    }
+    if book_src.is_dir() {
+        collect_doctest_dir_targets(&book_src, doctest_candidates)?;
+    }
+    if book_ru_src.is_dir() {
+        collect_doctest_dir_targets(&book_ru_src, doctest_candidates)?;
+    }
+
+    Ok(true)
 }
 
 fn collect_dir_targets(

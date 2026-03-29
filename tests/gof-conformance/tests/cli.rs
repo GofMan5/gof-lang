@@ -2582,6 +2582,107 @@ fn gof_test_lists_opt_in_doctests() {
 }
 
 #[test]
+fn gof_test_repo_root_docs_list_only_canonical_docs() {
+    let temp = tempdir().expect("tempdir should exist");
+    let book_src = temp.path().join("docs").join("book").join("src");
+    let book_ru_src = temp.path().join("docs").join("book-ru").join("src");
+    let articles_root = temp.path().join("docs").join("articles");
+    fs::create_dir_all(&book_src).expect("book src should exist");
+    fs::create_dir_all(&book_ru_src).expect("book-ru src should exist");
+    fs::create_dir_all(&articles_root).expect("articles root should exist");
+
+    fs::write(
+        temp.path().join("README.md"),
+        "# Root\n\n```gof doctest\nfn main() -> int:\n    return 1\n```\n",
+    )
+    .expect("README should exist");
+    fs::write(
+        book_src.join("chapter.md"),
+        "# Chapter\n\n```gof doctest\nfn main() -> int:\n    return 2\n```\n",
+    )
+    .expect("book chapter should exist");
+    fs::write(
+        book_ru_src.join("chapter.md"),
+        "# Глава\n\n```gof doctest\nfn main() -> int:\n    return 3\n```\n",
+    )
+    .expect("book-ru chapter should exist");
+    fs::write(
+        articles_root.join("ignored.md"),
+        "# Article\n\n```gof doctest\nfn main() -> int:\n    return 4\n```\n",
+    )
+    .expect("article should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 5\n```\n",
+    )
+    .expect("guide should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("README.md:4::doctest#1"))
+        .stdout(predicate::str::contains("docs/book/src/chapter.md:4::doctest#1"))
+        .stdout(predicate::str::contains("docs/book-ru/src/chapter.md:4::doctest#1"))
+        .stdout(predicate::str::contains("docs/articles/ignored.md").not())
+        .stdout(predicate::str::contains("guide.md:4::doctest#1").not())
+        .stdout(predicate::str::contains("listed 3"));
+}
+
+#[test]
+fn gof_test_repo_root_docs_executes_canonical_docs_only() {
+    let temp = tempdir().expect("tempdir should exist");
+    let book_src = temp.path().join("docs").join("book").join("src");
+    let book_ru_src = temp.path().join("docs").join("book-ru").join("src");
+    let articles_root = temp.path().join("docs").join("articles");
+    fs::create_dir_all(&book_src).expect("book src should exist");
+    fs::create_dir_all(&book_ru_src).expect("book-ru src should exist");
+    fs::create_dir_all(&articles_root).expect("articles root should exist");
+
+    fs::write(
+        temp.path().join("README.md"),
+        "# Root\n\n```gof doctest\nfn main() -> int:\n    return 1\n```\n",
+    )
+    .expect("README should exist");
+    fs::write(
+        book_src.join("chapter.md"),
+        "# Chapter\n\n```gof doctest\nfn main() -> int:\n    return 2\n```\n",
+    )
+    .expect("book chapter should exist");
+    fs::write(
+        book_ru_src.join("chapter.md"),
+        "# Глава\n\n```gof doctest\nfn main() -> int:\n    return 3\n```\n",
+    )
+    .expect("book-ru chapter should exist");
+    fs::write(
+        articles_root.join("ignored.md"),
+        "# Article\n\n```gof doctest\nfn main() -> int:\n    return 4\n```\n",
+    )
+    .expect("article should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 5\n```\n",
+    )
+    .expect("guide should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("README.md:4::doctest#1"))
+        .stdout(predicate::str::contains("docs/book/src/chapter.md:4::doctest#1"))
+        .stdout(predicate::str::contains("docs/book-ru/src/chapter.md:4::doctest#1"))
+        .stdout(predicate::str::contains("docs/articles/ignored.md").not())
+        .stdout(predicate::str::contains("guide.md:4::doctest#1").not())
+        .stdout(predicate::str::contains("3 passed; 0 failed; 0 skipped; 0 todo"));
+}
+
+#[test]
 fn gof_test_surfaces_invalid_test_signatures() {
     let temp = tempdir().expect("tempdir should exist");
     let tests_root = temp.path().join("tests");

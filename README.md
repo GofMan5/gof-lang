@@ -144,6 +144,9 @@ The current shipped testing contract is still explicit and intentionally narrow:
   ids, source paths, durations, stdout/stderr, and failure or skipped markers
 - `gof test` exits `10` for discovered target failures and `11` for harness
   failures such as invalid inputs or discovery/reporting errors
+- when `gof test --docs` targets the repository root, canonical docs discovery
+  is scoped to `README.md`, `docs/book/src/**/*.md`, and
+  `docs/book-ru/src/**/*.md`
 - property/fuzz/stress and benchmark integration stay on the roadmap rather
   than being implied as done
 
