@@ -236,3 +236,11 @@ stable schema `gof.test.report/v1`.
 Это держит покрытие репозиторной документации сфокусированным на source of
 truth, а не затягивает в CI случайные article drafts или временные markdown
 файлы.
+
+`gof test --include-ignored` теперь дает явный opt-in для discovery внутри
+директорий, которые default harness намеренно пропускает: например,
+`tests/support/`, `snapshots/`, `fuzz/`, `corpus/` или vendor-style markdown
+деревья вроде `node_modules/`.
+
+Это сохраняет default contract детерминированным и product-oriented, но всё же
+оставляет maintainers явный escape hatch для точечной глубокой проверки.

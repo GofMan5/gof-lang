@@ -597,7 +597,8 @@ fn emit_json_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: 
                 "failFast": args.fail_fast,
                 "noCapture": args.nocapture,
                 "updateSnapshots": args.update_snapshots,
-                "docs": args.docs
+                "docs": args.docs,
+                "includeIgnored": args.include_ignored
             },
             "summary": {
                 "executed": report.summary.executed(),
@@ -671,6 +672,7 @@ fn emit_junit_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms:
     write_junit_property(&mut xml, "gof.noCapture", if args.nocapture { "true" } else { "false" })?;
     write_junit_property(&mut xml, "gof.updateSnapshots", if args.update_snapshots { "true" } else { "false" })?;
     write_junit_property(&mut xml, "gof.docs", if args.docs { "true" } else { "false" })?;
+    write_junit_property(&mut xml, "gof.includeIgnored", if args.include_ignored { "true" } else { "false" })?;
     for (index, input_id) in input_ids.iter().enumerate() {
         write_junit_property(&mut xml, &format!("gof.input.{}", index + 1), input_id)?;
     }
@@ -913,9 +915,10 @@ fn discover_targets(args: &TestArgs) -> Result<DiscoveredTargets> {
             &mut language_candidates,
             &mut fixture_targets,
             &mut package_targets,
+            args.include_ignored,
         )?;
         if args.docs {
-            collect_doctest_targets(input, &mut doctest_candidates)?;
+            collect_doctest_targets(input, &mut doctest_candidates, args.include_ignored)?;
         }
     }
 
@@ -1534,16 +1537,23 @@ fn collect_targets(
     language_candidates: &mut BTreeSet<PathBuf>,
     fixture_targets: &mut BTreeSet<PathBuf>,
     package_targets: &mut BTreeSet<PathBuf>,
+    include_ignored: bool,
 ) -> Result<()> {
     if input.is_file() {
-        collect_file_target(input, language_candidates, fixture_targets, package_targets)?;
+        collect_file_target(
+            input,
+            language_candidates,
+            fixture_targets,
+            package_targets,
+            include_ignored,
+        )?;
         return Ok(());
     }
 
     if input.is_dir() {
         let before_language = language_candidates.len();
         let before_fixtures = fixture_targets.len();
-        collect_dir_targets(input, language_candidates, fixture_targets)?;
+        collect_dir_targets(input, language_candidates, fixture_targets, include_ignored)?;
         if language_candidates.len() == before_language && fixture_targets.len() == before_fixtures
         {
             if let Some(entry_path) = crate::resolve_package_test_input(input)? {
@@ -1556,7 +1566,11 @@ fn collect_targets(
     bail!("test target does not exist: {}", input.display());
 }
 
-fn collect_doctest_targets(input: &Path, doctest_candidates: &mut BTreeSet<PathBuf>) -> Result<()> {
+fn collect_doctest_targets(
+    input: &Path,
+    doctest_candidates: &mut BTreeSet<PathBuf>,
+    include_ignored: bool,
+) -> Result<()> {
     if input.is_file() {
         if is_markdown_file(input) {
             doctest_candidates.insert(normalize_source_path(input));
@@ -1565,10 +1579,10 @@ fn collect_doctest_targets(input: &Path, doctest_candidates: &mut BTreeSet<PathB
     }
 
     if input.is_dir() {
-        if collect_repository_doctest_targets(input, doctest_candidates)? {
+        if collect_repository_doctest_targets(input, doctest_candidates, include_ignored)? {
             return Ok(());
         }
-        collect_doctest_dir_targets(input, doctest_candidates)?;
+        collect_doctest_dir_targets(input, doctest_candidates, include_ignored)?;
         return Ok(());
     }
 
@@ -1578,6 +1592,7 @@ fn collect_doctest_targets(input: &Path, doctest_candidates: &mut BTreeSet<PathB
 fn collect_repository_doctest_targets(
     root: &Path,
     doctest_candidates: &mut BTreeSet<PathBuf>,
+    include_ignored: bool,
 ) -> Result<bool> {
     let readme_path = root.join("README.md");
     let book_src = root.join("docs").join("book").join("src");
@@ -1591,10 +1606,10 @@ fn collect_repository_doctest_targets(
         doctest_candidates.insert(normalize_source_path(&readme_path));
     }
     if book_src.is_dir() {
-        collect_doctest_dir_targets(&book_src, doctest_candidates)?;
+        collect_doctest_dir_targets(&book_src, doctest_candidates, include_ignored)?;
     }
     if book_ru_src.is_dir() {
-        collect_doctest_dir_targets(&book_ru_src, doctest_candidates)?;
+        collect_doctest_dir_targets(&book_ru_src, doctest_candidates, include_ignored)?;
     }
 
     Ok(true)
@@ -1604,17 +1619,18 @@ fn collect_dir_targets(
     root: &Path,
     language_candidates: &mut BTreeSet<PathBuf>,
     fixture_targets: &mut BTreeSet<PathBuf>,
+    include_ignored: bool,
 ) -> Result<()> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            if should_skip_discovery_dir(&path) {
+            if should_skip_discovery_dir(&path, include_ignored) {
                 continue;
             }
-            collect_dir_targets(&path, language_candidates, fixture_targets)?;
+            collect_dir_targets(&path, language_candidates, fixture_targets, include_ignored)?;
         } else {
-            collect_candidate_file(&path, language_candidates, fixture_targets);
+            collect_candidate_file(&path, language_candidates, fixture_targets, include_ignored);
         }
     }
     Ok(())
@@ -1623,15 +1639,16 @@ fn collect_dir_targets(
 fn collect_doctest_dir_targets(
     root: &Path,
     doctest_candidates: &mut BTreeSet<PathBuf>,
+    include_ignored: bool,
 ) -> Result<()> {
     for entry in fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
         if path.is_dir() {
-            if should_skip_doctest_dir(&path) {
+            if should_skip_doctest_dir(&path, include_ignored) {
                 continue;
             }
-            collect_doctest_dir_targets(&path, doctest_candidates)?;
+            collect_doctest_dir_targets(&path, doctest_candidates, include_ignored)?;
         } else if is_markdown_file(&path) {
             doctest_candidates.insert(normalize_source_path(&path));
         }
@@ -1644,11 +1661,12 @@ fn collect_file_target(
     language_candidates: &mut BTreeSet<PathBuf>,
     fixture_targets: &mut BTreeSet<PathBuf>,
     package_targets: &mut BTreeSet<PathBuf>,
+    include_ignored: bool,
 ) -> Result<()> {
     let normalized = normalize_source_path(path);
     if is_fixture_file(path) {
         fixture_targets.insert(normalized);
-    } else if is_language_test_candidate(path) {
+    } else if is_language_test_candidate(path, include_ignored) {
         language_candidates.insert(normalized);
     } else if let Some(entry_path) = crate::resolve_package_test_input(path)? {
         package_targets.insert(normalize_source_path(&entry_path));
@@ -1660,6 +1678,7 @@ fn collect_candidate_file(
     path: &Path,
     language_candidates: &mut BTreeSet<PathBuf>,
     fixture_targets: &mut BTreeSet<PathBuf>,
+    include_ignored: bool,
 ) {
     if !is_gof_file(path) {
         return;
@@ -1667,12 +1686,12 @@ fn collect_candidate_file(
     let normalized = normalize_source_path(path);
     if is_fixture_file(path) {
         fixture_targets.insert(normalized);
-    } else if is_language_test_candidate(path) {
+    } else if is_language_test_candidate(path, include_ignored) {
         language_candidates.insert(normalized);
     }
 }
 
-fn is_language_test_candidate(path: &Path) -> bool {
+fn is_language_test_candidate(path: &Path, include_ignored: bool) -> bool {
     if !is_gof_file(path) {
         return false;
     }
@@ -1690,10 +1709,11 @@ fn is_language_test_candidate(path: &Path) -> bool {
         .iter()
         .any(|component| component.as_os_str() == OsStr::new("tests"));
     let excluded = components.iter().any(|component| {
-        matches!(
-            component.as_os_str().to_str(),
-            Some("support" | "snapshots" | "ui" | "runtime" | "fixtures" | "fuzz" | "stress")
-        )
+        let Some(name) = component.as_os_str().to_str() else {
+            return false;
+        };
+        is_hard_language_test_exclusion(name)
+            || (!include_ignored && is_ignored_language_test_component(name))
     });
     in_tests && !excluded
 }
@@ -1718,26 +1738,38 @@ fn is_markdown_file(path: &Path) -> bool {
     path.extension().and_then(|value| value.to_str()) == Some("md")
 }
 
-fn should_skip_discovery_dir(path: &Path) -> bool {
+fn should_skip_discovery_dir(path: &Path, include_ignored: bool) -> bool {
+    if include_ignored {
+        return false;
+    }
     path.file_name()
         .and_then(|value| value.to_str())
-        .is_some_and(|name| {
-            matches!(
-                name,
-                "support" | "snapshots" | "fuzz" | "crashes" | "corpus"
-            )
-        })
+        .is_some_and(is_ignored_discovery_dir)
 }
 
-fn should_skip_doctest_dir(path: &Path) -> bool {
+fn should_skip_doctest_dir(path: &Path, include_ignored: bool) -> bool {
+    if include_ignored {
+        return false;
+    }
     path.file_name()
         .and_then(|value| value.to_str())
-        .is_some_and(|name| {
-            matches!(
-                name,
-                ".git" | "target" | "node_modules" | "dist-vscode-publish"
-            )
-        })
+        .is_some_and(is_ignored_doctest_dir)
+}
+
+fn is_hard_language_test_exclusion(name: &str) -> bool {
+    matches!(name, "ui" | "runtime" | "runtime-fail" | "fixtures")
+}
+
+fn is_ignored_language_test_component(name: &str) -> bool {
+    matches!(name, "support" | "snapshots" | "fuzz" | "stress" | "crashes" | "corpus")
+}
+
+fn is_ignored_discovery_dir(name: &str) -> bool {
+    matches!(name, "support" | "snapshots" | "fuzz" | "crashes" | "corpus")
+}
+
+fn is_ignored_doctest_dir(name: &str) -> bool {
+    matches!(name, ".git" | "target" | "node_modules" | "dist-vscode-publish")
 }
 
 fn display_id_for_path(path: &Path) -> String {

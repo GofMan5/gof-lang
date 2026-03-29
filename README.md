@@ -132,7 +132,7 @@ The current shipped testing contract is still explicit and intentionally narrow:
   before `TestContext` teardown and module-scoped cleanup runs once per test file
 - tests currently return either `unit` or `Result[unit, RuntimeError]`
 - `gof test` currently ships list/filter/fail-fast/nocapture/snapshot-update/
-  docs/json/junit flows, language-level tests, legacy fixtures, and
+  docs/include-ignored/json/junit flows, language-level tests, legacy fixtures, and
   artifact-backed product fixtures under `tests/ui`, `tests/runtime`, and
   `tests/runtime-fail`
 - `--update-snapshots` currently rewrites both snapshots and product-fixture
@@ -147,6 +147,9 @@ The current shipped testing contract is still explicit and intentionally narrow:
 - when `gof test --docs` targets the repository root, canonical docs discovery
   is scoped to `README.md`, `docs/book/src/**/*.md`, and
   `docs/book-ru/src/**/*.md`
+- `gof test --include-ignored` opt-ins to discovery inside normally skipped
+  support/cache/vendor-style directories instead of treating them as part of
+  the default contract
 - property/fuzz/stress and benchmark integration stay on the roadmap rather
   than being implied as done
 
@@ -157,6 +160,7 @@ gof test examples/testing_baseline
 gof test --list examples/testing_baseline
 gof test --json examples/testing_baseline
 gof test --junit examples/testing_baseline
+gof test --include-ignored path/to/project
 gof test --docs
 gof test --update-snapshots path/to/project
 ```

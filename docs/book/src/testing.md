@@ -235,3 +235,10 @@ discovery is now scoped to the canonical teaching sources:
 
 That keeps repository docs coverage focused on the sources of truth instead of
 accidentally sweeping arbitrary article drafts or scratch markdown into CI.
+
+`gof test --include-ignored` now opt-ins to discovery inside directories that
+the default harness skips on purpose, such as `tests/support/`, `snapshots/`,
+`fuzz/`, `corpus/`, or vendor-style markdown trees like `node_modules/`.
+
+That keeps the default contract deterministic and product-oriented while still
+giving maintainers an explicit escape hatch for one-off deep validation.

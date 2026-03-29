@@ -21,6 +21,7 @@ Delivered in shipped slices:
 - `--nocapture`
 - `--update-snapshots`
 - `--docs`
+- `--include-ignored`
 - `--json`
 - `--junit`
 - per-test stdout capture
@@ -33,7 +34,6 @@ Planned later:
 - `--seed`
 - `--timeout-ms`
 - `--stress`
-- `--include-ignored`
 - dedicated `gof fuzz`
 - full `gof bench` integration
 

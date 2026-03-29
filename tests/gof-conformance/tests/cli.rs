@@ -2582,6 +2582,99 @@ fn gof_test_lists_opt_in_doctests() {
 }
 
 #[test]
+fn gof_test_include_ignored_opt_in_discovers_hidden_language_tests() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    let support_root = tests_root.join("support");
+    fs::create_dir_all(&support_root).expect("support root should exist");
+    fs::write(
+        tests_root.join("visible_test.gof"),
+        "import testing\n\ntest fn visible_case(t: TestContext):\n    t.true(true, \"visible\")\n",
+    )
+    .expect("visible test should exist");
+    fs::write(
+        support_root.join("hidden_case.gof"),
+        "import testing\n\ntest fn hidden_case(t: TestContext):\n    t.true(true, \"hidden\")\n",
+    )
+    .expect("hidden test should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("visible_case"))
+        .stdout(predicate::str::contains("hidden_case").not())
+        .stdout(predicate::str::contains("listed 1"));
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--json")
+        .arg("--list")
+        .arg("--include-ignored")
+        .arg(temp.path())
+        .assert()
+        .success();
+
+    let report = parse_stdout_json(&assert.get_output().stdout);
+    assert_eq!(report["options"]["includeIgnored"], true);
+    let events = report["events"]
+        .as_array()
+        .expect("events should be an array");
+    assert!(events
+        .iter()
+        .any(|event| event["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("visible_test.gof::visible_case"))));
+    assert!(events
+        .iter()
+        .any(|event| event["id"]
+            .as_str()
+            .is_some_and(|id| id.contains("hidden_case.gof::hidden_case"))));
+}
+
+#[test]
+fn gof_test_include_ignored_opt_in_discovers_hidden_doctests() {
+    let temp = tempdir().expect("tempdir should exist");
+    let node_modules = temp.path().join("node_modules");
+    fs::create_dir_all(&node_modules).expect("node_modules should exist");
+    fs::write(
+        temp.path().join("guide.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 1\n```\n",
+    )
+    .expect("guide should exist");
+    fs::write(
+        node_modules.join("hidden.md"),
+        "# Hidden\n\n```gof doctest\nfn main() -> int:\n    return 2\n```\n",
+    )
+    .expect("hidden markdown should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--list")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("guide.md:4::doctest#1"))
+        .stdout(predicate::str::contains("node_modules/hidden.md:4::doctest#1").not())
+        .stdout(predicate::str::contains("listed 1"));
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--list")
+        .arg("--include-ignored")
+        .arg(temp.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("guide.md:4::doctest#1"))
+        .stdout(predicate::str::contains("node_modules/hidden.md:4::doctest#1"))
+        .stdout(predicate::str::contains("listed 2"));
+}
+
+#[test]
 fn gof_test_repo_root_docs_list_only_canonical_docs() {
     let temp = tempdir().expect("tempdir should exist");
     let book_src = temp.path().join("docs").join("book").join("src");

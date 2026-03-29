@@ -105,6 +105,8 @@ pub(crate) struct TestArgs {
     update_snapshots: bool,
     #[arg(long)]
     docs: bool,
+    #[arg(long)]
+    include_ignored: bool,
     #[arg(long, conflicts_with = "junit")]
     json: bool,
     #[arg(long, conflicts_with = "json")]

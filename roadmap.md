@@ -306,7 +306,7 @@ Hard sequencing rule:
 
 ### M8. Reliability, Tooling, and Production Discipline
 
-- `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery
+- `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery with opt-in `--include-ignored`
 - `[x]` opt-in markdown doctest baseline through `gof test --docs`, plus canonical repo-doc discovery for `README.md` and the mdBook sources
 - `[~]` typed fixtures through `fixture(test|module) fn`, DAG-backed injection, runtime caching, cleanup hooks, artifact-backed product fixtures under `tests/ui|runtime`, plus shipped `gof test --json` / `--junit` reporters and dedicated failure vs harness exit codes
 - `[ ]` richer diagnostics coverage
@@ -466,7 +466,7 @@ Hard sequencing rule:
 - `[~]` split detailed execution plans out of the monolithic roadmap into `plans/roadmap/`
 - `[x]` add opt-in markdown doctests through `gof test --docs`
 - `[~]` add typed fixtures
-- `[~]` add `gof test --json`, `--junit`, and dedicated failure vs harness exit codes; keep property/fuzz/stress and benchmark gates pending
+- `[~]` add `gof test --json`, `--junit`, dedicated failure vs harness exit codes, and `--include-ignored`; keep property/fuzz/stress and benchmark gates pending
 
 6. `[ ]` Start the competitive coverage closure path:
 - package and registry design strong enough for large codebases
