@@ -183,14 +183,8 @@ fn run_human_inner(args: TestArgs) -> Result<()> {
             )
             .map_err(|error| crate::render_error(&source, error))?;
 
-            if report_language_test_result(
-                &id,
-                &source,
-                result,
-                &args,
-                &mut summary,
-                &mut failures,
-            ) {
+            if report_language_test_result(&id, &source, result, &args, &mut summary, &mut failures)
+            {
                 stop_after_file = true;
                 break;
             }
@@ -279,7 +273,10 @@ fn run_human_inner(args: TestArgs) -> Result<()> {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(test_failure_exit(format!("failing targets: {}", failures.join(", "))))
+        Err(test_failure_exit(format!(
+            "failing targets: {}",
+            failures.join(", ")
+        )))
     }
 }
 
@@ -454,7 +451,8 @@ fn collect_machine_report(args: &TestArgs) -> JsonTestReport {
 
         let cleanup_id = format!("{}::<cleanup>", display_id_for_path(&file.source_path));
         let cleanup_started = Instant::now();
-        let cleanup_result = cleanup_test_module_fixtures_with_output(&compiled.ast, &mut module_state);
+        let cleanup_result =
+            cleanup_test_module_fixtures_with_output(&compiled.ast, &mut module_state);
         if cleanup_result.error.is_some() {
             push_json_cleanup_event(
                 &mut report,
@@ -620,7 +618,11 @@ fn emit_json_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: 
     Ok(())
 }
 
-fn emit_junit_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: u64) -> Result<()> {
+fn emit_junit_test_report(
+    args: &TestArgs,
+    report: &JsonTestReport,
+    duration_ms: u64,
+) -> Result<()> {
     let inputs = if args.paths.is_empty() {
         vec![PathBuf::from(".")]
     } else {
@@ -658,24 +660,96 @@ fn emit_junit_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms:
     )?;
     xml.push_str("<properties>");
     write_junit_property(&mut xml, "gof.reporter", "junit")?;
-    write_junit_property(&mut xml, "gof.summary.executed", &report.summary.executed().to_string())?;
-    write_junit_property(&mut xml, "gof.summary.passed", &report.summary.passed.to_string())?;
-    write_junit_property(&mut xml, "gof.summary.failed", &report.summary.failed.to_string())?;
-    write_junit_property(&mut xml, "gof.summary.skipped", &report.summary.skipped.to_string())?;
-    write_junit_property(&mut xml, "gof.summary.todo", &report.summary.todo.to_string())?;
-    write_junit_property(&mut xml, "gof.summary.listed", &report.summary.listed.to_string())?;
-    write_junit_property(&mut xml, "gof.stoppedEarly", if report.stopped_early { "true" } else { "false" })?;
+    write_junit_property(
+        &mut xml,
+        "gof.summary.executed",
+        &report.summary.executed().to_string(),
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.summary.passed",
+        &report.summary.passed.to_string(),
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.summary.failed",
+        &report.summary.failed.to_string(),
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.summary.skipped",
+        &report.summary.skipped.to_string(),
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.summary.todo",
+        &report.summary.todo.to_string(),
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.summary.listed",
+        &report.summary.listed.to_string(),
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.stoppedEarly",
+        if report.stopped_early {
+            "true"
+        } else {
+            "false"
+        },
+    )?;
     if let Some(filter) = &args.filter {
         write_junit_property(&mut xml, "gof.filter", filter)?;
     }
-    write_junit_property(&mut xml, "gof.exact", if args.exact { "true" } else { "false" })?;
-    write_junit_property(&mut xml, "gof.list", if args.list { "true" } else { "false" })?;
-    write_junit_property(&mut xml, "gof.failFast", if args.fail_fast { "true" } else { "false" })?;
-    write_junit_property(&mut xml, "gof.noCapture", if args.nocapture { "true" } else { "false" })?;
-    write_junit_property(&mut xml, "gof.updateSnapshots", if args.update_snapshots { "true" } else { "false" })?;
-    write_junit_property(&mut xml, "gof.docs", if args.docs { "true" } else { "false" })?;
-    write_junit_property(&mut xml, "gof.includeIgnored", if args.include_ignored { "true" } else { "false" })?;
-    write_junit_property(&mut xml, "gof.shuffle", if args.shuffle { "true" } else { "false" })?;
+    write_junit_property(
+        &mut xml,
+        "gof.exact",
+        if args.exact { "true" } else { "false" },
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.list",
+        if args.list { "true" } else { "false" },
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.failFast",
+        if args.fail_fast { "true" } else { "false" },
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.noCapture",
+        if args.nocapture { "true" } else { "false" },
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.updateSnapshots",
+        if args.update_snapshots {
+            "true"
+        } else {
+            "false"
+        },
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.docs",
+        if args.docs { "true" } else { "false" },
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.includeIgnored",
+        if args.include_ignored {
+            "true"
+        } else {
+            "false"
+        },
+    )?;
+    write_junit_property(
+        &mut xml,
+        "gof.shuffle",
+        if args.shuffle { "true" } else { "false" },
+    )?;
     if let Some(seed) = active_shuffle_seed(args) {
         write_junit_property(&mut xml, "gof.seed", &seed.to_string())?;
     }
@@ -694,7 +768,11 @@ fn emit_junit_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms:
     }
     xml.push_str("</properties>");
 
-    for event in report.events.iter().filter(|event| event_status(event) != "listed") {
+    for event in report
+        .events
+        .iter()
+        .filter(|event| event_status(event) != "listed")
+    {
         write_junit_testcase(&mut xml, event)?;
     }
 
@@ -815,7 +893,9 @@ fn junit_failure_body(event: &serde_json::Value) -> String {
         .flatten()
         .filter_map(|diagnostic| {
             let code = diagnostic.get("code").and_then(serde_json::Value::as_str)?;
-            let message = diagnostic.get("message").and_then(serde_json::Value::as_str)?;
+            let message = diagnostic
+                .get("message")
+                .and_then(serde_json::Value::as_str)?;
             Some(format!("{code}: {message}"))
         })
         .collect::<Vec<_>>();
@@ -916,13 +996,16 @@ fn discover_targets(args: &TestArgs) -> Result<DiscoveredTargets> {
     let mut doctest_candidates = BTreeSet::new();
 
     for input in &inputs {
-        collect_targets(
-            input,
-            &mut language_candidates,
-            &mut fixture_targets,
-            &mut package_targets,
-            args.include_ignored,
-        )?;
+        let doctest_only_input = args.docs && input.is_file() && is_doctest_source_file(input);
+        if !doctest_only_input {
+            collect_targets(
+                input,
+                &mut language_candidates,
+                &mut fixture_targets,
+                &mut package_targets,
+                args.include_ignored,
+            )?;
+        }
         if args.docs {
             collect_doctest_targets(input, &mut doctest_candidates, args.include_ignored)?;
         }
@@ -1450,7 +1533,11 @@ fn report_doctest_result(
 ) -> bool {
     let failed = result.failure_message.is_some();
     if args.nocapture || failed {
-        emit_captured_output(id, &result.stdout, if args.nocapture { &result.stderr } else { "" });
+        emit_captured_output(
+            id,
+            &result.stdout,
+            if args.nocapture { &result.stderr } else { "" },
+        );
     }
 
     if failed {
@@ -1481,7 +1568,11 @@ fn report_fixture_result(
 ) -> bool {
     let failed = result.failure_message.is_some();
     if args.nocapture || failed {
-        emit_captured_output(id, &result.stdout, if args.nocapture { &result.stderr } else { "" });
+        emit_captured_output(
+            id,
+            &result.stdout,
+            if args.nocapture { &result.stderr } else { "" },
+        );
     }
 
     if failed {
@@ -1512,7 +1603,11 @@ fn report_package_result(
 ) -> bool {
     let failed = result.failure_message.is_some();
     if args.nocapture || failed {
-        emit_captured_output(id, &result.stdout, if args.nocapture { &result.stderr } else { "" });
+        emit_captured_output(
+            id,
+            &result.stdout,
+            if args.nocapture { &result.stderr } else { "" },
+        );
     }
 
     if failed {
@@ -1766,7 +1861,7 @@ fn collect_doctest_targets(
     include_ignored: bool,
 ) -> Result<()> {
     if input.is_file() {
-        if is_markdown_file(input) {
+        if is_doctest_source_file(input) {
             doctest_candidates.insert(normalize_source_path(input));
         }
         return Ok(());
@@ -1789,21 +1884,22 @@ fn collect_repository_doctest_targets(
     include_ignored: bool,
 ) -> Result<bool> {
     let readme_path = root.join("README.md");
-    let book_src = root.join("docs").join("book").join("src");
-    let book_ru_src = root.join("docs").join("book-ru").join("src");
-    let has_book_docs = book_src.is_dir() || book_ru_src.is_dir();
-    if !has_book_docs {
+    let docs_root = root.join("docs").join("site").join("content").join("docs");
+    let docs_en_root = docs_root.join("en");
+    let docs_ru_root = docs_root.join("ru");
+    let has_site_docs = docs_en_root.is_dir() || docs_ru_root.is_dir();
+    if !has_site_docs {
         return Ok(false);
     }
 
     if readme_path.is_file() {
         doctest_candidates.insert(normalize_source_path(&readme_path));
     }
-    if book_src.is_dir() {
-        collect_doctest_dir_targets(&book_src, doctest_candidates, include_ignored)?;
+    if docs_en_root.is_dir() {
+        collect_doctest_dir_targets(&docs_en_root, doctest_candidates, include_ignored)?;
     }
-    if book_ru_src.is_dir() {
-        collect_doctest_dir_targets(&book_ru_src, doctest_candidates, include_ignored)?;
+    if docs_ru_root.is_dir() {
+        collect_doctest_dir_targets(&docs_ru_root, doctest_candidates, include_ignored)?;
     }
 
     Ok(true)
@@ -1843,7 +1939,7 @@ fn collect_doctest_dir_targets(
                 continue;
             }
             collect_doctest_dir_targets(&path, doctest_candidates, include_ignored)?;
-        } else if is_markdown_file(&path) {
+        } else if is_doctest_source_file(&path) {
             doctest_candidates.insert(normalize_source_path(&path));
         }
     }
@@ -1928,8 +2024,11 @@ fn is_gof_file(path: &Path) -> bool {
     path.extension().and_then(|value| value.to_str()) == Some("gof")
 }
 
-fn is_markdown_file(path: &Path) -> bool {
-    path.extension().and_then(|value| value.to_str()) == Some("md")
+fn is_doctest_source_file(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|value| value.to_str()),
+        Some("md" | "mdx")
+    )
 }
 
 fn should_skip_discovery_dir(path: &Path, include_ignored: bool) -> bool {
@@ -1955,15 +2054,24 @@ fn is_hard_language_test_exclusion(name: &str) -> bool {
 }
 
 fn is_ignored_language_test_component(name: &str) -> bool {
-    matches!(name, "support" | "snapshots" | "fuzz" | "stress" | "crashes" | "corpus")
+    matches!(
+        name,
+        "support" | "snapshots" | "fuzz" | "stress" | "crashes" | "corpus"
+    )
 }
 
 fn is_ignored_discovery_dir(name: &str) -> bool {
-    matches!(name, "support" | "snapshots" | "fuzz" | "crashes" | "corpus")
+    matches!(
+        name,
+        "support" | "snapshots" | "fuzz" | "crashes" | "corpus"
+    )
 }
 
 fn is_ignored_doctest_dir(name: &str) -> bool {
-    matches!(name, ".git" | "target" | "node_modules" | "dist-vscode-publish")
+    matches!(
+        name,
+        ".git" | "target" | "node_modules" | "dist-vscode-publish"
+    )
 }
 
 fn display_id_for_path(path: &Path) -> String {
@@ -2139,7 +2247,11 @@ fn parse_doctest_fence(
         return Ok(ParsedDoctestFence::NotDoctest);
     }
     if !tokens.iter().any(|token| *token == "doctest") {
-        if tokens.iter().skip(1).any(|token| *token == "ignore" || *token == "text") {
+        if tokens
+            .iter()
+            .skip(1)
+            .any(|token| *token == "ignore" || *token == "text")
+        {
             return Ok(ParsedDoctestFence::Ignore);
         }
         if tokens.len() == 1 {

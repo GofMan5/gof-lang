@@ -1826,14 +1826,20 @@ fn gof_test_json_reports_package_target_diagnostics() {
         .and_then(|events| events.iter().find(|event| event["kind"] == "package"))
         .expect("package event should exist");
     assert_eq!(package_event["status"], "failed");
-    assert!(package_event["sourcePath"]
-        .as_str()
-        .map(|path| path.contains("src/main.gof"))
-        == Some(true));
-    assert!(package_event["diagnostics"]
-        .as_array()
-        .map(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "GOF3068"))
-        == Some(true));
+    assert!(
+        package_event["sourcePath"]
+            .as_str()
+            .map(|path| path.contains("src/main.gof"))
+            == Some(true)
+    );
+    assert!(
+        package_event["diagnostics"]
+            .as_array()
+            .map(|diagnostics| diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "GOF3068"))
+            == Some(true)
+    );
 }
 
 #[test]
@@ -1866,16 +1872,16 @@ fn gof_test_junit_reports_package_target_diagnostics() {
     assert_eq!(suite.attribute("skipped"), Some("0"));
 
     let package_case = find_xml_testcase(&doc, "src/main.gof");
-    assert!(package_case
-        .attribute("classname")
-        .is_some_and(|classname| classname.contains("src/main.gof")));
+    assert!(
+        package_case
+            .attribute("classname")
+            .is_some_and(|classname| classname.contains("src/main.gof"))
+    );
     let failure = package_case
         .children()
         .find(|child| child.has_tag_name("failure"))
         .expect("package testcase should include failure output");
-    assert!(failure
-        .text()
-        .is_some_and(|text| text.contains("GOF3068")));
+    assert!(failure.text().is_some_and(|text| text.contains("GOF3068")));
 }
 
 #[test]
@@ -2194,7 +2200,6 @@ fn gof_test_discovers_language_level_tests_and_updates_snapshots() {
         .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
 }
 
-
 #[test]
 fn gof_test_runs_explicit_executable_package_roots_alongside_internal_tests() {
     let temp = tempdir().expect("tempdir should exist");
@@ -2219,7 +2224,9 @@ fn gof_test_runs_explicit_executable_package_roots_alongside_internal_tests() {
         .assert()
         .success()
         .stdout(predicate::str::contains("src/main.gof"))
-        .stdout(predicate::str::contains("tests/smoke_test.gof::package_test"))
+        .stdout(predicate::str::contains(
+            "tests/smoke_test.gof::package_test",
+        ))
         .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
 }
 
@@ -2247,7 +2254,9 @@ fn gof_test_runs_explicit_library_package_roots_alongside_internal_tests() {
         .assert()
         .success()
         .stdout(predicate::str::contains("src/lib.gof"))
-        .stdout(predicate::str::contains("tests/smoke_test.gof::package_test"))
+        .stdout(predicate::str::contains(
+            "tests/smoke_test.gof::package_test",
+        ))
         .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
 }
 #[test]
@@ -2388,7 +2397,11 @@ fn gof_test_exact_filter_matches_leaf_ids_in_human_list_mode() {
             .assert()
             .success();
         let listed = parse_stdout_listed_ids(&assert.get_output().stdout);
-        assert_eq!(listed.len(), 1, "expected one listed id for filter {filter}");
+        assert_eq!(
+            listed.len(),
+            1,
+            "expected one listed id for filter {filter}"
+        );
         assert!(
             listed[0].ends_with(expected_suffix),
             "expected listed id {:?} to end with {:?}",
@@ -2448,7 +2461,11 @@ fn gof_test_json_list_exact_filter_matches_leaf_ids() {
         let report = parse_stdout_json(&assert.get_output().stdout);
         let listed = listed_report_event_ids(&report);
         assert_eq!(report["options"]["exact"], true);
-        assert_eq!(listed.len(), 1, "expected one listed id for filter {filter}");
+        assert_eq!(
+            listed.len(),
+            1,
+            "expected one listed id for filter {filter}"
+        );
         assert!(
             listed[0].ends_with(expected_suffix),
             "expected listed id {:?} to end with {:?}",
@@ -2572,9 +2589,18 @@ fn gof_test_nocapture_surfaces_captured_output_across_target_kinds() {
         .stdout(predicate::str::contains("doc-output"))
         .stdout(predicate::str::contains("fixture-output"))
         .stdout(predicate::str::contains("package-output"))
-        .stderr(predicate::str::contains("stdout[").and(predicate::str::contains("nocapture_test.gof::visible_case")))
-        .stderr(predicate::str::contains("stdout[").and(predicate::str::contains("README.md:4::doctest#1")))
-        .stderr(predicate::str::contains("stdout[").and(predicate::str::contains("tests/runtime/hello.gof")))
+        .stderr(
+            predicate::str::contains("stdout[")
+                .and(predicate::str::contains("nocapture_test.gof::visible_case")),
+        )
+        .stderr(
+            predicate::str::contains("stdout[")
+                .and(predicate::str::contains("README.md:4::doctest#1")),
+        )
+        .stderr(
+            predicate::str::contains("stdout[")
+                .and(predicate::str::contains("tests/runtime/hello.gof")),
+        )
         .stderr(predicate::str::contains("stdout[").and(predicate::str::contains("src/main.gof")))
         .stdout(predicate::str::contains("test result: 4 passed; 0 failed"));
 }
@@ -2632,10 +2658,11 @@ fn gof_test_json_reports_language_statuses_and_compile_failures() {
     assert!(events.iter().any(|event| {
         event["kind"] == "language-compile"
             && event["status"] == "failed"
-            && event["diagnostics"]
-                .as_array()
-                .map(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "GOF3113"))
-                == Some(true)
+            && event["diagnostics"].as_array().map(|diagnostics| {
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic["code"] == "GOF3113")
+            }) == Some(true)
     }));
 }
 
@@ -2674,7 +2701,10 @@ fn gof_test_junit_reports_language_statuses_and_compile_failures() {
     assert_eq!(suite.attribute("skipped"), Some("2"));
 
     let passing_case = find_xml_testcase(&doc, "passing_case");
-    assert_eq!(child_element_text(passing_case, "system-out"), Some("alpha\n".to_string()));
+    assert_eq!(
+        child_element_text(passing_case, "system-out"),
+        Some("alpha\n".to_string())
+    );
 
     let skipped_case = find_xml_testcase(&doc, "skipped_case");
     let skipped = skipped_case
@@ -2696,9 +2726,7 @@ fn gof_test_junit_reports_language_statuses_and_compile_failures() {
         .children()
         .find(|child| child.has_tag_name("failure"))
         .expect("compile testcase should have failure output");
-    assert!(failure
-        .text()
-        .is_some_and(|text| text.contains("GOF3113")));
+    assert!(failure.text().is_some_and(|text| text.contains("GOF3113")));
 }
 
 #[test]
@@ -2742,9 +2770,11 @@ fn gof_test_uses_harness_failure_exit_code_across_human_and_json_paths() {
 
     let report = parse_stdout_json(&assert.get_output().stdout);
     assert_eq!(report["ok"], serde_json::Value::Bool(false));
-    assert!(report["harnessError"]
-        .as_str()
-        .is_some_and(|message| message.contains("test target does not exist")));
+    assert!(
+        report["harnessError"]
+            .as_str()
+            .is_some_and(|message| message.contains("test target does not exist"))
+    );
 }
 
 #[test]
@@ -2770,12 +2800,14 @@ fn gof_test_resolves_typed_fixtures_and_reuses_module_scope() {
         .arg(temp.path())
         .assert()
         .success()
-        .stdout(predicate::str::contains("ok ").and(predicate::str::contains(
-            "fixture_test.gof::first",
-        )))
-        .stdout(predicate::str::contains("ok ").and(predicate::str::contains(
-            "fixture_test.gof::second",
-        )))
+        .stdout(
+            predicate::str::contains("ok ")
+                .and(predicate::str::contains("fixture_test.gof::first")),
+        )
+        .stdout(
+            predicate::str::contains("ok ")
+                .and(predicate::str::contains("fixture_test.gof::second")),
+        )
         .stdout(predicate::str::contains("test result: 2 passed; 0 failed"));
 
     assert_eq!(
@@ -2944,14 +2976,20 @@ fn gof_test_json_reports_doctests_and_product_fixtures() {
         .find(|event| event["kind"] == "fixture")
         .expect("fixture event should exist");
     assert_eq!(fixture_event["status"], "passed");
-    assert!(fixture_event["stderr"]
-        .as_str()
-        .map(|stderr| stderr.contains("tests/ui/type_mismatch.gof"))
-        == Some(true));
-    assert!(fixture_event["diagnostics"]
-        .as_array()
-        .map(|diagnostics| diagnostics.iter().any(|diagnostic| diagnostic["code"] == "GOF3013"))
-        == Some(true));
+    assert!(
+        fixture_event["stderr"]
+            .as_str()
+            .map(|stderr| stderr.contains("tests/ui/type_mismatch.gof"))
+            == Some(true)
+    );
+    assert!(
+        fixture_event["diagnostics"]
+            .as_array()
+            .map(|diagnostics| diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == "GOF3013"))
+            == Some(true)
+    );
 }
 
 #[test]
@@ -2992,11 +3030,17 @@ fn gof_test_junit_reports_doctests_and_product_fixtures() {
     assert_eq!(suite.attribute("skipped"), Some("0"));
 
     let doctest_case = find_xml_testcase(&doc, "doctest#1");
-    assert_eq!(child_element_text(doctest_case, "system-out"), Some("7\n".to_string()));
+    assert_eq!(
+        child_element_text(doctest_case, "system-out"),
+        Some("7\n".to_string())
+    );
 
     let fixture_case = find_xml_testcase(&doc, "tests/ui/type_mismatch.gof");
-    assert!(child_element_text(fixture_case, "system-err")
-        .is_some_and(|text| text.contains("tests/ui/type_mismatch.gof") && text.contains("GOF3013")));
+    assert!(
+        child_element_text(fixture_case, "system-err").is_some_and(|text| text
+            .contains("tests/ui/type_mismatch.gof")
+            && text.contains("GOF3013"))
+    );
 }
 
 #[test]
@@ -3018,6 +3062,28 @@ fn gof_test_lists_opt_in_doctests() {
         .stdout(predicate::str::contains("guide.md:4::doctest#1"))
         .stdout(predicate::str::contains("guide.md:9::doctest-no-run#2"))
         .stdout(predicate::str::contains("listed 2"));
+}
+
+#[test]
+fn gof_test_runs_mdx_doctest_files() {
+    let temp = tempdir().expect("tempdir should exist");
+    let guide_path = temp.path().join("guide.mdx");
+    fs::write(
+        &guide_path,
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 6\n```\n",
+    )
+    .expect("mdx doctest file should exist");
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg(&guide_path)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("guide.mdx:4::doctest#1"))
+        .stdout(predicate::str::contains(
+            "1 passed; 0 failed; 0 skipped; 0 todo",
+        ));
 }
 
 #[test]
@@ -3104,7 +3170,9 @@ fn gof_test_rejects_unknown_doctest_modifiers() {
         .assert()
         .code(GOF_TEST_HARNESS_FAILURE_EXIT_CODE)
         .stderr(predicate::str::contains("GOF3126"))
-        .stderr(predicate::str::contains("unknown doctest fence modifier `slow`"))
+        .stderr(predicate::str::contains(
+            "unknown doctest fence modifier `slow`",
+        ))
         .stderr(predicate::str::contains("guide.md"));
 }
 
@@ -3214,9 +3282,7 @@ fn gof_test_shuffle_seed_reorders_doctest_listing_and_reports_active_seed() {
     for (name, value) in [("alpha", 1), ("beta", 2), ("gamma", 3), ("delta", 4)] {
         fs::write(
             temp.path().join(format!("{name}.md")),
-            format!(
-                "# {name}\n\n```gof doctest\nfn main() -> int:\n    return {value}\n```\n"
-            ),
+            format!("# {name}\n\n```gof doctest\nfn main() -> int:\n    return {value}\n```\n"),
         )
         .expect("markdown doctest file should exist");
     }
@@ -3250,7 +3316,10 @@ fn gof_test_shuffle_seed_reorders_doctest_listing_and_reports_active_seed() {
     let shuffled_report = parse_stdout_json(&shuffled_json.get_output().stdout);
 
     assert_eq!(shuffled_report["options"]["shuffle"], true);
-    assert_eq!(shuffled_report["options"]["seed"], serde_json::Value::from(seed));
+    assert_eq!(
+        shuffled_report["options"]["seed"],
+        serde_json::Value::from(seed)
+    );
     assert_eq!(listed_report_event_ids(&shuffled_report), expected_ids);
 
     let shuffled_junit = gof_command()
@@ -3267,8 +3336,14 @@ fn gof_test_shuffle_seed_reorders_doctest_listing_and_reports_active_seed() {
     let stdout = String::from_utf8_lossy(&shuffled_junit.get_output().stdout).into_owned();
     let doc = roxmltree::Document::parse(&stdout).expect("stdout should contain valid XML");
 
-    assert_eq!(find_xml_property_value(&doc, "gof.shuffle"), Some("true".to_string()));
-    assert_eq!(find_xml_property_value(&doc, "gof.seed"), Some(seed.to_string()));
+    assert_eq!(
+        find_xml_property_value(&doc, "gof.shuffle"),
+        Some("true".to_string())
+    );
+    assert_eq!(
+        find_xml_property_value(&doc, "gof.seed"),
+        Some(seed.to_string())
+    );
     for (index, id) in expected_ids.iter().enumerate() {
         assert_eq!(
             find_xml_property_value(&doc, &format!("gof.listed.{}", index + 1)),
@@ -3318,16 +3393,16 @@ fn gof_test_include_ignored_opt_in_discovers_hidden_language_tests() {
     let events = report["events"]
         .as_array()
         .expect("events should be an array");
-    assert!(events
-        .iter()
-        .any(|event| event["id"]
+    assert!(events.iter().any(|event| {
+        event["id"]
             .as_str()
-            .is_some_and(|id| id.contains("visible_test.gof::visible_case"))));
-    assert!(events
-        .iter()
-        .any(|event| event["id"]
+            .is_some_and(|id| id.contains("visible_test.gof::visible_case"))
+    }));
+    assert!(events.iter().any(|event| {
+        event["id"]
             .as_str()
-            .is_some_and(|id| id.contains("hidden_case.gof::hidden_case"))));
+            .is_some_and(|id| id.contains("hidden_case.gof::hidden_case"))
+    }));
 }
 
 #[test]
@@ -3366,18 +3441,32 @@ fn gof_test_include_ignored_opt_in_discovers_hidden_doctests() {
         .assert()
         .success()
         .stdout(predicate::str::contains("guide.md:4::doctest#1"))
-        .stdout(predicate::str::contains("node_modules/hidden.md:4::doctest#1"))
+        .stdout(predicate::str::contains(
+            "node_modules/hidden.md:4::doctest#1",
+        ))
         .stdout(predicate::str::contains("listed 2"));
 }
 
 #[test]
 fn gof_test_repo_root_docs_list_only_canonical_docs() {
     let temp = tempdir().expect("tempdir should exist");
-    let book_src = temp.path().join("docs").join("book").join("src");
-    let book_ru_src = temp.path().join("docs").join("book-ru").join("src");
+    let docs_en_root = temp
+        .path()
+        .join("docs")
+        .join("site")
+        .join("content")
+        .join("docs")
+        .join("en");
+    let docs_ru_root = temp
+        .path()
+        .join("docs")
+        .join("site")
+        .join("content")
+        .join("docs")
+        .join("ru");
     let articles_root = temp.path().join("docs").join("articles");
-    fs::create_dir_all(&book_src).expect("book src should exist");
-    fs::create_dir_all(&book_ru_src).expect("book-ru src should exist");
+    fs::create_dir_all(&docs_en_root).expect("english docs root should exist");
+    fs::create_dir_all(&docs_ru_root).expect("russian docs root should exist");
     fs::create_dir_all(&articles_root).expect("articles root should exist");
 
     fs::write(
@@ -3386,22 +3475,22 @@ fn gof_test_repo_root_docs_list_only_canonical_docs() {
     )
     .expect("README should exist");
     fs::write(
-        book_src.join("chapter.md"),
+        docs_en_root.join("chapter.mdx"),
         "# Chapter\n\n```gof doctest\nfn main() -> int:\n    return 2\n```\n",
     )
-    .expect("book chapter should exist");
+    .expect("english chapter should exist");
     fs::write(
-        book_ru_src.join("chapter.md"),
+        docs_ru_root.join("chapter.mdx"),
         "# Глава\n\n```gof doctest\nfn main() -> int:\n    return 3\n```\n",
     )
-    .expect("book-ru chapter should exist");
+    .expect("russian chapter should exist");
     fs::write(
         articles_root.join("ignored.md"),
         "# Article\n\n```gof doctest\nfn main() -> int:\n    return 4\n```\n",
     )
     .expect("article should exist");
     fs::write(
-        temp.path().join("guide.md"),
+        temp.path().join("guide.mdx"),
         "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 5\n```\n",
     )
     .expect("guide should exist");
@@ -3414,21 +3503,37 @@ fn gof_test_repo_root_docs_list_only_canonical_docs() {
         .assert()
         .success()
         .stdout(predicate::str::contains("README.md:4::doctest#1"))
-        .stdout(predicate::str::contains("docs/book/src/chapter.md:4::doctest#1"))
-        .stdout(predicate::str::contains("docs/book-ru/src/chapter.md:4::doctest#1"))
+        .stdout(predicate::str::contains(
+            "docs/site/content/docs/en/chapter.mdx:4::doctest#1",
+        ))
+        .stdout(predicate::str::contains(
+            "docs/site/content/docs/ru/chapter.mdx:4::doctest#1",
+        ))
         .stdout(predicate::str::contains("docs/articles/ignored.md").not())
-        .stdout(predicate::str::contains("guide.md:4::doctest#1").not())
+        .stdout(predicate::str::contains("guide.mdx:4::doctest#1").not())
         .stdout(predicate::str::contains("listed 3"));
 }
 
 #[test]
 fn gof_test_repo_root_docs_executes_canonical_docs_only() {
     let temp = tempdir().expect("tempdir should exist");
-    let book_src = temp.path().join("docs").join("book").join("src");
-    let book_ru_src = temp.path().join("docs").join("book-ru").join("src");
+    let docs_en_root = temp
+        .path()
+        .join("docs")
+        .join("site")
+        .join("content")
+        .join("docs")
+        .join("en");
+    let docs_ru_root = temp
+        .path()
+        .join("docs")
+        .join("site")
+        .join("content")
+        .join("docs")
+        .join("ru");
     let articles_root = temp.path().join("docs").join("articles");
-    fs::create_dir_all(&book_src).expect("book src should exist");
-    fs::create_dir_all(&book_ru_src).expect("book-ru src should exist");
+    fs::create_dir_all(&docs_en_root).expect("english docs root should exist");
+    fs::create_dir_all(&docs_ru_root).expect("russian docs root should exist");
     fs::create_dir_all(&articles_root).expect("articles root should exist");
 
     fs::write(
@@ -3437,22 +3542,22 @@ fn gof_test_repo_root_docs_executes_canonical_docs_only() {
     )
     .expect("README should exist");
     fs::write(
-        book_src.join("chapter.md"),
+        docs_en_root.join("chapter.mdx"),
         "# Chapter\n\n```gof doctest\nfn main() -> int:\n    return 2\n```\n",
     )
-    .expect("book chapter should exist");
+    .expect("english chapter should exist");
     fs::write(
-        book_ru_src.join("chapter.md"),
+        docs_ru_root.join("chapter.mdx"),
         "# Глава\n\n```gof doctest\nfn main() -> int:\n    return 3\n```\n",
     )
-    .expect("book-ru chapter should exist");
+    .expect("russian chapter should exist");
     fs::write(
         articles_root.join("ignored.md"),
         "# Article\n\n```gof doctest\nfn main() -> int:\n    return 4\n```\n",
     )
     .expect("article should exist");
     fs::write(
-        temp.path().join("guide.md"),
+        temp.path().join("guide.mdx"),
         "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 5\n```\n",
     )
     .expect("guide should exist");
@@ -3464,11 +3569,17 @@ fn gof_test_repo_root_docs_executes_canonical_docs_only() {
         .assert()
         .success()
         .stdout(predicate::str::contains("README.md:4::doctest#1"))
-        .stdout(predicate::str::contains("docs/book/src/chapter.md:4::doctest#1"))
-        .stdout(predicate::str::contains("docs/book-ru/src/chapter.md:4::doctest#1"))
+        .stdout(predicate::str::contains(
+            "docs/site/content/docs/en/chapter.mdx:4::doctest#1",
+        ))
+        .stdout(predicate::str::contains(
+            "docs/site/content/docs/ru/chapter.mdx:4::doctest#1",
+        ))
         .stdout(predicate::str::contains("docs/articles/ignored.md").not())
-        .stdout(predicate::str::contains("guide.md:4::doctest#1").not())
-        .stdout(predicate::str::contains("3 passed; 0 failed; 0 skipped; 0 todo"));
+        .stdout(predicate::str::contains("guide.mdx:4::doctest#1").not())
+        .stdout(predicate::str::contains(
+            "3 passed; 0 failed; 0 skipped; 0 todo",
+        ));
 }
 
 #[test]
@@ -3526,7 +3637,9 @@ fn gof_test_runs_product_ui_and_runtime_fixtures_and_reuses_recorded_artifacts()
         .success()
         .stdout(predicate::str::contains("tests/ui/type_mismatch.gof"))
         .stdout(predicate::str::contains("tests/runtime/hello.gof"))
-        .stdout(predicate::str::contains("tests/runtime-fail/division_by_zero.gof"))
+        .stdout(predicate::str::contains(
+            "tests/runtime-fail/division_by_zero.gof",
+        ))
         .stdout(predicate::str::contains("test result: 3 passed; 0 failed"));
 
     assert_eq!(

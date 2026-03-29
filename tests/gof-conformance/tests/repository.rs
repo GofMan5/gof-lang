@@ -12,37 +12,38 @@ fn workspace_contains_governance_directories() {
         ".github/workflows/ci.yml",
         ".github/workflows/docs.yml",
         "docs",
-        "docs/book",
-        "docs/book/src",
-        "docs/book/book.toml",
-        "docs/book/theme",
-        "docs/book/theme/custom.css",
-        "docs/book/theme/custom.js",
-        "docs/book/src/SUMMARY.md",
-        "docs/book/src/introduction.md",
-        "docs/book/src/getting-started.md",
-        "docs/book/src/language-tour.md",
-        "docs/book/src/types-and-data.md",
-        "docs/book/src/control-flow.md",
-        "docs/book/src/modules-and-files.md",
-        "docs/book/src/concurrency.md",
-        "docs/book/src/stdlib-baseline.md",
-        "docs/book/src/tooling-and-native-build.md",
-        "docs/book/src/status-and-roadmap.md",
-        "docs/book-ru",
-        "docs/book-ru/src",
-        "docs/book-ru/book.toml",
-        "docs/book-ru/src/SUMMARY.md",
-        "docs/book-ru/src/introduction.md",
-        "docs/book-ru/src/getting-started.md",
-        "docs/book-ru/src/language-tour.md",
-        "docs/book-ru/src/types-and-data.md",
-        "docs/book-ru/src/control-flow.md",
-        "docs/book-ru/src/modules-and-files.md",
-        "docs/book-ru/src/concurrency.md",
-        "docs/book-ru/src/stdlib-baseline.md",
-        "docs/book-ru/src/tooling-and-native-build.md",
-        "docs/book-ru/src/status-and-roadmap.md",
+        "docs/site",
+        "docs/site/app",
+        "docs/site/content",
+        "docs/site/content/docs",
+        "docs/site/content/docs/en",
+        "docs/site/content/docs/en/meta.json",
+        "docs/site/content/docs/en/index.mdx",
+        "docs/site/content/docs/en/getting-started.mdx",
+        "docs/site/content/docs/en/language-tour.mdx",
+        "docs/site/content/docs/en/types-and-data.mdx",
+        "docs/site/content/docs/en/control-flow.mdx",
+        "docs/site/content/docs/en/modules-and-files.mdx",
+        "docs/site/content/docs/en/concurrency.mdx",
+        "docs/site/content/docs/en/stdlib-baseline.mdx",
+        "docs/site/content/docs/en/testing.mdx",
+        "docs/site/content/docs/en/tooling-and-native-build.mdx",
+        "docs/site/content/docs/en/status-and-roadmap.mdx",
+        "docs/site/content/docs/ru",
+        "docs/site/content/docs/ru/meta.json",
+        "docs/site/content/docs/ru/index.mdx",
+        "docs/site/content/docs/ru/getting-started.mdx",
+        "docs/site/content/docs/ru/language-tour.mdx",
+        "docs/site/content/docs/ru/types-and-data.mdx",
+        "docs/site/content/docs/ru/control-flow.mdx",
+        "docs/site/content/docs/ru/modules-and-files.mdx",
+        "docs/site/content/docs/ru/concurrency.mdx",
+        "docs/site/content/docs/ru/stdlib-baseline.mdx",
+        "docs/site/content/docs/ru/testing.mdx",
+        "docs/site/content/docs/ru/tooling-and-native-build.mdx",
+        "docs/site/content/docs/ru/status-and-roadmap.mdx",
+        "docs/site/package.json",
+        "docs/site/source.config.ts",
         "compiler",
         "runtime",
         "stdlib",
@@ -70,7 +71,7 @@ fn public_docs_prefer_installed_gof_cli() {
         "README must show installed gof usage"
     );
 
-    let getting_started = read("docs/book/src/getting-started.md");
+    let getting_started = read("docs/site/content/docs/en/getting-started.mdx");
     assert!(
         getting_started.contains("gof run hello.gof"),
         "English getting-started guide must teach installed gof usage first"
@@ -80,7 +81,7 @@ fn public_docs_prefer_installed_gof_cli() {
         "English getting-started guide must keep a developer fallback"
     );
 
-    let getting_started_ru = read("docs/book-ru/src/getting-started.md");
+    let getting_started_ru = read("docs/site/content/docs/ru/getting-started.mdx");
     assert!(
         getting_started_ru.contains("gof run hello.gof"),
         "Russian getting-started guide must teach installed gof usage first"

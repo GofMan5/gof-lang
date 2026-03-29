@@ -20,8 +20,8 @@ Delivered in shipped slices:
 - fixture cleanup hooks through receiver method `cleanup() -> unit | Result[unit, RuntimeError]`
 - unified `tests/ui`, `tests/runtime`, and `tests/runtime-fail` product contract under `gof test`
 - explicit update flow for `.diag`, `.stdout`, `.stderr`, and `.exit` artifacts
-- canonical repo-doc extraction for `README.md`, `docs/book/src/**/*.md`, and
-  `docs/book-ru/src/**/*.md` when `gof test --docs` targets the repository root
+- canonical repo-doc extraction for `README.md`, `docs/site/content/docs/en/**/*.mdx`, and
+  `docs/site/content/docs/ru/**/*.mdx` when `gof test --docs` targets the repository root
 - dedicated doctest discovery diagnostics for unknown modifiers, conflicting
   execution modes, and unterminated doctest fences
 

@@ -138,6 +138,7 @@ schema `gof.test.report/v1`.
 - `` ```gof doctest runtime_fail `` ``: expect runtime failure
 - plain `` ```gof `` `` fences default to doctests only when the block looks like a whole-file example
 - `` ```gof ignore `` `` and `` ```gof text `` `` force a fence to stay prose-only
+- when `gof test --docs` targets the repository root, canonical discovery is limited to `README.md`, `docs/site/content/docs/en/**/*.mdx`, and `docs/site/content/docs/ru/**/*.mdx`
 
 ## Current limits
 

@@ -98,6 +98,7 @@ test fn uses_fixtures(shared_total: int, scratch_dir: TempDir, t: TestContext):
 - `` ```gof doctest no_run `` `` — compile only
 - `` ```gof doctest compile_fail `` `` — expect compile failure
 - `` ```gof doctest runtime_fail `` `` — expect runtime failure
+- если `gof test --docs` запускается от корня репозитория, canonical discovery ограничен `README.md`, `docs/site/content/docs/en/**/*.mdx` и `docs/site/content/docs/ru/**/*.mdx`
 
 <Callout type="info">
   Еще не shipped: property testing, fuzzing, concurrency stress, benchmark integration.
