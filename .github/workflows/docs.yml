@@ -22,24 +22,27 @@ jobs:
       name: github-pages
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install mdBook
-        run: cargo install mdbook --locked
-      - name: Clean previous docs output
-        run: rm -rf target/docs-site
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/site/package-lock.json
       - name: Configure Pages
         uses: actions/configure-pages@v5
-      - name: Build English book
-        run: mdbook build docs/book
-      - name: Build Russian book
-        run: |
-          rm -rf target/docs-site/ru
-          mdbook build docs/book-ru
+      - name: Install docs dependencies
+        working-directory: docs/site
+        run: npm ci
+      - name: Build static docs site
+        working-directory: docs/site
+        env:
+          NEXT_PUBLIC_BASE_PATH: /${{ github.event.repository.name }}
+        run: npm run build
+      - name: Disable Jekyll processing
+        run: touch docs/site/out/.nojekyll
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: target/docs-site
+          path: docs/site/out
 
   deploy:
     needs: build

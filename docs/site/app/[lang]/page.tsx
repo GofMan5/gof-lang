@@ -1,3 +1,4 @@
+import { i18n } from "@/lib/i18n";
 import { redirect } from "next/navigation";
 
 export default async function LangPage({
@@ -7,4 +8,8 @@ export default async function LangPage({
 }) {
   const { lang } = await params;
   redirect(`/${lang}/docs`);
+}
+
+export function generateStaticParams() {
+  return i18n.languages.map((lang) => ({ lang }));
 }
