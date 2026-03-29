@@ -197,6 +197,15 @@ the JSON schema first.
 That lets CI distinguish product regressions from broken invocation or harness
 state without parsing stderr heuristically.
 
+## Human output
+
+The default human `gof test` path still keeps passing target output captured so
+summary lines stay stable and reviewable.
+
+`gof test --nocapture` now surfaces captured stdout/stderr for language tests,
+doctests, fixtures, and package targets on the human runner path instead of
+hiding those streams unless a target fails.
+
 ## Current limits
 
 This slice is intentionally narrower than the final testing platform.

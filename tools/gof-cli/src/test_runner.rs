@@ -215,57 +215,41 @@ fn run_human_inner(args: TestArgs) -> Result<()> {
     if !args.list {
         for doctest in filtered_doctests {
             let id = doctest_id(&doctest);
-            match run_doctest(&doctest) {
-                Ok(()) => {
-                    println!("ok {id}");
-                    summary.passed += 1;
-                }
-                Err(error) => {
-                    eprintln!("FAIL {id}");
-                    eprintln!("{error:#}");
-                    summary.failed += 1;
-                    failures.push(id);
-                    if args.fail_fast {
-                        return Err(test_failure_exit("stopped after first failure"));
-                    }
-                }
+            if report_doctest_result(
+                &id,
+                run_doctest_report(&doctest),
+                &args,
+                &mut summary,
+                &mut failures,
+            ) {
+                return Err(test_failure_exit("stopped after first failure"));
             }
         }
 
         for path in filtered_fixture_targets {
-            match crate::run_fixture(&path, args.update_snapshots) {
-                Ok(()) => {
-                    println!("ok {}", display_id_for_path(&path));
-                    summary.passed += 1;
-                }
-                Err(error) => {
-                    eprintln!("FAIL {}", display_id_for_path(&path));
-                    eprintln!("{error:#}");
-                    summary.failed += 1;
-                    failures.push(display_id_for_path(&path));
-                    if args.fail_fast {
-                        return Err(test_failure_exit("stopped after first failure"));
-                    }
-                }
+            let id = display_id_for_path(&path);
+            if report_fixture_result(
+                &id,
+                crate::run_fixture_report(&path, args.update_snapshots),
+                &args,
+                &mut summary,
+                &mut failures,
+            ) {
+                return Err(test_failure_exit("stopped after first failure"));
             }
         }
 
         for entry_path in filtered_package_targets {
             crate::ensure_package_lockfile(&entry_path, "test")?;
-            match crate::run_package_test(&entry_path) {
-                Ok(()) => {
-                    println!("ok {}", display_id_for_path(&entry_path));
-                    summary.passed += 1;
-                }
-                Err(error) => {
-                    eprintln!("FAIL {}", display_id_for_path(&entry_path));
-                    eprintln!("{error:#}");
-                    summary.failed += 1;
-                    failures.push(display_id_for_path(&entry_path));
-                    if args.fail_fast {
-                        return Err(test_failure_exit("stopped after first failure"));
-                    }
-                }
+            let id = display_id_for_path(&entry_path);
+            if report_package_result(
+                &id,
+                crate::run_package_test_report(&entry_path),
+                &args,
+                &mut summary,
+                &mut failures,
+            ) {
+                return Err(test_failure_exit("stopped after first failure"));
             }
         }
     } else {
@@ -1449,6 +1433,117 @@ fn report_module_fixture_cleanup_result(
     args.fail_fast
 }
 
+fn report_doctest_result(
+    id: &str,
+    result: DoctestRunReport,
+    args: &TestArgs,
+    summary: &mut RunSummary,
+    failures: &mut Vec<String>,
+) -> bool {
+    let failed = result.failure_message.is_some();
+    if args.nocapture || failed {
+        emit_captured_output(id, &result.stdout, if args.nocapture { &result.stderr } else { "" });
+    }
+
+    if failed {
+        eprintln!("FAIL {id}");
+        if !args.nocapture {
+            if !result.stderr.is_empty() {
+                eprintln!("{}", result.stderr);
+            } else if let Some(message) = &result.failure_message {
+                eprintln!("{message}");
+            }
+        }
+        summary.failed += 1;
+        failures.push(id.to_string());
+        return args.fail_fast;
+    }
+
+    println!("ok {id}");
+    summary.passed += 1;
+    false
+}
+
+fn report_fixture_result(
+    id: &str,
+    result: crate::FixtureRunReport,
+    args: &TestArgs,
+    summary: &mut RunSummary,
+    failures: &mut Vec<String>,
+) -> bool {
+    let failed = result.failure_message.is_some();
+    if args.nocapture || failed {
+        emit_captured_output(id, &result.stdout, if args.nocapture { &result.stderr } else { "" });
+    }
+
+    if failed {
+        eprintln!("FAIL {id}");
+        if !args.nocapture {
+            if !result.stderr.is_empty() {
+                eprintln!("{}", result.stderr);
+            } else if let Some(message) = &result.failure_message {
+                eprintln!("{message}");
+            }
+        }
+        summary.failed += 1;
+        failures.push(id.to_string());
+        return args.fail_fast;
+    }
+
+    println!("ok {id}");
+    summary.passed += 1;
+    false
+}
+
+fn report_package_result(
+    id: &str,
+    result: crate::PackageTestReport,
+    args: &TestArgs,
+    summary: &mut RunSummary,
+    failures: &mut Vec<String>,
+) -> bool {
+    let failed = result.failure_message.is_some();
+    if args.nocapture || failed {
+        emit_captured_output(id, &result.stdout, if args.nocapture { &result.stderr } else { "" });
+    }
+
+    if failed {
+        eprintln!("FAIL {id}");
+        if !args.nocapture {
+            if !result.stderr.is_empty() {
+                eprintln!("{}", result.stderr);
+            } else if let Some(message) = &result.failure_message {
+                eprintln!("{message}");
+            }
+        }
+        summary.failed += 1;
+        failures.push(id.to_string());
+        return args.fail_fast;
+    }
+
+    println!("ok {id}");
+    summary.passed += 1;
+    false
+}
+
+fn emit_captured_output(id: &str, stdout: &str, stderr: &str) {
+    if !stdout.is_empty() {
+        eprintln!("stdout[{id}]:");
+        print!("{stdout}");
+        if !stdout.ends_with('\n') {
+            println!();
+        }
+    }
+
+    if !stderr.is_empty() {
+        eprintln!("stderr[{id}]:");
+        eprint!("{stderr}");
+        if !stderr.ends_with('\n') {
+            eprintln!();
+        }
+    }
+}
+
 fn filter_doctests(doctests: Vec<DocTestCase>, args: &TestArgs) -> Vec<DocTestCase> {
     doctests
         .into_iter()
@@ -2146,14 +2241,6 @@ fn doctest_id(doctest: &DocTestCase) -> String {
         mode,
         doctest.ordinal
     )
-}
-
-fn run_doctest(doctest: &DocTestCase) -> Result<()> {
-    let report = run_doctest_report(doctest);
-    if let Some(error) = report.failure_message {
-        bail!(error);
-    }
-    Ok(())
 }
 
 fn compile_mode_for_doctest(doctest: &DocTestCase) -> CompileMode {

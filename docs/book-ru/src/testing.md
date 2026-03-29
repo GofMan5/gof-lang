@@ -197,6 +197,15 @@ stable schema `gof.test.report/v1`.
 Это позволяет CI отличать регрессии пользовательского кода от поломки запуска
 или состояния harness-а без эвристического разбора stderr.
 
+## Human output
+
+Обычный human path у `gof test` по-прежнему держит output успешных target-ов в
+capture, чтобы summary lines оставались стабильными и reviewable.
+
+`gof test --nocapture` теперь выводит captured stdout/stderr для language
+tests, doctests, fixtures и package targets на human runner path, вместо того
+чтобы скрывать эти потоки до target failure.
+
 ## Что еще не shipped
 
 Этот срез уже полезный, но сознательно далек от финальной платформы.

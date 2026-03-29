@@ -27,6 +27,9 @@ Delivered in shipped slices:
 - `--json`
 - `--junit`
 - per-test stdout capture
+- human-path `--nocapture` surfacing for language tests, doctests, fixtures,
+  and package targets while the default human path keeps passing target output
+  captured
 - deterministic display ids based on normalized source paths
 - deterministic opt-in seeded ordering without changing the default order
 

@@ -317,7 +317,7 @@ Hard sequencing rule:
 - `[ ]` observability and debuggability improvements
 - Checkpoints:
 - `[x]` CP-M8-0: hybrid testing platform slice 1
-- `[~]` CP-M8-1: typed fixtures, cleanup hooks, canonical repo-doc doctest discovery, default whole-file plain-fence doctests, product fixtures, shipped JSON/JUnit reporter slices, dedicated test exit codes, deterministic shuffle/seed ordering, and explicit doctest discovery diagnostics
+- `[~]` CP-M8-1: typed fixtures, cleanup hooks, canonical repo-doc doctest discovery, default whole-file plain-fence doctests, product fixtures, shipped JSON/JUnit reporter slices, dedicated test exit codes, end-to-end `--nocapture` surfacing, deterministic shuffle/seed ordering, and explicit doctest discovery diagnostics
 - `[ ]` CP-M8-2: property, fuzz, stress, and benchmark integration
 - Exit criteria:
 - production engineering quality is visible in tooling, not just language design

@@ -137,6 +137,9 @@ The current shipped testing contract is still explicit and intentionally narrow:
   docs/include-ignored/shuffle/seed/json/junit flows, language-level tests, legacy fixtures, and
   artifact-backed product fixtures under `tests/ui`, `tests/runtime`, and
   `tests/runtime-fail`
+- `gof test --nocapture` now surfaces captured human-path stdout/stderr for
+  language tests, doctests, fixtures, and package targets instead of keeping
+  passing target output hidden behind the summary lines
 - `--update-snapshots` currently rewrites both snapshots and product-fixture
   artifacts such as `.diag`, `.stdout`, `.stderr`, and `.exit`
 - `gof test --shuffle` deterministically reorders discovered language tests,

@@ -416,17 +416,6 @@ fn resolve_package_test_input(input: &Path) -> Result<Option<PathBuf>> {
     );
 }
 
-fn run_package_test(entry_path: &Path) -> Result<()> {
-    let report = run_package_test_report(entry_path);
-    if !report.stdout.is_empty() {
-        print!("{}", report.stdout);
-    }
-    if let Some(error) = report.failure_message {
-        bail!(error);
-    }
-    Ok(())
-}
-
 pub(crate) fn run_package_test_report(entry_path: &Path) -> PackageTestReport {
     let source = match SourceFile::from_path(entry_path) {
         Ok(source) => source,
@@ -792,14 +781,6 @@ fn classify_fixture_harness(path: &Path) -> FixtureHarnessKind {
     } else {
         FixtureHarnessKind::LegacyPass
     }
-}
-
-fn run_fixture(path: &Path, update_expected_artifacts: bool) -> Result<()> {
-    let report = run_fixture_report(path, update_expected_artifacts);
-    if let Some(error) = report.failure_message {
-        bail!(error);
-    }
-    Ok(())
 }
 
 pub(crate) fn run_fixture_report(path: &Path, update_expected_artifacts: bool) -> FixtureRunReport {
