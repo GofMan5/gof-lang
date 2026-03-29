@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use gof_compiler::{
     CompileMode, Diagnostics, SourceFile, TestExecutionOutcome, TestModuleState,
     TestRuntimeOptions, cleanup_test_module_fixtures_with_output, compile_source,
@@ -87,6 +87,9 @@ enum MachineReportFormat {
     Junit,
 }
 
+pub(crate) const TEST_FAILURE_EXIT_CODE: i32 = 10;
+pub(crate) const TEST_HARNESS_FAILURE_EXIT_CODE: i32 = 11;
+
 pub(crate) fn run(args: TestArgs) -> Result<()> {
     if args.json {
         return run_machine_report(args, MachineReportFormat::Json);
@@ -98,6 +101,10 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
 }
 
 fn run_human(args: TestArgs) -> Result<()> {
+    run_human_inner(args).map_err(harness_failure_exit)
+}
+
+fn run_human_inner(args: TestArgs) -> Result<()> {
     let discovered = discover_targets(&args)?;
     if discovered_targets_is_empty(&discovered) {
         if args.list {
@@ -132,7 +139,7 @@ fn run_human(args: TestArgs) -> Result<()> {
             summary.failed += 1;
             failures.push(id);
             if args.fail_fast {
-                bail!("stopped after first failure");
+                return Err(test_failure_exit("stopped after first failure"));
             }
             continue;
         }
@@ -193,7 +200,7 @@ fn run_human(args: TestArgs) -> Result<()> {
         }
 
         if stop_after_file && args.fail_fast {
-            bail!("stopped after first failure");
+            return Err(test_failure_exit("stopped after first failure"));
         }
     }
 
@@ -211,7 +218,7 @@ fn run_human(args: TestArgs) -> Result<()> {
                     summary.failed += 1;
                     failures.push(id);
                     if args.fail_fast {
-                        bail!("stopped after first failure");
+                        return Err(test_failure_exit("stopped after first failure"));
                     }
                 }
             }
@@ -229,7 +236,7 @@ fn run_human(args: TestArgs) -> Result<()> {
                     summary.failed += 1;
                     failures.push(display_id_for_path(&path));
                     if args.fail_fast {
-                        bail!("stopped after first failure");
+                        return Err(test_failure_exit("stopped after first failure"));
                     }
                 }
             }
@@ -248,7 +255,7 @@ fn run_human(args: TestArgs) -> Result<()> {
                     summary.failed += 1;
                     failures.push(display_id_for_path(&entry_path));
                     if args.fail_fast {
-                        bail!("stopped after first failure");
+                        return Err(test_failure_exit("stopped after first failure"));
                     }
                 }
             }
@@ -272,15 +279,14 @@ fn run_human(args: TestArgs) -> Result<()> {
     if failures.is_empty() {
         Ok(())
     } else {
-        Err(anyhow!("failing targets: {}", failures.join(", ")))
+        Err(test_failure_exit(format!("failing targets: {}", failures.join(", "))))
     }
 }
 
 fn run_machine_report(args: TestArgs, format: MachineReportFormat) -> Result<()> {
     let started = Instant::now();
     let report = collect_machine_report(&args);
-    let should_fail = report.harness_error.is_some() || !report.failures.is_empty();
-    emit_machine_report_and_exit(&args, report, started, format, should_fail)
+    emit_machine_report_and_exit(&args, report, started, format)
 }
 
 fn collect_machine_report(args: &TestArgs) -> JsonTestReport {
@@ -533,17 +539,39 @@ fn emit_machine_report_and_exit(
     report: JsonTestReport,
     started: Instant,
     format: MachineReportFormat,
-    should_fail: bool,
 ) -> Result<()> {
     let duration_ms = started.elapsed().as_millis() as u64;
     match format {
         MachineReportFormat::Json => emit_json_test_report(args, &report, duration_ms)?,
         MachineReportFormat::Junit => emit_junit_test_report(args, &report, duration_ms)?,
     }
-    if should_fail {
-        std::process::exit(1);
+    if report.harness_error.is_some() {
+        return Err(silent_harness_failure_exit());
+    }
+    if !report.failures.is_empty() {
+        return Err(silent_test_failure_exit());
     }
     Ok(())
+}
+
+fn test_failure_exit(message: impl Into<String>) -> anyhow::Error {
+    crate::cli_exit_error(TEST_FAILURE_EXIT_CODE, Some(message.into()))
+}
+
+fn silent_test_failure_exit() -> anyhow::Error {
+    crate::cli_exit_error(TEST_FAILURE_EXIT_CODE, None)
+}
+
+fn silent_harness_failure_exit() -> anyhow::Error {
+    crate::cli_exit_error(TEST_HARNESS_FAILURE_EXIT_CODE, None)
+}
+
+fn harness_failure_exit(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<crate::CliExit>().is_some() {
+        error
+    } else {
+        crate::cli_exit_error(TEST_HARNESS_FAILURE_EXIT_CODE, Some(format!("{error:#}")))
+    }
 }
 
 fn emit_json_test_report(args: &TestArgs, report: &JsonTestReport, duration_ms: u64) -> Result<()> {

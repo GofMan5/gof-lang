@@ -142,8 +142,10 @@ The current shipped testing contract is still explicit and intentionally narrow:
   structured diagnostics
 - `gof test --junit` emits a JUnit/xUnit XML document to stdout with testcase
   ids, source paths, durations, stdout/stderr, and failure or skipped markers
-- dedicated exit codes, property/fuzz/stress, and benchmark integration stay
-  on the roadmap rather than being implied as done
+- `gof test` exits `10` for discovered target failures and `11` for harness
+  failures such as invalid inputs or discovery/reporting errors
+- property/fuzz/stress and benchmark integration stay on the roadmap rather
+  than being implied as done
 
 Useful commands:
 

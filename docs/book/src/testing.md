@@ -185,6 +185,17 @@ Current mapping:
 That gives CI systems a conventional XML path without forcing them to translate
 the JSON schema first.
 
+## Exit codes
+
+`gof test` now reserves two dedicated non-zero exit codes:
+
+- `10`: at least one discovered test target failed honestly
+- `11`: the test harness itself could not complete discovery, execution, or
+    reporting honestly
+
+That lets CI distinguish product regressions from broken invocation or harness
+state without parsing stderr heuristically.
+
 ## Current limits
 
 This slice is intentionally narrower than the final testing platform.

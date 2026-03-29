@@ -12,6 +12,7 @@ use gof_compiler::{
 };
 use gof_runtime::profile;
 use serde_json::json;
+use std::fmt;
 use std::fs;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -110,6 +111,42 @@ pub(crate) struct TestArgs {
     junit: bool,
 }
 
+#[derive(Debug)]
+pub(crate) struct CliExit {
+    code: i32,
+    message: Option<String>,
+}
+
+impl CliExit {
+    pub(crate) fn new(code: i32, message: Option<String>) -> Self {
+        Self { code, message }
+    }
+
+    fn code(&self) -> i32 {
+        self.code
+    }
+
+    fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+}
+
+impl fmt::Display for CliExit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(message) = &self.message {
+            write!(f, "{message}")
+        } else {
+            write!(f, "command exited with status {}", self.code)
+        }
+    }
+}
+
+impl std::error::Error for CliExit {}
+
+pub(crate) fn cli_exit_error(code: i32, message: Option<String>) -> anyhow::Error {
+    anyhow!(CliExit::new(code, message))
+}
+
 #[derive(Subcommand)]
 enum ModCommand {
     Init(ModInitArgs),
@@ -133,6 +170,12 @@ struct ModResolveArgs {
 
 fn main() {
     if let Err(error) = run() {
+        if let Some(exit) = error.downcast_ref::<CliExit>() {
+            if let Some(message) = exit.message() {
+                eprintln!("{message}");
+            }
+            std::process::exit(exit.code());
+        }
         eprintln!("{error:#}");
         std::process::exit(1);
     }

@@ -308,7 +308,7 @@ Hard sequencing rule:
 
 - `[x]` hybrid language-level testing baseline through `test fn`, shipped `testing` stdlib, snapshots, and `gof test` discovery
 - `[x]` opt-in markdown doctest baseline through `gof test --docs`
-- `[~]` typed fixtures through `fixture(test|module) fn`, DAG-backed injection, runtime caching, cleanup hooks, artifact-backed product fixtures under `tests/ui|runtime`, plus shipped `gof test --json` and `--junit` reporters
+- `[~]` typed fixtures through `fixture(test|module) fn`, DAG-backed injection, runtime caching, cleanup hooks, artifact-backed product fixtures under `tests/ui|runtime`, plus shipped `gof test --json` / `--junit` reporters and dedicated failure vs harness exit codes
 - `[ ]` richer diagnostics coverage
 - `[ ]` fuzzing for parser, resolver, and type layer
 - `[ ]` stress harness for runtime and concurrency
@@ -316,7 +316,7 @@ Hard sequencing rule:
 - `[ ]` observability and debuggability improvements
 - Checkpoints:
 - `[x]` CP-M8-0: hybrid testing platform slice 1
-- `[~]` CP-M8-1: typed fixtures, cleanup hooks, doctests, product fixtures, and shipped JSON/JUnit reporter slices
+- `[~]` CP-M8-1: typed fixtures, cleanup hooks, doctests, product fixtures, shipped JSON/JUnit reporter slices, and dedicated test exit codes
 - `[ ]` CP-M8-2: property, fuzz, stress, and benchmark integration
 - Exit criteria:
 - production engineering quality is visible in tooling, not just language design
@@ -466,7 +466,7 @@ Hard sequencing rule:
 - `[~]` split detailed execution plans out of the monolithic roadmap into `plans/roadmap/`
 - `[x]` add opt-in markdown doctests through `gof test --docs`
 - `[~]` add typed fixtures
-- `[~]` add `gof test --json` and `--junit`; keep dedicated exit codes, property/fuzz/stress, and benchmark gates pending
+- `[~]` add `gof test --json`, `--junit`, and dedicated failure vs harness exit codes; keep property/fuzz/stress and benchmark gates pending
 
 6. `[ ]` Start the competitive coverage closure path:
 - package and registry design strong enough for large codebases

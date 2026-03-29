@@ -10,6 +10,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
+const GOF_TEST_TARGET_FAILURE_EXIT_CODE: i32 = 10;
+const GOF_TEST_HARNESS_FAILURE_EXIT_CODE: i32 = 11;
+
 fn gof_command() -> Command {
     let mut command = Command::new("cargo");
     command
@@ -1713,7 +1716,7 @@ fn gof_test_json_reports_package_target_diagnostics() {
         .arg("--json")
         .arg(&package_root)
         .assert()
-        .failure();
+        .code(GOF_TEST_TARGET_FAILURE_EXIT_CODE);
 
     let report = parse_stdout_json(&assert.get_output().stdout);
     assert_eq!(report["ok"], false);
@@ -1750,7 +1753,7 @@ fn gof_test_junit_reports_package_target_diagnostics() {
         .arg("--junit")
         .arg(&package_root)
         .assert()
-        .failure();
+        .code(GOF_TEST_TARGET_FAILURE_EXIT_CODE);
 
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout).into_owned();
     let doc = roxmltree::Document::parse(&stdout).expect("stdout should contain valid XML");
@@ -2257,6 +2260,52 @@ fn gof_test_junit_reports_language_statuses_and_compile_failures() {
     assert!(failure
         .text()
         .is_some_and(|text| text.contains("GOF3113")));
+}
+
+#[test]
+fn gof_test_uses_human_target_failure_exit_code() {
+    let temp = tempdir().expect("tempdir should exist");
+    let package_root = write_runtime_fail_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("test")
+        .arg(&package_root)
+        .assert()
+        .code(GOF_TEST_TARGET_FAILURE_EXIT_CODE)
+        .stderr(predicate::str::contains("GOF3068"));
+}
+
+#[test]
+fn gof_test_uses_harness_failure_exit_code_across_human_and_json_paths() {
+    let temp = tempdir().expect("tempdir should exist");
+    let missing = temp.path().join("missing-tests");
+
+    gof_command()
+        .arg("test")
+        .arg(&missing)
+        .assert()
+        .code(GOF_TEST_HARNESS_FAILURE_EXIT_CODE)
+        .stderr(predicate::str::contains("test target does not exist"));
+
+    let assert = gof_command()
+        .arg("test")
+        .arg("--json")
+        .arg(&missing)
+        .assert()
+        .code(GOF_TEST_HARNESS_FAILURE_EXIT_CODE)
+        .stderr(predicate::str::is_empty());
+
+    let report = parse_stdout_json(&assert.get_output().stdout);
+    assert_eq!(report["ok"], serde_json::Value::Bool(false));
+    assert!(report["harnessError"]
+        .as_str()
+        .is_some_and(|message| message.contains("test target does not exist")));
 }
 
 #[test]

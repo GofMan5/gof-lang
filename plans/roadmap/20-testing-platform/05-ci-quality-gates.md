@@ -11,6 +11,8 @@ Delivered in this slice:
 
 - JSON reporter through `gof test --json`
 - JUnit reporter through `gof test --junit`
+- dedicated exit codes: `10` for discovered target failures and `11` for
+  harness failures
 - stable machine-readable report schema `gof.test.report/v1`
 - summary counts, per-target events, captured stdout/stderr, and structured
   diagnostics in one stdout payload
@@ -19,7 +21,6 @@ Delivered in this slice:
 
 Planned remaining deliverables:
 
-- dedicated exit codes for test failures vs harness failures
 - CI wiring for snapshots, UI/runtime fixtures, property/fuzz/stress, and
   benchmarks
 - explicit update workflows that never mutate artifacts implicitly in CI
