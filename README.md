@@ -189,13 +189,18 @@ imports instead of behind ever-growing global builtins:
 - `bytes`: `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
 - `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
 - `time`: `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
-- `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+- `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_loopback_with_control`, `listen_tcp`, `listen_tcp_loopback`
 - `http`: `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, `response_content_type`
 
 This is still bootstrap surface, not the final network platform. The current
 focus is explicit `Result`-based bytes/stream/deadline/TCP contracts plus
 typed HTTP response-inspection helpers that keep allocation and blocking points
 visible while fuller typed HTTP client/server layers are still being built.
+
+The shipped `net` surface now also includes typed `SocketAddr.connect_tcp(...)`
+and `SocketAddr.connect_tcp_with_control(...)` wrappers so loopback service code
+does not have to bounce through raw `address.text()` plumbing when it already
+has a typed socket address.
 
 `gof run --watch` now gives a script-first fast edit-run loop for single-file
 scripts and executable packages. It keeps exactly one run in flight, batches

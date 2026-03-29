@@ -27,7 +27,8 @@ Current shipped foundation in this slice:
   - `deadline_after`, `deadline_at_unix_millis`
 - `net`
   - `DuplexStream`, `TcpListener`, `SocketAddr`
-  - `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+  - `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_loopback_with_control`
+  - `listen_tcp`, `listen_tcp_loopback`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`
 - `http`
   - `response_status`, `response_status_class`, `response_is_success`
   - `response_body`, `response_json`, `response_method`, `response_url`
@@ -36,6 +37,10 @@ Current shipped foundation in this slice:
 The `http` module name is now shipped with explicit response-inspection helpers
 on top of the existing bootstrap HTTP builtins. Broader typed client/server
 surface still belongs to the next network slices.
+
+The `net` module now also ships loopback bind/connect wrappers and typed
+`SocketAddr` connection helpers so local service workers do not have to rebuild
+`"127.0.0.1:" + to_string(port)` or `address.text()` manually.
 
 Planned first-wave areas:
 

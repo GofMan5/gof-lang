@@ -1673,7 +1673,7 @@ mod tests {
 
         fs::write(
             &main_path,
-            "import net\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    token: cancel_token = timeout_token(1000)\n    mut listener = listen_tcp(\"127.0.0.1:0\")?\n    listener = listener.with_deadline(deadline)\n    address = listener.local_addr()?\n    client = connect_tcp_with_control(address.text(), deadline, token)?\n    local = client.local_addr()?\n    return Result.Ok(address.port() + local.port() - local.port())\n",
+            "import net\nimport time\n\nfn main() -> Result[int, RuntimeError]:\n    deadline = deadline_after(1000)?\n    token: cancel_token = timeout_token(1000)\n    mut listener = listen_tcp_loopback(0)?\n    listener = listener.with_deadline(deadline)\n    address = listener.local_addr()?\n    client = address.connect_tcp_with_control(deadline, token)?\n    local = client.local_addr()?\n    return Result.Ok(address.port() + local.port() - local.port())\n",
         )
         .expect("main module should exist");
 

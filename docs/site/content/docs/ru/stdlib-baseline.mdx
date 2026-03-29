@@ -16,7 +16,9 @@ Shipped stdlib теперь имеет реальный import-delivery path. З
 - `bytes` — `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
 - `io` — `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
 - `time` — `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
-- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_loopback_with_control`, `listen_tcp`, `listen_tcp_loopback`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`
+
+`net` теперь также ship-ит loopback helper-ы и typed `SocketAddr` connect wrapper-ы, чтобы локальный service code не собирал `"127.0.0.1:" + to_string(port)` и `address.text()` вручную.
 
 ```gof
 import bytes
