@@ -1,1 +1,23 @@
+fn response_status(report: json) -> Result[int, RuntimeError]:
+    return json_int(json_get(report, "status")?)
+
+fn response_body(report: json) -> Result[string, RuntimeError]:
+    return json_string(json_get(report, "body")?)
+
+fn response_method(report: json) -> Result[string, RuntimeError]:
+    return json_string(json_get(report, "method")?)
+
+fn response_url(report: json) -> Result[string, RuntimeError]:
+    return json_string(json_get(report, "url")?)
+
+fn response_headers(report: json) -> Result[json, RuntimeError]:
+    return json_get(report, "headers")
+
+fn response_header_values(report: json, name: string) -> Result[json, RuntimeError]:
+    headers = response_headers(report)?
+    return json_get(headers, name)
+
+fn response_header(report: json, name: string) -> Result[string, RuntimeError]:
+    values = response_header_values(report, name)?
+    return json_string(json_index(values, 0)?)
 

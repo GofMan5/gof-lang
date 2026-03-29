@@ -260,11 +260,13 @@ Current sequence-helper rules:
 ## JSON, CSV, TOML, YAML, base64, HTTP, and explicit retry delays
 
 ```gof
+import http
+
 fn notify(base: string) -> Result[int, RuntimeError]:
     sleep(0)
     headers: dict[string] = {"Accept": "application/json", "Content-Type": "application/json"}
     report = http_request("POST", base + "/notify", "{\"text\":\"pong\"}", headers, 1500)?
-    return json_int(json_get(report, "status")?)
+    return response_status(report)
 ```
 
 Current JSON, CSV, TOML, YAML, base64, templating, and HTTP rules:
@@ -290,6 +292,7 @@ Current JSON, CSV, TOML, YAML, base64, templating, and HTTP rules:
 - `http_request(...)` preserves non-success HTTP statuses as successful reports so callers can branch on them explicitly
 - `http_request(...)` normalizes response header names to lowercase and exposes each header as `list[string]`
 - `http_request(...)` accepts explicit `dict[string]` request headers and an optional non-negative timeout in milliseconds
+- `import http` now exposes typed response helpers such as `response_status(...)`, `response_body(...)`, `response_method(...)`, `response_url(...)`, `response_headers(...)`, `response_header_values(...)`, and `response_header(...)`
 - HTTPS/TLS continues to ride on the bootstrap `ureq + rustls` transport path
 - `http_get(url)` is the current bootstrap HTTP read path
 - `http_post(url, body[, content_type])` is the current bootstrap HTTP write path

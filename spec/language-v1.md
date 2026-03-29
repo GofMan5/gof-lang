@@ -136,6 +136,7 @@ The bootstrap compiler in this repository currently supports:
 - the shipped `io` module currently exposes `ReadStream`, `WriteStream`, `open_read_stream`, and `open_write_stream`
 - the shipped `time` module currently exposes `NetDeadline`, `deadline_after`, and `deadline_at_unix_millis`
 - the shipped `net` module currently exposes `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, and `listen_tcp`
+- the shipped `http` module currently exposes `response_status`, `response_body`, `response_method`, `response_url`, `response_headers`, `response_header_values`, and `response_header`
 - the shipped `testing` module currently exposes `TestContext`, `TempDir`, `TempFile`, `TestContext.fail`, `TestContext.equal`, `TestContext.not_equal`, `TestContext.true`, `TestContext.false`, `TestContext.ok`, `TestContext.err`, `TestContext.match_snapshot`, `TestContext.case`, `TestContext.temp_dir`, `TestContext.temp_file`, `TestContext.env`, `TestContext.skip`, `TestContext.todo`, `TempDir.path`, and `TempFile.path`
 - `Bytes`, `ReadStream`, `WriteStream`, `DuplexStream`, `TcpListener`, `SocketAddr`, `NetDeadline`, `TestContext`, `TempDir`, and `TempFile` are currently opaque shipped-stdlib types rather than user-declarable language types
 - `fixture(scope) fn` currently declares a top-level typed fixture and cannot declare a receiver
@@ -342,6 +343,7 @@ The bootstrap compiler in this repository currently supports:
 - `http_request` currently preserves non-success HTTP statuses as successful reports so callers can inspect them explicitly
 - `http_request` currently normalizes response header names to lowercase and exposes each header as `list[string]`
 - `http_request` currently accepts explicit `dict[string]` request headers and an optional non-negative timeout in milliseconds
+- `import http` currently exposes explicit helpers for extracting typed status/body/method/url/header data from the structured `http_request(...)` response report
 - HTTPS/TLS currently flows through the bootstrap `ureq + rustls` transport path
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires either a list target with an integer index or a dict target with a string key

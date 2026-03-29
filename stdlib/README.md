@@ -28,11 +28,13 @@ Current shipped foundation in this slice:
 - `net`
   - `DuplexStream`, `TcpListener`, `SocketAddr`
   - `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+- `http`
+  - `response_status`, `response_body`, `response_method`, `response_url`
+  - `response_headers`, `response_header_values`, `response_header`
 
-The `http` module name is reserved and shipped, but its typed client/server
-surface still belongs to the next network slices. For now the public HTTP
-contract is still the bootstrap helper layer documented in `README.md` and
-`spec/language-v1.md`.
+The `http` module name is now shipped with explicit response-inspection helpers
+on top of the existing bootstrap HTTP builtins. Broader typed client/server
+surface still belongs to the next network slices.
 
 Planned first-wave areas:
 

@@ -235,6 +235,7 @@ Hard sequencing rule:
 - `[~]` predictable numeric and conversion utilities
 - `[x]` bootstrap JSON helpers for explicit data decoding
 - `[x]` bootstrap HTTP GET/POST client plus explicit `sleep(...)` retry helper sufficient for long-polling examples
+- `[x]` typed `http` stdlib response helpers over structured `http_request(...)` reports
 - `[x]` unary minus, integer division, and modulo in the bootstrap numeric surface
 - `[x]` minimal testing and assert helpers inside the language surface
 - Checkpoints:
@@ -357,6 +358,7 @@ Hard sequencing rule:
 - `[~]` CP-M10-2: network and service stdlib baseline
 - `[x]` CP-M10-2a: shipped stdlib module delivery plus reserved import names for `bytes`, `io`, `time`, `net`, and `http`
 - `[x]` CP-M10-2b: bootstrap `Bytes`, stream, deadline, socket-address, listener, and TCP-duplex foundations through shipped stdlib modules
+- `[x]` CP-M10-2c: shipped `http` stdlib response helpers for typed inspection of structured `http_request(...)` reports
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

@@ -978,6 +978,13 @@ mod tests {
                 .any(|function| function.name == "deadline_after"),
             "stdlib `time` imports should contribute their shipped functions",
         );
+        assert!(
+            module
+                .functions
+                .iter()
+                .any(|function| function.name == "response_status"),
+            "stdlib `http` imports should contribute their shipped functions",
+        );
     }
 
     #[test]

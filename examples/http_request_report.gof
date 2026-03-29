@@ -1,13 +1,4 @@
-fn response_status(report: json) -> Result[int, RuntimeError]:
-    return json_int(json_get(report, "status")?)
-
-fn response_body(report: json) -> Result[string, RuntimeError]:
-    return json_string(json_get(report, "body")?)
-
-fn response_header(report: json, name: string) -> Result[string, RuntimeError]:
-    headers = json_get(report, "headers")?
-    values = json_get(headers, name)?
-    return json_string(json_index(values, 0)?)
+import http
 
 fn main() -> Result[int, RuntimeError]:
     base = env("GOF_HTTP_REQUEST_BASE")?
@@ -15,7 +6,14 @@ fn main() -> Result[int, RuntimeError]:
     report = http_request("POST", base + "/inspect", "ping", headers, 1500)?
     status = response_status(report)?
     body = response_body(report)?
+    method = response_method(report)?
+    url = response_url(report)?
+    content_type_values = response_header_values(report, "content-type")?
+    content_type = json_string(json_index(content_type_values, 0)?)?
     request_id = response_header(report, "x-request-id")?
     assert(status == 202, "expected accepted response")
     assert(body == "accepted", "expected echoed response body")
+    assert(method == "POST", "expected request method to round-trip")
+    assert(url == base + "/inspect", "expected response report URL")
+    assert(starts_with(content_type, "text/plain"), "expected content type header")
     return Result.Ok(status + len(body) + len(request_id))

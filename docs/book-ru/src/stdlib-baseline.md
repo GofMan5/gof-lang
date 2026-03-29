@@ -261,11 +261,13 @@ fn main() -> Result[int, RuntimeError]:
 ## JSON, CSV, TOML, YAML, base64, HTTP и явные retry delays
 
 ```gof
+import http
+
 fn notify(base: string) -> Result[int, RuntimeError]:
     sleep(0)
     headers: dict[string] = {"Accept": "application/json", "Content-Type": "application/json"}
     report = http_request("POST", base + "/notify", "{\"text\":\"pong\"}", headers, 1500)?
-    return json_int(json_get(report, "status")?)
+    return response_status(report)
 ```
 
 Текущие правила JSON, CSV, TOML, YAML, base64, templating и HTTP:
@@ -291,6 +293,7 @@ fn notify(base: string) -> Result[int, RuntimeError]:
 - `http_request(...)` сохраняет non-success HTTP statuses успешными значениями, чтобы код мог явно ветвиться по ним
 - `http_request(...)` нормализует имена response headers к lowercase и отдает каждое значение как `list[string]`
 - `http_request(...)` принимает явные `dict[string]` request headers и optional non-negative timeout в миллисекундах
+- `import http` теперь дает typed response helpers вроде `response_status(...)`, `response_body(...)`, `response_method(...)`, `response_url(...)`, `response_headers(...)`, `response_header_values(...)` и `response_header(...)`
 - HTTPS/TLS продолжает идти через bootstrap transport на базе `ureq + rustls`
 - `http_get(url)` — текущий bootstrap HTTP read path
 - `http_post(url, body[, content_type])` — текущий bootstrap HTTP write path

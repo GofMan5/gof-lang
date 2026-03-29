@@ -179,11 +179,12 @@ imports instead of behind ever-growing global builtins:
 - `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`
 - `time`: `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
 - `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_with_control`, `listen_tcp`
+- `http`: `response_status`, `response_body`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`
 
 This is still bootstrap surface, not the final network platform. The current
-focus is explicit `Result`-based bytes/stream/deadline/TCP contracts that keep
-allocation and blocking points visible while the typed HTTP client/server
-layers are still being built.
+focus is explicit `Result`-based bytes/stream/deadline/TCP contracts plus
+typed HTTP response-inspection helpers that keep allocation and blocking points
+visible while fuller typed HTTP client/server layers are still being built.
 
 `gof run --watch` now gives a script-first fast edit-run loop for single-file
 scripts and executable packages. It keeps exactly one run in flight, batches
@@ -248,6 +249,12 @@ manage custom headers, non-2xx responses, and timeout policy without falling
 back to host-language glue. HTTPS/TLS continues to ride on the existing
 `ureq + rustls` transport path instead of inventing a parallel custom TLS
 stack.
+
+The reserved `http` stdlib import now also ships typed response helpers such as
+`response_status(report)`, `response_body(report)`, `response_method(report)`,
+`response_url(report)`, and `response_header(report, name)` so scripts can
+inspect structured `http_request(...)` reports without repeating raw
+`json_get(...)` / `json_string(...)` boilerplate at every call site.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while
