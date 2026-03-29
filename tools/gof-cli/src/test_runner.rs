@@ -257,6 +257,14 @@ fn run_human_inner(args: TestArgs) -> Result<()> {
             println!("{}", doctest_id(&doctest));
             summary.listed += 1;
         }
+        for path in filtered_fixture_targets {
+            println!("{}", display_id_for_path(&path));
+            summary.listed += 1;
+        }
+        for entry_path in filtered_package_targets {
+            println!("{}", display_id_for_path(&entry_path));
+            summary.listed += 1;
+        }
     }
 
     if args.list {

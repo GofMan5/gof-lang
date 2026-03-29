@@ -2200,6 +2200,80 @@ fn gof_test_lists_language_level_tests() {
 }
 
 #[test]
+fn gof_test_lists_all_human_target_kinds() {
+    let temp = tempdir().expect("tempdir should exist");
+    let tests_root = temp.path().join("tests");
+    let runtime_root = tests_root.join("runtime");
+    fs::create_dir_all(&runtime_root).expect("runtime root should exist");
+    fs::write(
+        tests_root.join("list_test.gof"),
+        "import testing\n\ntest fn alpha_case(t: TestContext):\n    t.true(true, \"alpha\")\n",
+    )
+    .expect("language-level test file should exist");
+    fs::write(
+        temp.path().join("README.md"),
+        "# Guide\n\n```gof doctest\nfn main() -> int:\n    return 0\n```\n",
+    )
+    .expect("README should exist");
+    fs::write(
+        runtime_root.join("hello.gof"),
+        "fn main() -> int:\n    print(\"fixture-output\")\n    return 0\n",
+    )
+    .expect("runtime fixture should exist");
+    let package_root = write_executable_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("test")
+        .arg("--docs")
+        .arg("--list")
+        .arg(temp.path())
+        .arg(&package_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("list_test.gof::alpha_case"))
+        .stdout(predicate::str::contains("README.md:4::doctest#1"))
+        .stdout(predicate::str::contains("tests/runtime/hello.gof"))
+        .stdout(predicate::str::contains("src/main.gof"))
+        .stdout(predicate::str::contains("listed 4"));
+}
+
+#[test]
+fn gof_test_lists_fixture_and_package_targets_without_language_tests() {
+    let temp = tempdir().expect("tempdir should exist");
+    let runtime_root = temp.path().join("tests").join("runtime");
+    fs::create_dir_all(&runtime_root).expect("runtime root should exist");
+    fs::write(
+        runtime_root.join("hello.gof"),
+        "fn main() -> int:\n    return 0\n",
+    )
+    .expect("runtime fixture should exist");
+    let package_root = write_executable_package(temp.path());
+
+    gof_command()
+        .args(["mod", "resolve", "--dir"])
+        .arg(&package_root)
+        .assert()
+        .success();
+
+    gof_command()
+        .arg("test")
+        .arg("--list")
+        .arg(temp.path())
+        .arg(&package_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("tests/runtime/hello.gof"))
+        .stdout(predicate::str::contains("src/main.gof"))
+        .stdout(predicate::str::contains("listed 2"));
+}
+
+#[test]
 fn gof_test_reports_skip_and_todo_statuses() {
     let temp = tempdir().expect("tempdir should exist");
     let tests_root = temp.path().join("tests");

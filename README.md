@@ -140,6 +140,9 @@ The current shipped testing contract is still explicit and intentionally narrow:
 - `gof test --nocapture` now surfaces captured human-path stdout/stderr for
   language tests, doctests, fixtures, and package targets instead of keeping
   passing target output hidden behind the summary lines
+- human `gof test --list` now enumerates language tests, doctests, fixtures,
+  and package targets instead of silently listing only the language/doctest
+  subset
 - `--update-snapshots` currently rewrites both snapshots and product-fixture
   artifacts such as `.diag`, `.stdout`, `.stderr`, and `.exit`
 - `gof test --shuffle` deterministically reorders discovered language tests,

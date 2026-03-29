@@ -27,6 +27,8 @@ Delivered in shipped slices:
 - `--json`
 - `--junit`
 - per-test stdout capture
+- human-path `--list` enumeration for language tests, doctests, fixtures, and
+  package targets
 - human-path `--nocapture` surfacing for language tests, doctests, fixtures,
   and package targets while the default human path keeps passing target output
   captured

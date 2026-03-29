@@ -43,6 +43,10 @@ gof test --list examples/testing_baseline
 gof test --shuffle --seed 17 examples/testing_baseline
 ```
 
+Human path у `gof test --list` теперь перечисляет language tests, doctests,
+fixtures и package targets через те же normalized ids, что и machine
+reporter-ы.
+
 ## `TestContext`
 
 В shipped `testing` module сейчас есть базовые helper-ы:

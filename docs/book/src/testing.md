@@ -42,6 +42,10 @@ gof test --list examples/testing_baseline
 gof test --shuffle --seed 17 examples/testing_baseline
 ```
 
+The human `gof test --list` path now enumerates language tests, doctests,
+fixtures, and package targets through the same normalized ids the machine
+reporters use.
+
 ## `TestContext`
 
 The shipped `testing` stdlib currently exposes these baseline helpers:
