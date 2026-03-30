@@ -1,0 +1,20 @@
+import http
+
+fn main() -> Result[int, RuntimeError]:
+    base = env("GOF_HTTP_PATCH_BASE")?
+    headers: dict[string] = request_bearer_headers_with("demo-token", {"Content-Type": "text/plain", "X-Trace-Id": "trace-8"})
+    report = request_report_with_headers("PATCH", base + "/inspect", "patched", headers, 1500)?
+    status = response_status(report)?
+    body = response_body(report)?
+    method = response_method(report)?
+    url = response_url(report)?
+    content_type = response_content_type(report)?
+    request_id = response_header(report, "x-request-id")?
+    assert(status == 207, "expected multi-status response")
+    assert(response_status_class(report)? == 2, "expected 2xx status class")
+    assert(response_is_success(report)?, "expected 207 report to count as success")
+    assert(body == "patched", "expected echoed response body")
+    assert(method == "PATCH", "expected request method to round-trip")
+    assert(url == base + "/inspect", "expected response report URL")
+    assert(starts_with(content_type, "text/plain"), "expected content type header")
+    return Result.Ok(status + len(body) + len(request_id))

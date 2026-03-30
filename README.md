@@ -312,11 +312,14 @@ It now also ships JSON-client helpers like `request_json_headers()`,
 `request_json_report(method, url, body, timeout_ms)`.
 
 For the lower-level structured report path it now also exposes
+`request_report(method, url, body, timeout_ms)`,
+`request_report_with_headers(method, url, body, headers, timeout_ms)`,
 `get_report(url, timeout_ms)`, `get_report_with_headers(url, headers, timeout_ms)`,
 `post_report(url, body, timeout_ms)`, and
 `post_report_with_headers(url, body, headers, timeout_ms)` so callers that want
-status/body/header inspection without automatic JSON decoding do not have to
-repeat the raw method/body placeholders on every GET or POST call.
+status/body/header inspection without automatic JSON decoding can either stay
+on the generic raw method path for verbs like PATCH/DELETE or use dedicated GET
+and POST wrappers without repeating bootstrap `http_request(...)` call shapes.
 
 The same shipped `http` module now also exposes
 `get_json_with_headers(url, headers, timeout_ms)`,

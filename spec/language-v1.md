@@ -379,6 +379,8 @@ The bootstrap compiler in this repository currently supports:
 - `request_json_bearer_headers(token)` currently accepts exactly one bearer token string and returns JSON default headers plus `Authorization: Bearer <token>`
 - `request_json_bearer_headers_with(token, extra)` currently accepts `(string, dict[string])` and returns JSON default headers plus bearer auth merged with explicit overrides
 - `get_json(url)` currently accepts exactly one string URL and returns parsed `Result[json, RuntimeError]`
+- `request_report(method, url, body, timeout_ms)` currently accepts `(string, string, string, int)` and returns the structured `Result[json, RuntimeError]` report for the generic lower-level raw request path
+- `request_report_with_headers(method, url, body, headers, timeout_ms)` currently accepts `(string, string, string, dict[string], int)` and returns the structured `Result[json, RuntimeError]` report for callers that want custom headers on that generic raw request path
 - `get_report(url, timeout_ms)` currently accepts `(string, int)` and returns the structured `Result[json, RuntimeError]` report for the explicit lower-level GET path
 - `get_report_with_headers(url, headers, timeout_ms)` currently accepts `(string, dict[string], int)` and returns the structured `Result[json, RuntimeError]` report for callers that want custom headers on the lower-level GET path
 - `get_json_with_timeout(url, timeout_ms)` currently accepts `(string, int)` and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON GET path and surfacing non-2xx replies as `RuntimeError.HttpStatus(...)`

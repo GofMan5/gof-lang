@@ -1726,7 +1726,7 @@ mod tests {
 
         fs::write(
             &main_path,
-            "import http\n\nfn main() -> Result[int, RuntimeError]:\n    first = get_report(\"https://example.invalid/health\", 1000)?\n    headers: dict[string] = {\"X-Trace-Id\": \"trace-1\"}\n    auth_headers = request_bearer_headers_with(\"demo-token\", headers)\n    second = get_report_with_headers(\"https://example.invalid/health\", auth_headers, 1000)?\n    third = post_report(\"https://example.invalid/jobs\", \"ping\", 1000)?\n    fourth = post_report_with_headers(\"https://example.invalid/jobs\", \"ping\", auth_headers, 1000)?\n    return Result.Ok(response_status(first)? + response_status(second)? - response_status(third)? + response_status(fourth)?)\n",
+            "import http\n\nfn main() -> Result[int, RuntimeError]:\n    first = request_report(\"PATCH\", \"https://example.invalid/jobs/7\", \"ping\", 1000)?\n    headers: dict[string] = {\"X-Trace-Id\": \"trace-1\"}\n    auth_headers = request_bearer_headers_with(\"demo-token\", headers)\n    second = request_report_with_headers(\"DELETE\", \"https://example.invalid/jobs/7\", \"\", auth_headers, 1000)?\n    third = get_report(\"https://example.invalid/health\", 1000)?\n    fourth = get_report_with_headers(\"https://example.invalid/health\", auth_headers, 1000)?\n    fifth = post_report(\"https://example.invalid/jobs\", \"ping\", 1000)?\n    sixth = post_report_with_headers(\"https://example.invalid/jobs\", \"ping\", auth_headers, 1000)?\n    return Result.Ok(response_status(first)? + response_status(second)? + response_status(third)? + response_status(fourth)? - response_status(fifth)? + response_status(sixth)?)\n",
         )
         .expect("main module should exist");
 
@@ -1775,6 +1775,18 @@ mod tests {
                 assert_eq!(value.ty, Type::Json);
             }
             other => panic!("expected fourth report bind, got {other:?}"),
+        }
+        match &main.body[6] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected fifth report bind, got {other:?}"),
+        }
+        match &main.body[7] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected sixth report bind, got {other:?}"),
         }
     }
 

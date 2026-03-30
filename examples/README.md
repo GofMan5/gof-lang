@@ -32,6 +32,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus JSON request, header-merge, and typed response helpers from shipped `http`
 - `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, timeout-armed listener constructors, single-budget typed `SocketAddr` dialing, and duplex string roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with dedicated POST report helpers, declarative bearer/custom header composition, timeout, and response metadata
+- `http_patch_report.gof`: structured HTTP request reports with the generic raw request-report wrapper for PATCH-style service calls, declarative bearer/custom header composition, timeout, and response metadata
 - `http_json_client.gof`: high-level parsed JSON client path with shipped bearer/custom-header GET/POST helpers and explicit timeout control
 - `http_status_gate.gof`: high-level `http` JSON GET helper surfacing `RuntimeError.HttpStatus(...)` for non-2xx replies while preserving the response body for explicit handling
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
@@ -94,6 +95,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdlib_imports.gof` -> `Result.Ok(value: 281)`
 - `tcp_roundtrip.gof` -> `Result.Ok(value: 10)`
 - `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`; the example now also demonstrates the dedicated raw POST report helper plus declarative bearer/header-merge helpers
+- `http_patch_report.gof` -> `Result.Ok(value: 220)` when `GOF_HTTP_PATCH_BASE` points at a test endpoint that returns `207 Multi-Status`, body `patched`, and header `X-Request-Id: req-84`; the example demonstrates the generic raw request-report helper for PATCH-style service calls plus declarative bearer/header composition
 - `http_json_client.gof` -> `Result.Ok(value: 43)` when `GOF_HTTP_JSON_BASE` points at a test endpoint that returns JSON for `GET /health` and `POST /jobs`; the example now uses the dedicated custom-header GET/POST helpers instead of repeating the generic method-based wrapper
 - `http_status_gate.gof` -> `Result.Ok(value: 514)` when `GOF_HTTP_STATUS_BASE` points at a test endpoint that returns `503 Service Unavailable` with body `retry later`; the example demonstrates the high-level custom-header GET helper surfacing `RuntimeError.HttpStatus(...)`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
