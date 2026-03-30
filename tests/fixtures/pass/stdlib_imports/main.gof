@@ -6,9 +6,8 @@ import time
 
 fn main() -> Result[int, RuntimeError]:
     report = json_parse("{\"status\":204,\"body\":\"{\\\"service\\\":\\\"alpha\\\",\\\"count\\\":7}\",\"headers\":{\"content-type\":[\"application/json; charset=utf-8\"]},\"method\":\"GET\",\"url\":\"https://example.com/health\"}")?
-    json_headers: dict[string] = request_json_headers()
-    bearer_headers: dict[string] = request_json_bearer_headers("demo-token")
-    traced_headers: dict[string] = request_headers_set(bearer_headers, "X-Trace-Id", "trace-7")
+    json_headers: dict[string] = request_headers_merge(request_json_headers(), {"X-Trace-Id": "trace-7"})
+    bearer_headers: dict[string] = request_json_bearer_headers_with("demo-token", {"X-Trace-Id": "trace-7"})
     status = response_status(report)?
     status_class = response_status_class(report)?
     success = response_is_success(report)?
@@ -21,6 +20,6 @@ fn main() -> Result[int, RuntimeError]:
     assert(json_headers["Accept"] == "application/json", "expected JSON accept helper")
     assert(bearer_headers["Authorization"] == "Bearer demo-token", "expected bearer header helper")
     assert(json_headers["Content-Type"] == "application/json", "expected JSON content type helper")
-    assert(traced_headers["X-Trace-Id"] == "trace-7", "expected header setter helper")
+    assert(bearer_headers["X-Trace-Id"] == "trace-7", "expected header merge helper")
     assert(success, "expected 2xx report to count as success")
     return Result.Ok(status + status_class + count + len(service) + len(method) + len(url) + len(content_type) + len(json_headers))

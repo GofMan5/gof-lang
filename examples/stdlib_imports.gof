@@ -6,9 +6,8 @@ import time
 
 fn main() -> Result[int, RuntimeError]:
     report = json_parse("{\"status\":204,\"body\":\"{\\\"service\\\":\\\"alpha\\\",\\\"count\\\":7}\",\"headers\":{\"content-type\":[\"application/json; charset=utf-8\"]},\"method\":\"GET\",\"url\":\"https://example.com/health\"}")?
-    json_headers: dict[string] = request_json_headers()
-    bearer_headers: dict[string] = request_json_bearer_headers("demo-token")
-    traced_headers: dict[string] = request_headers_set(bearer_headers, "X-Trace-Id", "trace-7")
+    json_headers: dict[string] = request_headers_merge(request_json_headers(), {"X-Trace-Id": "trace-7"})
+    bearer_headers: dict[string] = request_json_bearer_headers_with("demo-token", {"X-Trace-Id": "trace-7"})
     status = response_status(report)?
     status_class = response_status_class(report)?
     success = response_is_success(report)?
@@ -21,7 +20,7 @@ fn main() -> Result[int, RuntimeError]:
     accept = json_headers["Accept"]
     bearer = bearer_headers["Authorization"]
     json_content_type = json_headers["Content-Type"]
-    trace_id = traced_headers["X-Trace-Id"]
+    trace_id = bearer_headers["X-Trace-Id"]
     assert(status == 204, "expected parsed status")
     assert(success, "expected 2xx report to count as success")
     assert(service == "alpha", "expected response_json to parse body")

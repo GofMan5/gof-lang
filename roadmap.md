@@ -366,6 +366,7 @@ Hard sequencing rule:
 - `[x]` CP-M10-2h: shipped `http` header-composition helpers so service clients can layer bearer auth, trace IDs, and explicit content-type overrides without rebuilding request dict literals from scratch
 - `[x]` CP-M10-2i: shipped explicit timeout variants for the high-level `http` JSON GET/POST helpers so bots and internal services keep timeout control without falling back to raw `http_request(...)` reports
 - `[x]` CP-M10-2j: shipped parsed-JSON custom-header request helpers so authenticated service clients can keep bearer/trace headers and timeout control without manually restitching `response_json(http_request(...))`
+- `[x]` CP-M10-2k: shipped declarative `http` header-merge helpers so service clients can compose JSON defaults and explicit overrides in one expression instead of mutating request dicts step by step
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

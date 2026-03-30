@@ -2070,7 +2070,7 @@ fn gof_run_executes_shipped_stdlib_import_smoke_example() {
         .arg(example)
         .assert()
         .success()
-        .stdout(predicate::str::contains("Result.Ok(value: 280)"));
+        .stdout(predicate::str::contains("Result.Ok(value: 281)"));
 }
 
 #[test]

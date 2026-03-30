@@ -365,8 +365,11 @@ The bootstrap compiler in this repository currently supports:
 - `http_request` currently accepts `(method, url)`, `(method, url, body)`, `(method, url, body, headers)`, or `(method, url, body, headers, timeout_ms)` and returns `Result[json, RuntimeError]`
 - `request_json_headers()` currently returns a `dict[string]` with `Accept` and `Content-Type` both set to `application/json`
 - `request_headers_set(headers, name, value)` currently accepts `(dict[string], string, string)` and returns a new `dict[string]` with that header inserted or replaced explicitly
+- `request_headers_merge(base, extra)` currently accepts `(dict[string], dict[string])` and returns a new `dict[string]` with explicit per-key override semantics from `extra`
+- `request_json_headers_with(extra)` currently accepts exactly one `dict[string]` and returns JSON default headers merged with explicit overrides
 - `request_bearer_headers(token)` currently accepts exactly one bearer token string and returns a `dict[string]` with `Authorization: Bearer <token>`
 - `request_json_bearer_headers(token)` currently accepts exactly one bearer token string and returns JSON default headers plus `Authorization: Bearer <token>`
+- `request_json_bearer_headers_with(token, extra)` currently accepts `(string, dict[string])` and returns JSON default headers plus bearer auth merged with explicit overrides
 - `get_json(url)` currently accepts exactly one string URL and returns parsed `Result[json, RuntimeError]`
 - `get_json_with_timeout(url, timeout_ms)` currently accepts `(string, int)` and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON GET path
 - `post_json(url, body)` currently accepts `(string, string)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]`

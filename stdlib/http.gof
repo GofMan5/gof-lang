@@ -7,12 +7,24 @@ fn request_json_headers() -> dict[string]:
 fn request_headers_set(headers: dict[string], name: string, value: string) -> dict[string]:
     return insert(headers, name, value)
 
+fn request_headers_merge(base: dict[string], extra: dict[string]) -> dict[string]:
+    mut merged: dict[string] = base
+    for name in extra:
+        merged = request_headers_set(merged, name, extra[name])
+    return merged
+
+fn request_json_headers_with(extra: dict[string]) -> dict[string]:
+    return request_headers_merge(request_json_headers(), extra)
+
 fn request_bearer_headers(token: string) -> dict[string]:
     headers: dict[string] = dict()
     return request_headers_set(headers, "Authorization", "Bearer " + token)
 
 fn request_json_bearer_headers(token: string) -> dict[string]:
     return request_headers_set(request_json_headers(), "Authorization", "Bearer " + token)
+
+fn request_json_bearer_headers_with(token: string, extra: dict[string]) -> dict[string]:
+    return request_headers_merge(request_json_bearer_headers(token), extra)
 
 fn get_json(url: string) -> Result[json, RuntimeError]:
     return json_parse(http_get(url)?)

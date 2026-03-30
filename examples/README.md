@@ -29,7 +29,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdin_report.gof`: explicit stdin ingestion through `read_stdin()` and `read_stdin_lines()` for shell-style pipelines
 - `time_report.gof`: explicit Unix wall-clock helpers through `unix_seconds()` and `unix_millis()`
 - `base64_report.gof`: explicit base64 encode/decode helpers for HTTP/CI/script payloads
-- `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus JSON request and typed response helpers from shipped `http`
+- `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus JSON request, header-merge, and typed response helpers from shipped `http`
 - `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, typed `SocketAddr` dialing, timeout wrappers, and duplex string roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
 - `http_json_client.gof`: high-level parsed JSON client path with shipped bearer/custom-header helpers and explicit timeout control
@@ -90,10 +90,10 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdin_report.gof` -> `Result.Ok(value: chars=11 first=alpha lines=2)` for stdin `alpha\nbeta\n`
 - `time_report.gof` -> `Result.Ok(value: 1)`
 - `base64_report.gof` -> `Result.Ok(value: 12)`
-- `stdlib_imports.gof` -> `Result.Ok(value: 280)`
+- `stdlib_imports.gof` -> `Result.Ok(value: 281)`
 - `tcp_roundtrip.gof` -> `Result.Ok(value: 10)`
-- `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`; the example now also demonstrates shipped bearer/custom-header builders over `http_request(...)`
-- `http_json_client.gof` -> `Result.Ok(value: 43)` when `GOF_HTTP_JSON_BASE` points at a test endpoint that returns JSON for `GET /health` and `POST /jobs`; the example keeps parsed JSON responses while still sending bearer and trace headers through shipped helpers
+- `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`; the example now also demonstrates declarative header-merge helpers over `http_request(...)`
+- `http_json_client.gof` -> `Result.Ok(value: 43)` when `GOF_HTTP_JSON_BASE` points at a test endpoint that returns JSON for `GET /health` and `POST /jobs`; the example keeps parsed JSON responses while still sending bearer and trace headers through declarative shipped helpers
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`
 - `yaml_report.gof` -> `Result.Ok(value: 17)`

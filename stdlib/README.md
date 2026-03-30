@@ -33,7 +33,7 @@ Current shipped foundation in this slice:
   - string helpers: `DuplexStream.read_string`, `DuplexStream.read_exact_string`, `DuplexStream.read_all_string`, `DuplexStream.write_string`, `DuplexStream.write_all_string`
   - `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`
 - `http`
-  - `request_json_headers`, `request_headers_set`, `request_bearer_headers`, `request_json_bearer_headers`, `get_json`, `get_json_with_timeout`, `post_json`, `post_json_with_timeout`, `request_json_report`, `request_json_report_with_headers`, `request_json_with_headers`
+  - `request_json_headers`, `request_headers_set`, `request_headers_merge`, `request_json_headers_with`, `request_bearer_headers`, `request_json_bearer_headers`, `request_json_bearer_headers_with`, `get_json`, `get_json_with_timeout`, `post_json`, `post_json_with_timeout`, `request_json_report`, `request_json_report_with_headers`, `request_json_with_headers`
   - `response_status`, `response_status_class`, `response_is_success`
   - `response_body`, `response_json`, `response_method`, `response_url`
   - `response_headers`, `response_header_values`, `response_header`, `response_content_type`
@@ -51,6 +51,10 @@ clients that want the higher-level path before dropping to raw
 It also exposes parsed-JSON custom-header helpers so authenticated JSON API
 clients can keep the high-level `json` response path even when they need
 bearer auth, trace headers, or other explicit request metadata.
+
+That same surface now also includes declarative header-merge helpers so callers
+can compose default JSON headers with overrides in one expression instead of
+rebinding the same dict through repeated `request_headers_set(...)` steps.
 
 The `net` module now also ships loopback bind/connect wrappers and typed
 `SocketAddr` connection helpers so local service workers do not have to rebuild

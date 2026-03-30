@@ -2,9 +2,7 @@ import http
 
 fn main() -> Result[int, RuntimeError]:
     base = env("GOF_HTTP_REQUEST_BASE")?
-    mut headers: dict[string] = request_json_bearer_headers("demo-token")
-    headers = request_headers_set(headers, "Content-Type", "text/plain")
-    headers = request_headers_set(headers, "X-Trace-Id", "trace-7")
+    headers: dict[string] = request_json_bearer_headers_with("demo-token", {"Content-Type": "text/plain", "X-Trace-Id": "trace-7"})
     report = http_request("POST", base + "/inspect", "ping", headers, 1500)?
     status = response_status(report)?
     body = response_body(report)?

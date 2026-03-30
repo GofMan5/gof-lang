@@ -2,8 +2,7 @@ import http
 
 fn main() -> Result[int, RuntimeError]:
     base = env("GOF_HTTP_JSON_BASE")?
-    mut headers: dict[string] = request_json_bearer_headers("demo-token")
-    headers = request_headers_set(headers, "X-Trace-Id", "trace-9")
+    headers: dict[string] = request_json_bearer_headers_with("demo-token", {"X-Trace-Id": "trace-9"})
     health = request_json_with_headers("GET", base + "/health", "", headers, 1500)?
     service = json_string(json_get(health, "service")?)?
     count = json_int(json_get(health, "count")?)?
