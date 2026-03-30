@@ -1720,6 +1720,59 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_supports_shipped_http_stdlib_surface() {
+        let temp = tempdir().expect("tempdir should exist");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(
+            &main_path,
+            "import http\n\nfn main() -> Result[int, RuntimeError]:\n    first = get_report(\"https://example.invalid/health\", 1000)?\n    headers: dict[string] = {\"X-Trace-Id\": \"trace-1\"}\n    second = get_report_with_headers(\"https://example.invalid/health\", headers, 1000)?\n    third = post_report(\"https://example.invalid/jobs\", \"ping\", 1000)?\n    fourth = post_report_with_headers(\"https://example.invalid/jobs\", \"ping\", headers, 1000)?\n    return Result.Ok(response_status(first)? + response_status(second)? - response_status(third)? + response_status(fourth)?)\n",
+        )
+        .expect("main module should exist");
+
+        let source = SourceFile::from_path(&main_path).expect("source should load");
+        let compiled =
+            compile_source(&source, CompileMode::Executable).expect("compile should succeed");
+        let main = compiled
+            .typed_hir
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main function should exist");
+
+        match &main.body[0] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected first report bind, got {other:?}"),
+        }
+        match &main.body[1] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Dict(Box::new(Type::String)));
+            }
+            other => panic!("expected headers bind, got {other:?}"),
+        }
+        match &main.body[2] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected second report bind, got {other:?}"),
+        }
+        match &main.body[3] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected third report bind, got {other:?}"),
+        }
+        match &main.body[4] {
+            crate::typed_hir::TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Json);
+            }
+            other => panic!("expected fourth report bind, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn embedded_source_bundle_preserves_same_directory_imports() {
         let temp = tempdir().expect("tempdir should exist");
         let main_path = temp.path().join("main.gof");

@@ -191,7 +191,7 @@ Current sequence-helper rules:
 import http
 
 fn notify(base: string) -> Result[int, RuntimeError]:
-    report = request_json_report("POST", base + "/notify", "{\"text\":\"pong\"}", 1500)?
+    report = post_report(base + "/notify", "{\"text\":\"pong\"}", 1500)?
     return response_status(report)
 ```
 
@@ -207,12 +207,12 @@ Current rules:
 - `base64_decode(text)` returns `Result[string, RuntimeError]`
 - `template_render(template, values)` returns `Result[string, RuntimeError]`
 - `http_request(method, url[, body[, headers[, timeout_ms]]])` returns `Result[json, RuntimeError]`
-- `import http` now exposes JSON request helpers such as `request_json_headers()`, `request_headers_set(...)`, `request_headers_merge(...)`, `request_json_headers_with(...)`, `request_bearer_headers(token)`, `request_json_bearer_headers(token)`, `request_json_bearer_headers_with(token, extra)`, `get_json(url)`, `get_json_with_timeout(url, timeout_ms)`, `get_json_with_headers(url, headers, timeout_ms)`, `post_json(url, body)`, `post_json_with_timeout(url, body, timeout_ms)`, `post_json_with_headers(url, body, headers, timeout_ms)`, `request_json_report(...)`, `request_json_report_with_headers(...)`, and `request_json_with_headers(...)`
+- `import http` now exposes JSON request helpers such as `request_json_headers()`, `request_headers_set(...)`, `request_headers_merge(...)`, `request_json_headers_with(...)`, `request_bearer_headers(token)`, `request_json_bearer_headers(token)`, `request_json_bearer_headers_with(token, extra)`, `get_json(url)`, `get_json_with_timeout(url, timeout_ms)`, `get_json_with_headers(url, headers, timeout_ms)`, `post_json(url, body)`, `post_json_with_timeout(url, body, timeout_ms)`, `post_json_with_headers(url, body, headers, timeout_ms)`, `get_report(url, timeout_ms)`, `get_report_with_headers(url, headers, timeout_ms)`, `post_report(url, body, timeout_ms)`, `post_report_with_headers(url, body, headers, timeout_ms)`, `request_json_report(...)`, `request_json_report_with_headers(...)`, and `request_json_with_headers(...)`
 - `import http` also exposes typed response helpers such as `response_status(...)`, `response_status_class(...)`, `response_is_success(...)`, `response_require_success(...)`, `response_json(...)`, `response_json_success(...)`, `response_headers(...)`, and `response_content_type(...)`
 - `http_get(url)` is the current bootstrap HTTP read path
 - `http_post(url, body[, content_type])` is the current bootstrap HTTP write path
 
-Use the raw `http_request(...)` or `request_json_report...` paths when you need request shapes beyond what the shipped header builders cover or when you want to inspect non-2xx responses before promoting them into `RuntimeError.HttpStatus(...)`.
+Use the raw `http_request(...)`, `get_report...`, `post_report...`, or `request_json_report...` paths when you need request shapes beyond what the shipped parsed helpers cover or when you want to inspect non-2xx responses before promoting them into `RuntimeError.HttpStatus(...)`.
 - `sleep(milliseconds)` makes retry and backoff intent explicit
 
 ## Conversion helpers

@@ -311,6 +311,13 @@ It now also ships JSON-client helpers like `request_json_headers()`,
 `post_json_with_headers(url, body, headers, timeout_ms)`, and
 `request_json_report(method, url, body, timeout_ms)`.
 
+For the lower-level structured report path it now also exposes
+`get_report(url, timeout_ms)`, `get_report_with_headers(url, headers, timeout_ms)`,
+`post_report(url, body, timeout_ms)`, and
+`post_report_with_headers(url, body, headers, timeout_ms)` so callers that want
+status/body/header inspection without automatic JSON decoding do not have to
+repeat the raw method/body placeholders on every GET or POST call.
+
 The same shipped `http` module now also exposes
 `get_json_with_headers(url, headers, timeout_ms)`,
 `post_json_with_headers(url, body, headers, timeout_ms)`,
