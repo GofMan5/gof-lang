@@ -59,7 +59,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `payload_match.gof`: enum payload variants plus exhaustive destructuring `match`
 - `result_flow.gof`: `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, and exhaustive result handling
 - `runtime_ops.gof`: `argv`, `env`, `cwd`, `exists`, `read_dir`, and path helpers on top of `Result`
-- `telegram_long_polling.gof`: bootstrap Telegram bot path with shipped `http` JSON helpers, `env`, `sleep`, and explicit `Result`
+- `telegram_long_polling.gof`: bootstrap Telegram bot path with shipped `http` JSON helpers, explicit timeout wrappers, `env`, `sleep`, and explicit `Result`
 - `geometry.gof`: `struct`, typed fields, constructor calls, field access
 - `geometry_methods.gof`: receiver methods on structs and method calls
 - `health_gate.gof`: `and`, `or`, `not`, short-circuit-friendly control flow

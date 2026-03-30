@@ -33,7 +33,7 @@ Current shipped foundation in this slice:
   - string helpers: `DuplexStream.read_string`, `DuplexStream.read_exact_string`, `DuplexStream.read_all_string`, `DuplexStream.write_string`, `DuplexStream.write_all_string`
   - `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`
 - `http`
-  - `request_json_headers`, `request_headers_set`, `request_bearer_headers`, `request_json_bearer_headers`, `get_json`, `post_json`, `request_json_report`
+  - `request_json_headers`, `request_headers_set`, `request_bearer_headers`, `request_json_bearer_headers`, `get_json`, `get_json_with_timeout`, `post_json`, `post_json_with_timeout`, `request_json_report`
   - `response_status`, `response_status_class`, `response_is_success`
   - `response_body`, `response_json`, `response_method`, `response_url`
   - `response_headers`, `response_header_values`, `response_header`, `response_content_type`
@@ -43,9 +43,10 @@ on top of the existing bootstrap HTTP builtins. Broader typed client/server
 surface still belongs to the next network slices.
 
 It now also carries the common JSON-automation request path: default JSON
-headers, composable header builders, parsed JSON GET/POST helpers, and a
-structured JSON request-report wrapper for service clients that want the
-higher-level path before dropping to raw `http_request(...)` control.
+headers, composable header builders, parsed JSON GET/POST helpers, explicit
+timeout variants, and a structured JSON request-report wrapper for service
+clients that want the higher-level path before dropping to raw
+`http_request(...)` control.
 
 The `net` module now also ships loopback bind/connect wrappers and typed
 `SocketAddr` connection helpers so local service workers do not have to rebuild

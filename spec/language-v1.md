@@ -368,7 +368,9 @@ The bootstrap compiler in this repository currently supports:
 - `request_bearer_headers(token)` currently accepts exactly one bearer token string and returns a `dict[string]` with `Authorization: Bearer <token>`
 - `request_json_bearer_headers(token)` currently accepts exactly one bearer token string and returns JSON default headers plus `Authorization: Bearer <token>`
 - `get_json(url)` currently accepts exactly one string URL and returns parsed `Result[json, RuntimeError]`
+- `get_json_with_timeout(url, timeout_ms)` currently accepts `(string, int)` and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON GET path
 - `post_json(url, body)` currently accepts `(string, string)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]`
+- `post_json_with_timeout(url, body, timeout_ms)` currently accepts `(string, string, int)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON POST path
 - `request_json_report(method, url, body, timeout_ms)` currently accepts `(string, string, string, int)` where `body` is JSON text, applies default JSON headers, and returns the structured `http_request(...)` JSON report
 - `http_request` currently reports `status`, `body`, `headers`, `method`, and `url` as a structured JSON object
 - `http_request` currently preserves non-success HTTP statuses as successful reports so callers can inspect them explicitly

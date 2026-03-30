@@ -9,11 +9,11 @@ fn api_base() -> string:
             return "https://api.telegram.org"
 
 fn fetch_updates(base: string, token: string, offset: int) -> Result[json, RuntimeError]:
-    return get_json(base + "/bot" + token + "/getUpdates?timeout=1&offset=" + to_string(offset))
+    return get_json_with_timeout(base + "/bot" + token + "/getUpdates?timeout=1&offset=" + to_string(offset), 1500)
 
 fn send_pong(base: string, token: string, chat_id: int) -> Result[int, RuntimeError]:
     body = "{\"chat_id\":" + to_string(chat_id) + ",\"text\":\"pong\"}"
-    post_json(base + "/bot" + token + "/sendMessage", body)?
+    post_json_with_timeout(base + "/bot" + token + "/sendMessage", body, 1500)?
     return Result.Ok(chat_id)
 
 fn main() -> Result[int, RuntimeError]:
