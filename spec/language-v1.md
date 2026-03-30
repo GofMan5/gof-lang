@@ -375,6 +375,7 @@ The bootstrap compiler in this repository currently supports:
 - `request_headers_merge(base, extra)` currently accepts `(dict[string], dict[string])` and returns a new `dict[string]` with explicit per-key override semantics from `extra`
 - `request_json_headers_with(extra)` currently accepts exactly one `dict[string]` and returns JSON default headers merged with explicit overrides
 - `request_bearer_headers(token)` currently accepts exactly one bearer token string and returns a `dict[string]` with `Authorization: Bearer <token>`
+- `request_bearer_headers_with(token, extra)` currently accepts `(string, dict[string])` and returns bearer auth merged with explicit per-key overrides for raw/report request paths
 - `request_json_bearer_headers(token)` currently accepts exactly one bearer token string and returns JSON default headers plus `Authorization: Bearer <token>`
 - `request_json_bearer_headers_with(token, extra)` currently accepts `(string, dict[string])` and returns JSON default headers plus bearer auth merged with explicit overrides
 - `get_json(url)` currently accepts exactly one string URL and returns parsed `Result[json, RuntimeError]`

@@ -33,7 +33,7 @@ Current shipped foundation in this slice:
   - string helpers: `DuplexStream.read_string`, `DuplexStream.read_exact_string`, `DuplexStream.read_all_string`, `DuplexStream.write_string`, `DuplexStream.write_all_string`
   - `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`, `SocketAddr.connect_tcp_with_timeout_budget`
 - `http`
-  - `request_json_headers`, `request_headers_set`, `request_headers_merge`, `request_json_headers_with`, `request_bearer_headers`, `request_json_bearer_headers`, `request_json_bearer_headers_with`, `get_json`, `get_json_with_timeout`, `get_json_with_headers`, `post_json`, `post_json_with_timeout`, `post_json_with_headers`, `get_report`, `get_report_with_headers`, `post_report`, `post_report_with_headers`, `request_json_report`, `request_json_report_with_headers`, `request_json_with_headers`
+  - `request_json_headers`, `request_headers_set`, `request_headers_merge`, `request_json_headers_with`, `request_bearer_headers`, `request_bearer_headers_with`, `request_json_bearer_headers`, `request_json_bearer_headers_with`, `get_json`, `get_json_with_timeout`, `get_json_with_headers`, `post_json`, `post_json_with_timeout`, `post_json_with_headers`, `get_report`, `get_report_with_headers`, `post_report`, `post_report_with_headers`, `request_json_report`, `request_json_report_with_headers`, `request_json_with_headers`
   - `response_status`, `response_status_class`, `response_is_success`, `response_require_success`
   - `response_body`, `response_json`, `response_json_success`, `response_method`, `response_url`
   - `response_headers`, `response_header_values`, `response_header`, `response_content_type`
@@ -47,6 +47,11 @@ headers, composable header builders, parsed JSON GET/POST helpers, explicit
 timeout variants, and a structured JSON request-report wrapper for service
 clients that want the higher-level path before dropping to raw
 `http_request(...)` control.
+
+That same header-builder surface now also includes
+`request_bearer_headers_with(token, extra)` so lower-level raw/report callers
+can add bearer auth and explicit overrides without borrowing the JSON-specific
+helper family.
 
 It also exposes parsed-JSON custom-header helpers so authenticated JSON API
 clients can keep the high-level `json` response path even when they need

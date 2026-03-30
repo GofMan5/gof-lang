@@ -372,6 +372,7 @@ Hard sequencing rule:
 - `[x]` CP-M10-2n: shipped dedicated custom-header JSON GET/POST helpers so authenticated service clients do not have to repeat the generic method/body placeholders when the real contract is still just a high-level request with bearer and trace headers
 - `[x]` CP-M10-2o: shipped single-budget `net` connect helpers so the common typed client dial path can apply one explicit timeout to connection setup and the first duplex-stream wrapper without an immediate rebinding step
 - `[x]` CP-M10-2p: shipped dedicated raw HTTP report GET/POST helpers so service code that needs status/body/header inspection can stay on the structured report path without repeating raw method/body placeholders on every request
+- `[x]` CP-M10-2q: shipped a raw `http` bearer-header override helper so lower-level report paths can compose auth plus explicit content-type or trace headers without borrowing the JSON-specific helper family
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

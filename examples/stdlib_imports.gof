@@ -8,6 +8,7 @@ fn main() -> Result[int, RuntimeError]:
     report = json_parse("{\"status\":204,\"body\":\"{\\\"service\\\":\\\"alpha\\\",\\\"count\\\":7}\",\"headers\":{\"content-type\":[\"application/json; charset=utf-8\"]},\"method\":\"GET\",\"url\":\"https://example.com/health\"}")?
     json_headers: dict[string] = request_headers_merge(request_json_headers(), {"X-Trace-Id": "trace-7"})
     bearer_headers: dict[string] = request_json_bearer_headers_with("demo-token", {"X-Trace-Id": "trace-7"})
+    raw_bearer_headers: dict[string] = request_bearer_headers_with("demo-token", {"Content-Type": "text/plain", "X-Trace-Id": "trace-9"})
     gated_report = response_require_success(report)?
     status = response_status(report)?
     status_class = response_status_class(report)?
@@ -30,4 +31,6 @@ fn main() -> Result[int, RuntimeError]:
     assert(bearer == "Bearer demo-token", "expected bearer header helper")
     assert(json_content_type == "application/json", "expected JSON content type helper")
     assert(trace_id == "trace-7", "expected header setter helper")
+    assert(raw_bearer_headers["Authorization"] == "Bearer demo-token", "expected raw bearer helper")
+    assert(raw_bearer_headers["Content-Type"] == "text/plain", "expected raw bearer override helper")
     return Result.Ok(status + status_class + count + len(service) + len(method) + len(url) + len(content_type) + len(json_headers))

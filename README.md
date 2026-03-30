@@ -331,10 +331,11 @@ while the raw `request_json_report...` helpers keep the structured response
 report for callers that want to inspect non-success statuses directly.
 
 It now also exposes `request_headers_merge(base, extra)`,
-`request_json_headers_with(extra)`, and
-`request_json_bearer_headers_with(token, extra)` so common request-header
+`request_json_headers_with(extra)`, `request_bearer_headers_with(token, extra)`,
+and `request_json_bearer_headers_with(token, extra)` so common request-header
 overrides can stay declarative instead of mutating one dict value through a
-sequence of single-header insertions.
+sequence of single-header insertions, even when the caller stays on the lower-
+level raw/report request path.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

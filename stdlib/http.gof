@@ -20,6 +20,9 @@ fn request_bearer_headers(token: string) -> dict[string]:
     headers: dict[string] = dict()
     return request_headers_set(headers, "Authorization", "Bearer " + token)
 
+fn request_bearer_headers_with(token: string, extra: dict[string]) -> dict[string]:
+    return request_headers_merge(request_bearer_headers(token), extra)
+
 fn request_json_bearer_headers(token: string) -> dict[string]:
     return request_headers_set(request_json_headers(), "Authorization", "Bearer " + token)
 
