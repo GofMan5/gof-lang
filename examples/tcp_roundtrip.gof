@@ -1,7 +1,7 @@
 import net
 
 fn serve(listener: TcpListener) -> Result[int, RuntimeError]:
-    conn = listener.accept()?
+    conn = listener.accept_with_timeout_budget(5000)?
     payload = conn.read_exact_string(5)?
     conn.write_all_string(payload)?
     peer = conn.peer_addr()?

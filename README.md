@@ -189,7 +189,7 @@ imports instead of behind ever-growing global builtins:
 - `bytes`: `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
 - `io`: `ReadStream`, `WriteStream`, `open_read_stream`, `open_read_stream_with_timeout`, `open_write_stream`, `open_write_stream_with_timeout`, `ReadStream.read_all_string`, `WriteStream.write_all_string`, `ReadStream.with_timeout`, `WriteStream.with_timeout`
 - `time`: `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
-- `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_with_timeout_budget`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `connect_tcp_loopback_with_timeout_budget`, `listen_tcp`, `listen_tcp_with_timeout`, `listen_tcp_loopback`, `listen_tcp_loopback_with_timeout`, `DuplexStream.read_exact_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp_with_timeout`, `SocketAddr.connect_tcp_with_timeout_budget`
+- `net`: `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_with_timeout_budget`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `connect_tcp_loopback_with_timeout_budget`, `listen_tcp`, `listen_tcp_with_timeout`, `listen_tcp_loopback`, `listen_tcp_loopback_with_timeout`, `DuplexStream.read_exact_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `TcpListener.accept_with_timeout`, `TcpListener.accept_with_timeout_budget`, `SocketAddr.connect_tcp_with_timeout`, `SocketAddr.connect_tcp_with_timeout_budget`
 - `http`: `request_json_headers`, `request_headers_merge`, `request_json_headers_with`, `request_json_bearer_headers_with`, `get_json`, `post_json`, `request_json_report`, `response_status`, `response_status_class`, `response_is_success`, `response_body`, `response_json`, `response_method`, `response_url`, `response_headers`, `response_header_values`, `response_header`, `response_content_type`
 
 This is still bootstrap surface, not the final network platform. The current
@@ -213,10 +213,12 @@ They now also expose timeout-armed open/listen constructors such as
 and `listen_tcp_loopback_with_timeout(...)` so the first timeout wrapper can be
 applied at construction time instead of through an immediate rebinding step.
 
-The same `net` surface now also exposes single-budget connect helpers such as
-`connect_tcp_with_timeout_budget(...)` and
-`SocketAddr.connect_tcp_with_timeout_budget(...)` so the common client path can
-arm connection timeout and the first stream timeout in one explicit step.
+The same `net` surface now also exposes single-budget connect and accept
+helpers such as `connect_tcp_with_timeout_budget(...)`,
+`SocketAddr.connect_tcp_with_timeout_budget(...)`, and
+`listener.accept_with_timeout_budget(...)` so common client and server paths
+can arm the blocking socket step and the first stream timeout in one explicit
+step.
 
 Those modules now also expose string-oriented stream helpers like
 `writer.write_all_string(...)`, `reader.read_all_string(...)`, and

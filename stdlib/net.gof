@@ -93,6 +93,13 @@ fn DuplexStream.local_addr(self: DuplexStream) -> Result[SocketAddr, RuntimeErro
 fn TcpListener.accept(self: TcpListener) -> Result[DuplexStream, RuntimeError]:
     return __gof_internal_tcp_listener_accept(self)
 
+fn TcpListener.accept_with_timeout(self: TcpListener, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    return self.with_timeout(milliseconds)?.accept()
+
+fn TcpListener.accept_with_timeout_budget(self: TcpListener, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    stream = self.accept_with_timeout(milliseconds)?
+    return stream.with_timeout(milliseconds)
+
 fn TcpListener.close(self: TcpListener) -> Result[unit, RuntimeError]:
     return __gof_internal_tcp_listener_close(self)
 

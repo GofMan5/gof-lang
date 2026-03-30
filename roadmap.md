@@ -374,6 +374,7 @@ Hard sequencing rule:
 - `[x]` CP-M10-2p: shipped dedicated raw HTTP report GET/POST helpers so service code that needs status/body/header inspection can stay on the structured report path without repeating raw method/body placeholders on every request
 - `[x]` CP-M10-2q: shipped a raw `http` bearer-header override helper so lower-level report paths can compose auth plus explicit content-type or trace headers without borrowing the JSON-specific helper family
 - `[x]` CP-M10-2r: shipped generic raw `http` request-report wrappers so PATCH/DELETE-style service code can stay on the structured report path without dropping back to bootstrap `http_request(...)` directly
+- `[x]` CP-M10-2s: shipped timeout-budget `TcpListener` accept helpers so server code can arm the blocking accept step and the first returned duplex-stream wrapper without an immediate rebinding step
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs
