@@ -32,8 +32,8 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus JSON request, header-merge, and typed response helpers from shipped `http`
 - `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, timeout-armed listener constructors, typed `SocketAddr` dialing, and duplex string roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
-- `http_json_client.gof`: high-level parsed JSON client path with shipped bearer/custom-header helpers and explicit timeout control
-- `http_status_gate.gof`: high-level `http` JSON client path surfacing `RuntimeError.HttpStatus(...)` for non-2xx replies while preserving the response body for explicit handling
+- `http_json_client.gof`: high-level parsed JSON client path with shipped bearer/custom-header GET/POST helpers and explicit timeout control
+- `http_status_gate.gof`: high-level `http` JSON GET helper surfacing `RuntimeError.HttpStatus(...)` for non-2xx replies while preserving the response body for explicit handling
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
 - `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers
 - `yaml_report.gof`: explicit YAML config parsing through `yaml_parse(...)` plus JSON helpers
@@ -94,8 +94,8 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdlib_imports.gof` -> `Result.Ok(value: 281)`
 - `tcp_roundtrip.gof` -> `Result.Ok(value: 10)`
 - `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`; the example now also demonstrates declarative header-merge helpers over `http_request(...)`
-- `http_json_client.gof` -> `Result.Ok(value: 43)` when `GOF_HTTP_JSON_BASE` points at a test endpoint that returns JSON for `GET /health` and `POST /jobs`; the example keeps parsed JSON responses while still sending bearer and trace headers through declarative shipped helpers
-- `http_status_gate.gof` -> `Result.Ok(value: 514)` when `GOF_HTTP_STATUS_BASE` points at a test endpoint that returns `503 Service Unavailable` with body `retry later`; the example demonstrates the high-level non-2xx `RuntimeError.HttpStatus(...)` path
+- `http_json_client.gof` -> `Result.Ok(value: 43)` when `GOF_HTTP_JSON_BASE` points at a test endpoint that returns JSON for `GET /health` and `POST /jobs`; the example now uses the dedicated custom-header GET/POST helpers instead of repeating the generic method-based wrapper
+- `http_status_gate.gof` -> `Result.Ok(value: 514)` when `GOF_HTTP_STATUS_BASE` points at a test endpoint that returns `503 Service Unavailable` with body `retry later`; the example demonstrates the high-level custom-header GET helper surfacing `RuntimeError.HttpStatus(...)`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`
 - `yaml_report.gof` -> `Result.Ok(value: 17)`

@@ -300,18 +300,23 @@ should fail the higher-level JSON client path.
 It now also ships JSON-client helpers like `request_json_headers()`,
 `request_headers_set(headers, name, value)`, `request_bearer_headers(token)`,
 `request_json_bearer_headers(token)`, `get_json(url)`,
-`get_json_with_timeout(url, timeout_ms)`, `post_json(url, body)`,
-`post_json_with_timeout(url, body, timeout_ms)`, and
+`get_json_with_timeout(url, timeout_ms)`,
+`get_json_with_headers(url, headers, timeout_ms)`, `post_json(url, body)`,
+`post_json_with_timeout(url, body, timeout_ms)`,
+`post_json_with_headers(url, body, headers, timeout_ms)`, and
 `request_json_report(method, url, body, timeout_ms)`.
 
 The same shipped `http` module now also exposes
+`get_json_with_headers(url, headers, timeout_ms)`,
+`post_json_with_headers(url, body, headers, timeout_ms)`,
 `request_json_report_with_headers(method, url, body, headers, timeout_ms)` and
 `request_json_with_headers(method, url, body, headers, timeout_ms)` so bots,
 webhooks, and internal API clients can keep parsed JSON responses while still
-layering bearer auth, trace headers, and explicit timeout control. The parsed
-helpers now fail non-2xx replies as `RuntimeError.HttpStatus(...)`, while the
-raw `request_json_report...` helpers keep the structured response report for
-callers that want to inspect non-success statuses directly.
+layering bearer auth, trace headers, and explicit timeout control without
+repeating the generic method/body placeholders on every GET or POST call. The
+parsed helpers now fail non-2xx replies as `RuntimeError.HttpStatus(...)`,
+while the raw `request_json_report...` helpers keep the structured response
+report for callers that want to inspect non-success statuses directly.
 
 It now also exposes `request_headers_merge(base, extra)`,
 `request_json_headers_with(extra)`, and

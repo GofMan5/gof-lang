@@ -3,7 +3,7 @@ import http
 fn main() -> Result[int, RuntimeError]:
     base = env("GOF_HTTP_STATUS_BASE")?
     headers: dict[string] = request_json_headers_with({"X-Trace-Id": "trace-503"})
-    result = request_json_with_headers("GET", base + "/health", "", headers, 1500)
+    result = get_json_with_headers(base + "/health", headers, 1500)
     match result:
         Result.Ok(_):
             return Result.Ok(0)

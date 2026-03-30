@@ -34,11 +34,17 @@ fn get_json_with_timeout(url: string, timeout_ms: int) -> Result[json, RuntimeEr
     report = http_request("GET", url, "", request_headers_set(accept_headers, "Accept", "application/json"), timeout_ms)?
     return response_json_success(report)
 
+fn get_json_with_headers(url: string, headers: dict[string], timeout_ms: int) -> Result[json, RuntimeError]:
+    return request_json_with_headers("GET", url, "", headers, timeout_ms)
+
 fn post_json(url: string, body: string) -> Result[json, RuntimeError]:
     return json_parse(http_post(url, body, "application/json")?)
 
 fn post_json_with_timeout(url: string, body: string, timeout_ms: int) -> Result[json, RuntimeError]:
     return response_json_success(request_json_report("POST", url, body, timeout_ms)?)
+
+fn post_json_with_headers(url: string, body: string, headers: dict[string], timeout_ms: int) -> Result[json, RuntimeError]:
+    return request_json_with_headers("POST", url, body, headers, timeout_ms)
 
 fn request_json_report(method: string, url: string, body: string, timeout_ms: int) -> Result[json, RuntimeError]:
     return http_request(method, url, body, request_json_headers(), timeout_ms)
