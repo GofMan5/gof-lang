@@ -364,6 +364,9 @@ The bootstrap compiler in this repository currently supports:
 - `http_post` currently accepts `(url, body)` or `(url, body, content_type)` and returns `Result[string, RuntimeError]`
 - `http_request` currently accepts `(method, url)`, `(method, url, body)`, `(method, url, body, headers)`, or `(method, url, body, headers, timeout_ms)` and returns `Result[json, RuntimeError]`
 - `request_json_headers()` currently returns a `dict[string]` with `Accept` and `Content-Type` both set to `application/json`
+- `request_headers_set(headers, name, value)` currently accepts `(dict[string], string, string)` and returns a new `dict[string]` with that header inserted or replaced explicitly
+- `request_bearer_headers(token)` currently accepts exactly one bearer token string and returns a `dict[string]` with `Authorization: Bearer <token>`
+- `request_json_bearer_headers(token)` currently accepts exactly one bearer token string and returns JSON default headers plus `Authorization: Bearer <token>`
 - `get_json(url)` currently accepts exactly one string URL and returns parsed `Result[json, RuntimeError]`
 - `post_json(url, body)` currently accepts `(string, string)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]`
 - `request_json_report(method, url, body, timeout_ms)` currently accepts `(string, string, string, int)` where `body` is JSON text, applies default JSON headers, and returns the structured `http_request(...)` JSON report
@@ -371,7 +374,7 @@ The bootstrap compiler in this repository currently supports:
 - `http_request` currently preserves non-success HTTP statuses as successful reports so callers can inspect them explicitly
 - `http_request` currently normalizes response header names to lowercase and exposes each header as `list[string]`
 - `http_request` currently accepts explicit `dict[string]` request headers and an optional non-negative timeout in milliseconds
-- `import http` currently exposes explicit JSON request helpers plus typed helpers for extracting status/body/method/url/header data from the structured `http_request(...)` response report
+- `import http` currently exposes explicit JSON request helpers, composable request-header builders, and typed helpers for extracting status/body/method/url/header data from the structured `http_request(...)` response report
 - HTTPS/TLS currently flows through the bootstrap `ureq + rustls` transport path
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires either a list target with an integer index or a dict target with a string key

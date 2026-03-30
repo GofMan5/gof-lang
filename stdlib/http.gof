@@ -4,6 +4,16 @@ fn response_status(report: json) -> Result[int, RuntimeError]:
 fn request_json_headers() -> dict[string]:
     return {"Accept": "application/json", "Content-Type": "application/json"}
 
+fn request_headers_set(headers: dict[string], name: string, value: string) -> dict[string]:
+    return insert(headers, name, value)
+
+fn request_bearer_headers(token: string) -> dict[string]:
+    headers: dict[string] = dict()
+    return request_headers_set(headers, "Authorization", "Bearer " + token)
+
+fn request_json_bearer_headers(token: string) -> dict[string]:
+    return request_headers_set(request_json_headers(), "Authorization", "Bearer " + token)
+
 fn get_json(url: string) -> Result[json, RuntimeError]:
     return json_parse(http_get(url)?)
 

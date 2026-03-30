@@ -290,11 +290,11 @@ and `response_header(report, name)` so scripts can inspect structured
 `json_string(...)` / `json_parse(...)` boilerplate at every call site.
 
 It now also ships JSON-client helpers like `request_json_headers()`,
-`get_json(url)`, `post_json(url, body)`, and
-`request_json_report(method, url, body, timeout_ms)` so bots, webhooks, and
-internal API clients can stay on the common JSON path without repeating
-`http_get(...)` plus `json_parse(...)` or hardcoding the JSON content type on
-every request.
+`request_headers_set(headers, name, value)`, `request_bearer_headers(token)`,
+`request_json_bearer_headers(token)`, `get_json(url)`, `post_json(url, body)`,
+and `request_json_report(method, url, body, timeout_ms)` so bots, webhooks,
+and internal API clients can stay on the common JSON path without rebuilding
+header dicts or hardcoding bearer/auth boilerplate at every request site.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

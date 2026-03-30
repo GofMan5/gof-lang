@@ -91,7 +91,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `base64_report.gof` -> `Result.Ok(value: 12)`
 - `stdlib_imports.gof` -> `Result.Ok(value: 280)`
 - `tcp_roundtrip.gof` -> `Result.Ok(value: 10)`
-- `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`
+- `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`; the example now also demonstrates shipped bearer/custom-header builders over `http_request(...)`
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`
 - `yaml_report.gof` -> `Result.Ok(value: 17)`
