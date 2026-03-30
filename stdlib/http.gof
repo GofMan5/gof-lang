@@ -31,6 +31,12 @@ fn post_json_with_timeout(url: string, body: string, timeout_ms: int) -> Result[
 fn request_json_report(method: string, url: string, body: string, timeout_ms: int) -> Result[json, RuntimeError]:
     return http_request(method, url, body, request_json_headers(), timeout_ms)
 
+fn request_json_report_with_headers(method: string, url: string, body: string, headers: dict[string], timeout_ms: int) -> Result[json, RuntimeError]:
+    return http_request(method, url, body, headers, timeout_ms)
+
+fn request_json_with_headers(method: string, url: string, body: string, headers: dict[string], timeout_ms: int) -> Result[json, RuntimeError]:
+    return response_json(request_json_report_with_headers(method, url, body, headers, timeout_ms)?)
+
 fn response_status_class(report: json) -> Result[int, RuntimeError]:
     return Result.Ok(response_status(report)? / 100)
 

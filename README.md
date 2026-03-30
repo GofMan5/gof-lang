@@ -294,9 +294,13 @@ It now also ships JSON-client helpers like `request_json_headers()`,
 `request_json_bearer_headers(token)`, `get_json(url)`,
 `get_json_with_timeout(url, timeout_ms)`, `post_json(url, body)`,
 `post_json_with_timeout(url, body, timeout_ms)`, and
-`request_json_report(method, url, body, timeout_ms)` so bots, webhooks, and
-internal API clients can stay on the common JSON path without rebuilding
-header dicts, or dropping to raw reports just to keep explicit timeout control.
+`request_json_report(method, url, body, timeout_ms)`.
+
+The same shipped `http` module now also exposes
+`request_json_report_with_headers(method, url, body, headers, timeout_ms)` and
+`request_json_with_headers(method, url, body, headers, timeout_ms)` so bots,
+webhooks, and internal API clients can keep parsed JSON responses while still
+layering bearer auth, trace headers, and explicit timeout control.
 
 Cancellation now also has a timeout-backed baseline through
 `timeout_token(milliseconds)` and `cancel_after(token, milliseconds)`, while

@@ -32,6 +32,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus JSON request and typed response helpers from shipped `http`
 - `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, typed `SocketAddr` dialing, timeout wrappers, and duplex string roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
+- `http_json_client.gof`: high-level parsed JSON client path with shipped bearer/custom-header helpers and explicit timeout control
 - `csv_inventory.gof`: explicit CSV parse/stringify helpers on top of file I/O and `Result`
 - `config_report.gof`: explicit TOML config parsing through `toml_parse(...)` plus JSON helpers
 - `yaml_report.gof`: explicit YAML config parsing through `yaml_parse(...)` plus JSON helpers
@@ -92,6 +93,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `stdlib_imports.gof` -> `Result.Ok(value: 280)`
 - `tcp_roundtrip.gof` -> `Result.Ok(value: 10)`
 - `http_request_report.gof` -> `Result.Ok(value: 216)` when `GOF_HTTP_REQUEST_BASE` points at a test endpoint that returns `202 Accepted`, body `accepted`, and header `X-Request-Id: req-42`; the example now also demonstrates shipped bearer/custom-header builders over `http_request(...)`
+- `http_json_client.gof` -> `Result.Ok(value: 43)` when `GOF_HTTP_JSON_BASE` points at a test endpoint that returns JSON for `GET /health` and `POST /jobs`; the example keeps parsed JSON responses while still sending bearer and trace headers through shipped helpers
 - `csv_inventory.gof` -> `Result.Ok(value: 8)`
 - `config_report.gof` -> `Result.Ok(value: 17)`
 - `yaml_report.gof` -> `Result.Ok(value: 17)`
@@ -151,6 +153,17 @@ returns status `202`, body `accepted`, and an `X-Request-Id` header:
 
 ```text
 GOF_HTTP_REQUEST_BASE=http://127.0.0.1:8080 gof run examples/http_request_report.gof
+```
+
+## HTTP JSON client example note
+
+`http_json_client.gof` expects a small JSON-speaking HTTP endpoint so it can
+validate the shipped parsed-JSON custom-header path deterministically. Point
+`GOF_HTTP_JSON_BASE` at a test server that returns `{"service":"alpha","count":7}`
+for `GET /health` and `{"job_id":31}` for `POST /jobs`:
+
+```text
+GOF_HTTP_JSON_BASE=http://127.0.0.1:8080 gof run examples/http_json_client.gof
 ```
 
 ## Package note

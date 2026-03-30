@@ -372,6 +372,8 @@ The bootstrap compiler in this repository currently supports:
 - `post_json(url, body)` currently accepts `(string, string)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]`
 - `post_json_with_timeout(url, body, timeout_ms)` currently accepts `(string, string, int)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON POST path
 - `request_json_report(method, url, body, timeout_ms)` currently accepts `(string, string, string, int)` where `body` is JSON text, applies default JSON headers, and returns the structured `http_request(...)` JSON report
+- `request_json_report_with_headers(method, url, body, headers, timeout_ms)` currently accepts `(string, string, string, dict[string], int)` and returns the structured `http_request(...)` JSON report for callers that want custom headers without leaving the shipped JSON helper surface
+- `request_json_with_headers(method, url, body, headers, timeout_ms)` currently accepts `(string, string, string, dict[string], int)` and returns parsed `Result[json, RuntimeError]` for callers that want custom headers plus the higher-level parsed JSON response path
 - `http_request` currently reports `status`, `body`, `headers`, `method`, and `url` as a structured JSON object
 - `http_request` currently preserves non-success HTTP statuses as successful reports so callers can inspect them explicitly
 - `http_request` currently normalizes response header names to lowercase and exposes each header as `list[string]`
