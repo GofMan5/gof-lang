@@ -14,8 +14,7 @@ fn main() -> Result[int, RuntimeError]:
     address = listener.local_addr()?
     server: task[Result[int, RuntimeError]] = go serve(listener)
 
-    mut client = address.connect_tcp_with_timeout(5000)?
-    client = client.with_timeout(5000)?
+    client = address.connect_tcp_with_timeout_budget(5000)?
 
     client.write_all_string("ping!")?
     text = client.read_exact_string(5)?

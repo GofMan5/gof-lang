@@ -370,6 +370,7 @@ Hard sequencing rule:
 - `[x]` CP-M10-2l: shipped timeout-armed `io` open helpers and `net` listen helpers so file and local-service code can apply the first timeout wrapper at construction time instead of rebinding immediately after open/bind
 - `[x]` CP-M10-2m: shipped explicit `http` success-gate helpers and aligned the higher-level parsed JSON client paths so non-2xx replies can either stay inspectable as raw reports or surface `RuntimeError.HttpStatus(...)` consistently on the ergonomic path
 - `[x]` CP-M10-2n: shipped dedicated custom-header JSON GET/POST helpers so authenticated service clients do not have to repeat the generic method/body placeholders when the real contract is still just a high-level request with bearer and trace headers
+- `[x]` CP-M10-2o: shipped single-budget `net` connect helpers so the common typed client dial path can apply one explicit timeout to connection setup and the first duplex-stream wrapper without an immediate rebinding step
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

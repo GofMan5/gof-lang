@@ -30,7 +30,7 @@ cargo run -q -p gof-cli --bin gof -- run <example>
 - `time_report.gof`: explicit Unix wall-clock helpers through `unix_seconds()` and `unix_millis()`
 - `base64_report.gof`: explicit base64 encode/decode helpers for HTTP/CI/script payloads
 - `stdlib_imports.gof`: shipped stdlib import smoke for reserved `bytes`/`io`/`time`/`net`/`http` names plus JSON request, header-merge, and typed response helpers from shipped `http`
-- `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, timeout-armed listener constructors, typed `SocketAddr` dialing, and duplex string roundtrip I/O
+- `tcp_roundtrip.gof`: shipped `net` stdlib foundation with loopback listen/connect helpers, timeout-armed listener constructors, single-budget typed `SocketAddr` dialing, and duplex string roundtrip I/O
 - `http_request_report.gof`: structured HTTP request reports with explicit headers, timeout, and response metadata
 - `http_json_client.gof`: high-level parsed JSON client path with shipped bearer/custom-header GET/POST helpers and explicit timeout control
 - `http_status_gate.gof`: high-level `http` JSON GET helper surfacing `RuntimeError.HttpStatus(...)` for non-2xx replies while preserving the response body for explicit handling

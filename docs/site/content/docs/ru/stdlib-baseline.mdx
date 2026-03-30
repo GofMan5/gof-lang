@@ -16,11 +16,11 @@ Shipped stdlib теперь имеет реальный import-delivery path. З
 - `bytes` — `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
 - `io` — `ReadStream`, `WriteStream`, `open_read_stream`, `open_write_stream`, `ReadStream.read_all_string`, `WriteStream.write_all_string`, `ReadStream.with_timeout`, `WriteStream.with_timeout`
 - `time` — `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
-- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.read_exact_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`
+- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_with_timeout_budget`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `connect_tcp_loopback_with_timeout_budget`, `listen_tcp`, `listen_tcp_loopback`, `DuplexStream.read_exact_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`, `SocketAddr.connect_tcp_with_timeout_budget`
 
 `net` теперь также ship-ит loopback helper-ы и typed `SocketAddr` connect wrapper-ы, чтобы локальный service code не собирал `"127.0.0.1:" + to_string(port)` и `address.text()` вручную.
 
-`io` и `net` теперь также ship-ят Result-returning timeout wrapper-ы и timeout-armed constructor-ы вроде `open_write_stream_with_timeout(...)`, `listener.with_timeout(...)` и `listen_tcp_loopback_with_timeout(...)`, чтобы не повторять `deadline_after(...)` и `.with_deadline(...)` в каждом локальном service path.
+`io` и `net` теперь также ship-ят Result-returning timeout wrapper-ы, timeout-armed constructor-ы и single-budget connect helper-ы вроде `open_write_stream_with_timeout(...)`, `listener.with_timeout(...)`, `listen_tcp_loopback_with_timeout(...)` и `address.connect_tcp_with_timeout_budget(...)`, чтобы не повторять `deadline_after(...)` и немедленный `stream.with_timeout(...)` в каждом локальном service path.
 
 ```gof
 import bytes
@@ -45,17 +45,16 @@ import net
 
 fn main() -> Result[int, RuntimeError]:
     listener = listen_tcp_loopback_with_timeout(0, 1000)?
-        address = listener.local_addr()?
-    mut client = address.connect_tcp_with_timeout(1000)?
-    client = client.with_timeout(1000)?
+    address = listener.local_addr()?
+    client = address.connect_tcp_with_timeout_budget(1000)?
     client.write_all_string("ping")?
     text = client.read_exact_string(4)?
     return Result.Ok(address.port() + len(text) - len(text))
 ```
 
 <Callout type="info">
-  Blocking I/O возвращает `Result[..., RuntimeError]`, а не прячет ошибку в неявном runtime state.
-    String helper-ы и timeout wrapper-ы не скрывают ошибки декодирования и настройки: они тоже возвращают `Result[...]`.
+    Blocking I/O возвращает `Result[..., RuntimeError]`, а не прячет ошибку в неявном runtime state.
+    String helper-ы, timeout wrapper-ы и single-budget connect helper-ы не скрывают ошибки декодирования и настройки: они тоже возвращают `Result[...]`.
 </Callout>
 
 ## Output и correctness checks

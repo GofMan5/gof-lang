@@ -30,7 +30,7 @@ The current shipped stdlib foundation is intentionally explicit and small:
 - `bytes` — `Bytes`, `bytes_from_string`, `bytes_to_string`, `bytes_len`, `bytes_slice`, `bytes_concat`
 - `io` — `ReadStream`, `WriteStream`, `open_read_stream`, `open_read_stream_with_timeout`, `open_write_stream`, `open_write_stream_with_timeout`, `ReadStream.read_all_string`, `WriteStream.write_all_string`, `ReadStream.with_timeout`, `WriteStream.with_timeout`
 - `time` — `NetDeadline`, `deadline_after`, `deadline_at_unix_millis`
-- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `listen_tcp`, `listen_tcp_with_timeout`, `listen_tcp_loopback`, `listen_tcp_loopback_with_timeout`, `DuplexStream.read_exact_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`
+- `net` — `DuplexStream`, `TcpListener`, `SocketAddr`, `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_with_timeout_budget`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `connect_tcp_loopback_with_timeout_budget`, `listen_tcp`, `listen_tcp_with_timeout`, `listen_tcp_loopback`, `listen_tcp_loopback_with_timeout`, `DuplexStream.read_exact_string`, `DuplexStream.write_all_string`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`, `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`, `SocketAddr.connect_tcp_with_timeout_budget`
 
 These are shipped stdlib APIs, not forever-builtins. Internally they still use
 bootstrap bridge hooks, but user code learns them through normal imports.
@@ -57,19 +57,18 @@ fn main() -> Result[int, RuntimeError]:
 import net
 
 fn main() -> Result[int, RuntimeError]:
-        listener = listen_tcp_loopback_with_timeout(0, 1000)?
+    listener = listen_tcp_loopback_with_timeout(0, 1000)?
     address = listener.local_addr()?
-        mut client = address.connect_tcp_with_timeout(1000)?
-        client = client.with_timeout(1000)?
-        client.write_all_string("ping")?
-        text = client.read_exact_string(4)?
-        return Result.Ok(address.port() + len(text) - len(text))
+    client = address.connect_tcp_with_timeout_budget(1000)?
+    client.write_all_string("ping")?
+    text = client.read_exact_string(4)?
+    return Result.Ok(address.port() + len(text) - len(text))
 ```
 
 <Callout type="info">
   Blocking I/O returns `Result[..., RuntimeError]` instead of hiding failure in ambient runtime state.
     Deadlines and cancellation are explicit wrappers on stream and listener values.
-        The shipped `io` and `net` wrappers now also expose UTF-8 string helpers, timeout-armed open/listen constructors, and a `with_timeout(...)` path for the common single-budget service flow, but they still return `Result[...]` because decode and timeout setup are fallible.
+    The shipped `io` and `net` wrappers now also expose UTF-8 string helpers, timeout-armed open/listen constructors, and single-budget connect helpers for the common service flow, but they still return `Result[...]` because decode and timeout setup are fallible.
 </Callout>
 
 Current network-oriented runtime errors now also distinguish:

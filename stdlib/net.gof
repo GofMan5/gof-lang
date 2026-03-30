@@ -9,6 +9,10 @@ fn connect_tcp_with_timeout(address: string, milliseconds: int) -> Result[Duplex
     token: cancel_token = timeout_token(milliseconds)
     return connect_tcp_with_control(address, deadline, token)
 
+fn connect_tcp_with_timeout_budget(address: string, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    stream = connect_tcp_with_timeout(address, milliseconds)?
+    return stream.with_timeout(milliseconds)
+
 fn connect_tcp_with_control(address: string, deadline: NetDeadline, token: cancel_token) -> Result[DuplexStream, RuntimeError]:
     return __gof_internal_connect_tcp_with_control(address, deadline, token)
 
@@ -17,6 +21,9 @@ fn connect_tcp_loopback_with_control(port: int, deadline: NetDeadline, token: ca
 
 fn connect_tcp_loopback_with_timeout(port: int, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
     return connect_tcp_with_timeout("127.0.0.1:" + to_string(port), milliseconds)
+
+fn connect_tcp_loopback_with_timeout_budget(port: int, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    return connect_tcp_with_timeout_budget("127.0.0.1:" + to_string(port), milliseconds)
 
 fn listen_tcp(address: string) -> Result[TcpListener, RuntimeError]:
     return __gof_internal_listen_tcp(address)
@@ -107,6 +114,9 @@ fn SocketAddr.connect_tcp(self: SocketAddr) -> Result[DuplexStream, RuntimeError
 
 fn SocketAddr.connect_tcp_with_timeout(self: SocketAddr, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
     return connect_tcp_with_timeout(self.text(), milliseconds)
+
+fn SocketAddr.connect_tcp_with_timeout_budget(self: SocketAddr, milliseconds: int) -> Result[DuplexStream, RuntimeError]:
+    return connect_tcp_with_timeout_budget(self.text(), milliseconds)
 
 fn SocketAddr.connect_tcp_with_control(self: SocketAddr, deadline: NetDeadline, token: cancel_token) -> Result[DuplexStream, RuntimeError]:
     return connect_tcp_with_control(self.text(), deadline, token)

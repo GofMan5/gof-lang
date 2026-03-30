@@ -28,10 +28,10 @@ Current shipped foundation in this slice:
   - `deadline_after`, `deadline_at_unix_millis`
 - `net`
   - `DuplexStream`, `TcpListener`, `SocketAddr`
-  - `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`
+  - `connect_tcp`, `connect_tcp_loopback`, `connect_tcp_with_control`, `connect_tcp_with_timeout`, `connect_tcp_with_timeout_budget`, `connect_tcp_loopback_with_control`, `connect_tcp_loopback_with_timeout`, `connect_tcp_loopback_with_timeout_budget`
   - `listen_tcp`, `listen_tcp_with_timeout`, `listen_tcp_loopback`, `listen_tcp_loopback_with_timeout`, `DuplexStream.with_timeout`, `TcpListener.with_timeout`
   - string helpers: `DuplexStream.read_string`, `DuplexStream.read_exact_string`, `DuplexStream.read_all_string`, `DuplexStream.write_string`, `DuplexStream.write_all_string`
-  - `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`
+  - `SocketAddr.connect_tcp`, `SocketAddr.connect_tcp_with_control`, `SocketAddr.connect_tcp_with_timeout`, `SocketAddr.connect_tcp_with_timeout_budget`
 - `http`
   - `request_json_headers`, `request_headers_set`, `request_headers_merge`, `request_json_headers_with`, `request_bearer_headers`, `request_json_bearer_headers`, `request_json_bearer_headers_with`, `get_json`, `get_json_with_timeout`, `get_json_with_headers`, `post_json`, `post_json_with_timeout`, `post_json_with_headers`, `request_json_report`, `request_json_report_with_headers`, `request_json_with_headers`
   - `response_status`, `response_status_class`, `response_is_success`, `response_require_success`
@@ -72,6 +72,11 @@ The `net` module now also ships loopback bind/connect wrappers and typed
 The shipped `io` and `net` modules now also expose Result-returning timeout
 wrappers that collapse the common `deadline_after(...)` plus `.with_deadline(...)`
 pattern without hiding the fact that timeout setup itself can fail.
+
+The `net` module now also exposes single-budget connect helpers so the common
+client path can keep one explicit timeout value across connect establishment and
+the first stream wrapper instead of rebinding `stream.with_timeout(...)`
+immediately after a successful dial.
 
 They now also expose timeout-armed open/listen constructors for the common
 single-budget file and local-service path, so callers do not have to rebind a
