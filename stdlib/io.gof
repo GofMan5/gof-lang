@@ -1,8 +1,16 @@
 fn open_read_stream(path: string) -> Result[ReadStream, RuntimeError]:
     return __gof_internal_open_read_stream(path)
 
+fn open_read_stream_with_timeout(path: string, milliseconds: int) -> Result[ReadStream, RuntimeError]:
+    stream = open_read_stream(path)?
+    return stream.with_timeout(milliseconds)
+
 fn open_write_stream(path: string) -> Result[WriteStream, RuntimeError]:
     return __gof_internal_open_write_stream(path)
+
+fn open_write_stream_with_timeout(path: string, milliseconds: int) -> Result[WriteStream, RuntimeError]:
+    stream = open_write_stream(path)?
+    return stream.with_timeout(milliseconds)
 
 fn ReadStream.read(self: ReadStream, max_bytes: int) -> Result[Bytes, RuntimeError]:
     return __gof_internal_read_stream_read(self, max_bytes)

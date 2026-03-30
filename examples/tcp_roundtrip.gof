@@ -10,8 +10,7 @@ fn serve(listener: TcpListener) -> Result[int, RuntimeError]:
     return Result.Ok(peer.port() - peer.port() + len(payload))
 
 fn main() -> Result[int, RuntimeError]:
-    mut listener = listen_tcp_loopback(0)?
-    listener = listener.with_timeout(5000)?
+    listener = listen_tcp_loopback_with_timeout(0, 5000)?
     address = listener.local_addr()?
     server: task[Result[int, RuntimeError]] = go serve(listener)
 

@@ -7,14 +7,12 @@ fn main() -> Result[int, RuntimeError]:
     deadline = deadline_after(1500)?
     payload = "gof-stdlib"
 
-    mut writer = open_write_stream(path)?
-    writer = writer.with_timeout(1500)?
+    writer = open_write_stream_with_timeout(path, 1500)?
     writer.write_all_string(payload)?
     writer.flush()?
     writer.close()?
 
-    mut reader = open_read_stream(path)?
-    reader = reader.with_timeout(1500)?
+    reader = open_read_stream_with_timeout(path, 1500)?
     text = reader.read_all_string()?
     reader.close()?
 

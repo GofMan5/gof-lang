@@ -21,8 +21,15 @@ fn connect_tcp_loopback_with_timeout(port: int, milliseconds: int) -> Result[Dup
 fn listen_tcp(address: string) -> Result[TcpListener, RuntimeError]:
     return __gof_internal_listen_tcp(address)
 
+fn listen_tcp_with_timeout(address: string, milliseconds: int) -> Result[TcpListener, RuntimeError]:
+    listener = listen_tcp(address)?
+    return listener.with_timeout(milliseconds)
+
 fn listen_tcp_loopback(port: int) -> Result[TcpListener, RuntimeError]:
     return listen_tcp("127.0.0.1:" + to_string(port))
+
+fn listen_tcp_loopback_with_timeout(port: int, milliseconds: int) -> Result[TcpListener, RuntimeError]:
+    return listen_tcp_with_timeout("127.0.0.1:" + to_string(port), milliseconds)
 
 fn DuplexStream.read(self: DuplexStream, max_bytes: int) -> Result[Bytes, RuntimeError]:
     return __gof_internal_duplex_stream_read(self, max_bytes)

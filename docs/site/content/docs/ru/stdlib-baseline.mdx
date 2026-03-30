@@ -20,7 +20,7 @@ Shipped stdlib теперь имеет реальный import-delivery path. З
 
 `net` теперь также ship-ит loopback helper-ы и typed `SocketAddr` connect wrapper-ы, чтобы локальный service code не собирал `"127.0.0.1:" + to_string(port)` и `address.text()` вручную.
 
-`io` и `net` теперь также ship-ят Result-returning timeout wrapper-ы вроде `writer.with_timeout(...)`, `listener.with_timeout(...)` и `address.connect_tcp_with_timeout(...)`, чтобы не повторять `deadline_after(...)` и `.with_deadline(...)` в каждом локальном service path.
+`io` и `net` теперь также ship-ят Result-returning timeout wrapper-ы и timeout-armed constructor-ы вроде `open_write_stream_with_timeout(...)`, `listener.with_timeout(...)` и `listen_tcp_loopback_with_timeout(...)`, чтобы не повторять `deadline_after(...)` и `.with_deadline(...)` в каждом локальном service path.
 
 ```gof
 import bytes
@@ -29,15 +29,13 @@ import time
 
 fn main() -> Result[int, RuntimeError]:
     deadline = deadline_after(1000)?
-    mut writer = open_write_stream("roundtrip.txt")?
-        writer = writer.with_timeout(1000)?
-        writer.write_all_string("hello")?
+    writer = open_write_stream_with_timeout("roundtrip.txt", 1000)?
+    writer.write_all_string("hello")?
     writer.flush()?
     writer.close()?
 
-    mut reader = open_read_stream("roundtrip.txt")?
-        reader = reader.with_timeout(1000)?
-        text = reader.read_all_string()?
+    reader = open_read_stream_with_timeout("roundtrip.txt", 1000)?
+    text = reader.read_all_string()?
     reader.close()?
         return Result.Ok(len(text) + deadline.unix_millis() - deadline.unix_millis())
 ```
@@ -46,13 +44,13 @@ fn main() -> Result[int, RuntimeError]:
 import net
 
 fn main() -> Result[int, RuntimeError]:
-        listener = listen_tcp_loopback(0)?.with_timeout(1000)?
+    listener = listen_tcp_loopback_with_timeout(0, 1000)?
         address = listener.local_addr()?
-        client = address.connect_tcp_with_timeout(1000)?
-        client = client.with_timeout(1000)?
-        client.write_all_string("ping")?
-        text = client.read_exact_string(4)?
-        return Result.Ok(address.port() + len(text) - len(text))
+    mut client = address.connect_tcp_with_timeout(1000)?
+    client = client.with_timeout(1000)?
+    client.write_all_string("ping")?
+    text = client.read_exact_string(4)?
+    return Result.Ok(address.port() + len(text) - len(text))
 ```
 
 <Callout type="info">
