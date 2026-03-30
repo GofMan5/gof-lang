@@ -1,0 +1,13 @@
+import http
+
+fn main() -> Result[int, RuntimeError]:
+    base = env("GOF_HTTP_STATUS_BASE")?
+    headers: dict[string] = request_json_headers_with({"X-Trace-Id": "trace-503"})
+    result = request_json_with_headers("GET", base + "/health", "", headers, 1500)
+    match result:
+        Result.Ok(_):
+            return Result.Ok(0)
+        Result.Err(error):
+            rendered = to_string(error)
+            assert(rendered == "RuntimeError.HttpStatus(code: 503, body: retry later)", "expected high-level helper to surface HttpStatus")
+            return Result.Ok(514)

@@ -288,11 +288,14 @@ stack.
 
 The reserved `http` stdlib import now also ships typed response helpers such as
 `response_status(report)`, `response_status_class(report)`,
-`response_is_success(report)`, `response_json(report)`,
+`response_is_success(report)`, `response_require_success(report)`,
+`response_json(report)`, `response_json_success(report)`,
 `response_content_type(report)`, `response_method(report)`, `response_url(report)`,
 and `response_header(report, name)` so scripts can inspect structured
 `http_request(...)` reports without repeating raw `json_get(...)` /
-`json_string(...)` / `json_parse(...)` boilerplate at every call site.
+`json_string(...)` / `json_parse(...)` boilerplate at every call site or opt
+back into explicit `RuntimeError.HttpStatus(...)` gating when non-2xx replies
+should fail the higher-level JSON client path.
 
 It now also ships JSON-client helpers like `request_json_headers()`,
 `request_headers_set(headers, name, value)`, `request_bearer_headers(token)`,
@@ -305,7 +308,10 @@ The same shipped `http` module now also exposes
 `request_json_report_with_headers(method, url, body, headers, timeout_ms)` and
 `request_json_with_headers(method, url, body, headers, timeout_ms)` so bots,
 webhooks, and internal API clients can keep parsed JSON responses while still
-layering bearer auth, trace headers, and explicit timeout control.
+layering bearer auth, trace headers, and explicit timeout control. The parsed
+helpers now fail non-2xx replies as `RuntimeError.HttpStatus(...)`, while the
+raw `request_json_report...` helpers keep the structured response report for
+callers that want to inspect non-success statuses directly.
 
 It now also exposes `request_headers_merge(base, extra)`,
 `request_json_headers_with(extra)`, and

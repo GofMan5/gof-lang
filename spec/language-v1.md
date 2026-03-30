@@ -375,17 +375,19 @@ The bootstrap compiler in this repository currently supports:
 - `request_json_bearer_headers(token)` currently accepts exactly one bearer token string and returns JSON default headers plus `Authorization: Bearer <token>`
 - `request_json_bearer_headers_with(token, extra)` currently accepts `(string, dict[string])` and returns JSON default headers plus bearer auth merged with explicit overrides
 - `get_json(url)` currently accepts exactly one string URL and returns parsed `Result[json, RuntimeError]`
-- `get_json_with_timeout(url, timeout_ms)` currently accepts `(string, int)` and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON GET path
+- `get_json_with_timeout(url, timeout_ms)` currently accepts `(string, int)` and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON GET path and surfacing non-2xx replies as `RuntimeError.HttpStatus(...)`
 - `post_json(url, body)` currently accepts `(string, string)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]`
-- `post_json_with_timeout(url, body, timeout_ms)` currently accepts `(string, string, int)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON POST path
+- `post_json_with_timeout(url, body, timeout_ms)` currently accepts `(string, string, int)` where `body` is JSON text, sets `application/json`, and returns parsed `Result[json, RuntimeError]` while keeping explicit timeout control on the higher-level JSON POST path and surfacing non-2xx replies as `RuntimeError.HttpStatus(...)`
 - `request_json_report(method, url, body, timeout_ms)` currently accepts `(string, string, string, int)` where `body` is JSON text, applies default JSON headers, and returns the structured `http_request(...)` JSON report
 - `request_json_report_with_headers(method, url, body, headers, timeout_ms)` currently accepts `(string, string, string, dict[string], int)` and returns the structured `http_request(...)` JSON report for callers that want custom headers without leaving the shipped JSON helper surface
-- `request_json_with_headers(method, url, body, headers, timeout_ms)` currently accepts `(string, string, string, dict[string], int)` and returns parsed `Result[json, RuntimeError]` for callers that want custom headers plus the higher-level parsed JSON response path
+- `request_json_with_headers(method, url, body, headers, timeout_ms)` currently accepts `(string, string, string, dict[string], int)` and returns parsed `Result[json, RuntimeError]` for callers that want custom headers plus the higher-level parsed JSON response path while surfacing non-2xx replies as `RuntimeError.HttpStatus(...)`
+- `response_require_success(report)` currently accepts exactly one structured `http_request(...)` response report and returns the same `json` report for 2xx responses or `Result.Err(RuntimeError.HttpStatus(code, body))` for non-success statuses
+- `response_json_success(report)` currently accepts exactly one structured `http_request(...)` response report and returns parsed `Result[json, RuntimeError]` after applying the same explicit non-2xx success gate
 - `http_request` currently reports `status`, `body`, `headers`, `method`, and `url` as a structured JSON object
 - `http_request` currently preserves non-success HTTP statuses as successful reports so callers can inspect them explicitly
 - `http_request` currently normalizes response header names to lowercase and exposes each header as `list[string]`
 - `http_request` currently accepts explicit `dict[string]` request headers and an optional non-negative timeout in milliseconds
-- `import http` currently exposes explicit JSON request helpers, composable request-header builders, and typed helpers for extracting status/body/method/url/header data from the structured `http_request(...)` response report
+- `import http` currently exposes explicit JSON request helpers, composable request-header builders, typed response inspectors, and explicit success-gate helpers over the structured `http_request(...)` response report
 - HTTPS/TLS currently flows through the bootstrap `ureq + rustls` transport path
 - list literals must stay homogeneous once the bootstrap type layer can determine their element types
 - indexing currently requires either a list target with an integer index or a dict target with a string key

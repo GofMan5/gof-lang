@@ -368,6 +368,7 @@ Hard sequencing rule:
 - `[x]` CP-M10-2j: shipped parsed-JSON custom-header request helpers so authenticated service clients can keep bearer/trace headers and timeout control without manually restitching `response_json(http_request(...))`
 - `[x]` CP-M10-2k: shipped declarative `http` header-merge helpers so service clients can compose JSON defaults and explicit overrides in one expression instead of mutating request dicts step by step
 - `[x]` CP-M10-2l: shipped timeout-armed `io` open helpers and `net` listen helpers so file and local-service code can apply the first timeout wrapper at construction time instead of rebinding immediately after open/bind
+- `[x]` CP-M10-2m: shipped explicit `http` success-gate helpers and aligned the higher-level parsed JSON client paths so non-2xx replies can either stay inspectable as raw reports or surface `RuntimeError.HttpStatus(...)` consistently on the ergonomic path
 - `[ ]` CP-M10-3: operational observability and graceful shutdown baseline
 - Exit criteria:
 - real services can be built, deployed, debugged, and operated without hiding concurrency or I/O costs

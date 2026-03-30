@@ -8,10 +8,11 @@ fn main() -> Result[int, RuntimeError]:
     report = json_parse("{\"status\":204,\"body\":\"{\\\"service\\\":\\\"alpha\\\",\\\"count\\\":7}\",\"headers\":{\"content-type\":[\"application/json; charset=utf-8\"]},\"method\":\"GET\",\"url\":\"https://example.com/health\"}")?
     json_headers: dict[string] = request_headers_merge(request_json_headers(), {"X-Trace-Id": "trace-7"})
     bearer_headers: dict[string] = request_json_bearer_headers_with("demo-token", {"X-Trace-Id": "trace-7"})
+    gated_report = response_require_success(report)?
     status = response_status(report)?
     status_class = response_status_class(report)?
     success = response_is_success(report)?
-    body = response_json(report)?
+    body = response_json_success(gated_report)?
     service = json_string(json_get(body, "service")?)?
     count = json_int(json_get(body, "count")?)?
     method = response_method(report)?
@@ -23,6 +24,7 @@ fn main() -> Result[int, RuntimeError]:
     trace_id = bearer_headers["X-Trace-Id"]
     assert(status == 204, "expected parsed status")
     assert(success, "expected 2xx report to count as success")
+    assert(response_status(gated_report)? == 204, "expected success gate to preserve report")
     assert(service == "alpha", "expected response_json to parse body")
     assert(accept == "application/json", "expected JSON accept helper")
     assert(bearer == "Bearer demo-token", "expected bearer header helper")
