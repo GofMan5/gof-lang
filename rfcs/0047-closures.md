@@ -241,8 +241,9 @@ created closure snapshots its own `i`.
 
 **Restrictions inside generic declarations.** A closure created inside a
 generic function or method may not capture values of a type-parameter
-type, and closure-type annotations in generic signatures may not mention
-the declaration's type parameters. The taxon of a `T`-typed capture is
+type, and closure-type annotations in generic declarations — signatures,
+struct fields, enum payloads — may not mention the declaration's type
+parameters. The taxon of a `T`-typed capture is
 instantiation-dependent, so per-capture taxon classification is
 undecidable in the generic body; a per-`T` capture-struct layout would
 force dev-profile monomorphization, violating ADR 0004's
@@ -440,6 +441,10 @@ note/fix-it):
 
 - parser/AST: `fn` expressions in every permitted position, nested
   closures, zero-parameter forms, block-body indentation errors
+- shared parser regression with RFC 0048: `fns[0](arg)` parses as
+  indexing; `identity[int](41)` parses as type application; a bracket
+  identifier naming both a type and an in-scope value takes the
+  type-list parse with a rename hint for the value use
 - typed HIR: capture-analysis positives and negatives for
   `GOF3142`–`GOF3145`; taxon classification per RFC 0043; per-iteration
   loop captures; nested-closure capture chains; closure-in-closure

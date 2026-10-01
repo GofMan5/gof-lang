@@ -86,8 +86,9 @@ CoW), and an owned-taxon closure target moves into the defer record
 (`GOF3129` on later use).
 
 The call itself — target resolution, argument evaluation, move checking — is
-typed and checked like any other call; only the *scheduling* is new. There is
-no function value, no closure, and no new expression form.
+typed and checked like any other call; only the *scheduling* is new. Beyond
+the ordinary call targets, a closure value may be deferred (captured at
+registration per its taxon, above); no other new expression form exists.
 
 ### Scope-exit execution: all exits, LIFO
 
@@ -313,7 +314,8 @@ was fixed at the syntactic position and travels with the deferred call.
 - **who owns the data**: the block activation's defer record owns the
   resolved target and evaluated arguments; value arguments are CoW
   duplicates, handle arguments share the synchronized resource, owned
-  arguments move in at registration
+  arguments move in at registration, and a closure target follows its
+  taxon — value closures duplicate, owned closure targets move
 - **where values live**: in the defer record attached to the block
   activation — fixed stack slots in the native frame, evaluator values in
   the block's pending list
@@ -410,9 +412,10 @@ unpredictable. Defer cleans up; it never cancels an exit.
 
 ### Restrict defer targets to unit-returning calls
 
-Rejected. Without closures there is no way to wrap the fallible `close()`
-family, so `defer close(stream)` — the primary idiom this feature exists
-for — would be illegal. Result discipline is preserved instead by the
+Rejected. `defer close(stream)` — the primary idiom this feature exists
+for — returns `Result` and would be illegal under a unit-only rule;
+closures (RFC 0047) are not required to justify it. Result discipline is
+preserved instead by the
 `GOF3138` destruction-class failure reporting and RFC 0043's idempotent
 `close()`, with explicit inline `close()?` when the failure is expected and
 recoverable.
@@ -476,8 +479,8 @@ module-level declaration rule rejects top-level `defer` with no new code.
 ## Test Plan
 
 - **parser**: positive fixtures for every valid target form (top-level
-  function call, method call, builtin call); malformed forms (missing
-  expression, trailing tokens after the call)
+  function call, method call, builtin call, closure-value call);
+  malformed forms (missing expression, trailing tokens after the call)
 - **typed HIR**: negative fixtures for `GOF3136` (identifier, literal,
   binary expression, field access, bare method reference, struct
   constructor, enum payload construction) and `GOF3137` (`defer f(x)?`,

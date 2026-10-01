@@ -119,8 +119,9 @@ fn Pair.swapped(self: Pair[K, V]) -> Pair[V, K]:
 - generic functions may rely on return-type inference exactly like
   non-generic functions, with parameters treated as abstract atoms
 - closures created inside generic declarations may not capture
-  type-parameter-typed values, and generic signatures may not use closure
-  types mentioning the declaration's parameters — the RFC 0047 v1
+  type-parameter-typed values, and generic declarations may not use
+  closure types mentioning the declaration's parameters in any position —
+  signatures, struct fields, or enum payloads — the RFC 0047 v1
   restriction: the taxon of a `T`-typed capture is instantiation-
   dependent, per-`T` capture layouts would force dev-profile
   monomorphization, and witness tables carry method slots only
@@ -169,8 +170,9 @@ Disambiguation from indexing (the RFC 0047 interplay): an
 exactly when the bracket contents parse as a **type list** (type names,
 possibly nested `Name[...]`); every other bracket content — integer
 literals, general expressions — parses as indexing followed by a call,
-which is legal since RFC 0047 makes closures indexable container values
-(`fns[0](arg)`). In the rare conflict where a bracket identifier names
+which is legal since RFC 0047 makes closures container elements —
+indexing a list of closures and calling the result (`fns[0](arg)`) is
+ordinary indexing. In the rare conflict where a bracket identifier names
 both a type and an in-scope value, the type-list parse wins and the
 value use reports with a rename hint. A shared parser regression test
 with RFC 0047 pins both forms: `fns[0](arg)` is indexing;
@@ -469,13 +471,15 @@ monomorphization only in release.
 
 ### Turbofish syntax `name::<T>(...)`
 
-Deferred, not rejected. `name[T](...)` is unambiguous today because
-parenthesized calls target top-level names only and gof has no first-class
-function values, so an index-then-call sequence is never valid gof. The
-parser recognizes `Identifier[type_list](...)` through lookahead on the
-type list followed by `(`. The closures RFC must revisit this and may
-introduce a disambiguator; the grammar stays forward-compatible because
-the conflict does not exist yet.
+Deferred, not rejected. The plain bracket form `name[T](...)` is kept
+because the disambiguation from indexing is already decided (see the
+Instantiation section): bracket contents that parse as a type list make
+the sequence an explicit type application, and every other bracket
+content — including `fns[0](arg)`, valid since RFC 0047 makes closures
+container elements — parses as indexing. A turbofish form would add
+surface without removing an existing ambiguity; if a future feature ever
+makes type-list-versus-expression ambiguity genuinely unavoidable, the
+turbofish form is the reserved escape hatch.
 
 ### Mandatory constraints on every type parameter
 
@@ -525,8 +529,10 @@ diagnostics contract (code, severity, span, message, note, fix-it):
 - `GOF3146`: invalid generic declaration contract — duplicate
   type-parameter names, collisions with known type names, unresolved
   constraint protocols, type parameters on `test fn`, `fixture(scope) fn`,
-  or methods, malformed receivers on generic structs, and non-terminating
-  instantiation expansion
+  or methods, malformed receivers on generic structs, non-terminating
+  instantiation expansion, and closure captures or closure types
+  violating the RFC 0047 generic restriction (T-typed captures; closure
+  types mentioning the declaration's parameters in any position)
 - `GOF3147`: type-argument arity mismatch — wrong counts at annotations,
   call sites, and constructors, including explicit arguments on non-generic
   targets, unapplied generic types, and explicit arguments on method calls

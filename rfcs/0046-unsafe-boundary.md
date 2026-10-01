@@ -196,7 +196,8 @@ The unsafe context is a property of source text, not of runtime behavior:
   lexically have. RFC 0045 pins this for deferred calls (the registration
   position licenses the deferred call's operations; the scope-exit
   execution position never does) and RFC 0047 pins it for closures (the
-  capture position governs; closure bodies never inherit)
+  closure body is never in unsafe context: it neither inherits a block
+  nor opens its own in v1)
 
 ### Safe-wrapper requirement
 
@@ -339,12 +340,18 @@ remain reserved by the in-flight RFCs that claimed them. This RFC adds
 exactly three codes, all following the diagnostics contract
 (code/severity/span/message/note/fix-it):
 
-- `GOF3139` (error): explicitly-unsafe operation used outside a
-  lexically enclosing `unsafe:` block. Span: the operation. Note: names
-  the enclosing function and states that unsafe context never crosses
-  function or declaration boundaries. Fix-it: wrap the statement in an
-  `unsafe:` block. Reserved by this RFC; first emits when the first
-  explicitly-unsafe operation lands (Phase 2+).
+- `GOF3139` (error): two cases. (1) An explicitly-unsafe operation used
+  outside a lexically enclosing `unsafe:` block — span: the operation;
+  note: names the enclosing function and states that unsafe context never
+  crosses function or declaration boundaries; fix-it: wrap the statement
+  in an `unsafe:` block; reserved by this RFC, first emits when the first
+  explicitly-unsafe operation lands (Phase 2+). (2) An `unsafe:` block
+  header inside a closure body — span: the `unsafe:` header; note: unsafe
+  blocks are not valid inside closure bodies in v1 (closures are mobile
+  values; the safe-wrapper requirement is defined for named functions),
+  and unsafe work goes through a named wrapper function; fix-it: none
+  (the block must move into a named function); emits as soon as RFC
+  0047's closure slice lands (Phase 1).
 - `GOF3140` (error): `unsafe` used as a declaration or statement
   modifier (for example `unsafe fn`, `unsafe struct`, `unsafe` prefixing
   a plain statement or top-level declaration). Message: `unsafe` is a
