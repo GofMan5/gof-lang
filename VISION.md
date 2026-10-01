@@ -21,20 +21,34 @@ in each ancestor's strongest zone, proven by artifacts.
 
 1. **Real native compilation, Rust-style pipeline.** Source compiles through
    the layered pipeline — lexer → CST → AST → HIR → typed HIR → MIR → SSA →
-   backend IR — and the backend IR (a serializable bytecode) compiles to
-   machine code. Packaging the bootstrap evaluator inside a host executable
-   is a bootstrap workaround, not a native build. The end state has no
-   evaluator in release artifacts.
+   backend IR — and the backend IR compiles to machine code. The backend IR
+   is a serializable linear SSA form (CLIF / LLVM IR class), not a stack-VM
+   bytecode; IR serialization is the incremental cache boundary. The dev
+   profile uses a thin pipeline: typed HIR lowers to backend IR with minimal
+   passes and per-module parallel codegen; deep SSA passes run only in the
+   release profile. The serialized IR cache uses a compact binary format
+   (zero-copy class, e.g. rkyv), never textual dumps, so disk I/O cannot
+   eat the incremental compile budget. Packaging the bootstrap evaluator
+   inside a host executable is a bootstrap workaround, not a native build.
+   The end state has no evaluator in release artifacts.
 2. **Faster feedback than Rust, Go-like operation.** Incremental compilation
    with a fast dev profile; optimized release profile for throughput. Deploy
    story: static executable, no runtime install, goroutine-simple
    concurrency.
-3. **Explicit memory model before codegen.** One chosen paradigm, fixed by
-   RFC, with honest tradeoffs — not an implicit "best of all worlds".
-   Working direction: value semantics + move ownership + escape analysis;
-   stack by default, heap only where escaping or explicitly requested;
-   message passing is the only cross-task sharing; deterministic resource
-   release (`defer`); no tracing GC in the native target.
+3. **Value Ownership before codegen (Swift / Mojo / Val class).** One chosen
+   paradigm, fixed by RFC, with honest tradeoffs — not an implicit "best of
+   all worlds". Three taxa: **value types** are `Copy` with copy-on-write
+   and a uniqueness fast path; **owned types** (starting with `Box[T]`) are
+   move-only with local use-after-move checking; **handle types** are
+   shared, reference-like runtime resources — the only user-visible
+   aliasing, by design. Plain method receivers borrow for reading; `mut`
+   receivers get exclusive in-place access. No global lifetimes and no
+   borrow checker — analysis is strictly local. Cross-task data sharing
+   goes through channels and shared handle objects; value payloads crossing
+   a task boundary transfer when unique and deep-copy deterministically
+   when shared. Deterministic resource release (`defer`, final-reference
+   close for handles); no tracing GC in the native target; escape analysis
+   is a backend optimization, orthogonal to semantics.
 4. **Backend selection by ADR before backend code.** Dev-profile speed and
    release-profile optimization may justify two backends (e.g. Cranelift for
    dev, LLVM for release); the decision lands as an ADR with benchmark
@@ -62,8 +76,8 @@ The agent's living gap document (`.agent-ideal-delta.md`) tracks progress;
 
 | Phase | Scope | Exit criteria |
 |---|---|---|
-| 0 — Architecture gates | spec-vs-implementation audit; memory model RFC; backend ADR; core RFC drafts (protocol, defer, unsafe, closures, generics, Option, tuples) | gate artifacts reviewed in; roadmap synced; delta exact |
-| 1 — Semantic core | everything the spec promises works; closures, generics, `Option[T]`, tuples, full patterns, module visibility, const expressions | core frozen; conformance green; every feature spec'd + tested + exemplified |
+| 0 — Architecture gates | core-type-system-and-syntax audit (bounded scope, compact delta); memory model RFC; backend ADR; core RFC drafts (protocol, defer, unsafe, closures, generics, Option, tuples) | gate artifacts reviewed in; roadmap synced; delta exact |
+| 1 — Semantic core | everything the spec promises works; closures, generics, `Option[T]`, tuples, full patterns, module visibility, const expressions. Complex features are designed as typed-HIR/MIR semantics from day one (generics monomorphize in typed HIR for release, but dev builds dispatch generics through witness tables with instance caching at module boundaries so monomorphization never eats the dev compile budget; async lowers to a MIR state machine; closures use explicit capture lowering); the evaluator is only a conformance oracle, never gold-plated | core frozen; conformance green; every feature spec'd + tested + exemplified; semantics portable to Phase 2 without rewrites |
 | 2 — Native backend | backend IR → first real machine-code artifact → dev/release profiles → incremental compilation → perf gates | `gof build` emits real machine code from IR; compile-budget and throughput benchmarks recorded |
 | 3 — Concurrency | structured concurrency, full panic/error propagation, scheduler fairness, stress gates, measured memory/latency model | concurrency contracts tested and stress-gated |
 | 4 — Stdlib completeness | TCP/UDP/TLS servers, HTTP server + routing + streaming, collections, crypto basics, property/fuzz/stress/bench testing, observability baseline | service-grade programs possible end-to-end |
