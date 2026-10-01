@@ -43,7 +43,7 @@ Ordered implementation programs now live under `plans/roadmap/`:
 
 ## Active Focus
 
-- `[~]` Vision-aligned completion program: Phase 0 architecture gates in flight — value ownership model ([RFC 0043](rfcs/0043-value-ownership-model.md)), runtime memory strategy ([ADR 0003](adrs/0003-runtime-memory-strategy.md)), and backend strategy ([ADR 0004](adrs/0004-backend-strategy.md)) accepted; core-semantics RFC drafts (protocols, defer, unsafe boundary, closures, generics, `Option[T]`, tuples) in progress
+- `[~]` Vision-aligned completion program: Phase 0 architecture gates closing — value ownership model ([RFC 0043](rfcs/0043-value-ownership-model.md)), runtime memory strategy ([ADR 0003](adrs/0003-runtime-memory-strategy.md)), backend strategy ([ADR 0004](adrs/0004-backend-strategy.md)), and repository boundaries ([ADR 0005](adrs/0005-repository-boundaries.md)) accepted; all seven core-semantics RFCs landed: [0044](rfcs/0044-protocols.md) protocols, [0045](rfcs/0045-defer.md) defer, [0046](rfcs/0046-unsafe-boundary.md) unsafe boundary, [0047](rfcs/0047-closures.md) closures, [0048](rfcs/0048-generics.md) generics, [0049](rfcs/0049-option-type.md) `Option[T]`, [0050](rfcs/0050-tuples.md) tuples; cross-RFC review in progress
 - `[~]` M4: minimal useful standard library for CLI and bot-oriented programs
 - `[~]` M5: concurrency semantics beyond task spawn and await
 - `[~]` M7: bootstrap-native build path on the road to direct codegen
