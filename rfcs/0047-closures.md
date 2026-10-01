@@ -239,6 +239,20 @@ fn main():
 Each iteration's loop binding is a distinct immutable binding, so every
 created closure snapshots its own `i`.
 
+**Restrictions inside generic declarations.** A closure created inside a
+generic function or method may not capture values of a type-parameter
+type, and closure-type annotations in generic signatures may not mention
+the declaration's type parameters. The taxon of a `T`-typed capture is
+instantiation-dependent, so per-capture taxon classification is
+undecidable in the generic body; a per-`T` capture-struct layout would
+force dev-profile monomorphization, violating ADR 0004's
+one-erased-body invariant; and protocol witness tables carry method slots
+only — no duplication or destruction entries. Workarounds are explicit:
+hoist the value into a concrete type, or route it through a channel or
+handle. The restriction lifts only through an RFC that extends witness
+tables with taxon operations and specifies the erased capture
+representation.
+
 **No self-recursion in v1.** An anonymous function has no name, and the
 binding being initialized is not in scope inside its own initializer, so
 the body cannot reference the closure it defines (existing `GOF3002`).
@@ -256,6 +270,10 @@ later binding is not yet initialized at the earlier closure's creation.
 - a panic inside a closure behaves like a panic inside a named function;
   inside a spawned closure it surfaces at the join as
   `RuntimeError.TaskPanicked` under the existing task rule
+- unsafe context is lexical and function-local (RFC 0046): a closure body
+  never inherits an `unsafe:` block enclosing the `fn` expression, and a
+  closure body may not open its own `unsafe:` block in v1 — unsafe work
+  needed inside a closure goes through a named wrapper function
 
 ### Typed-HIR capture lowering
 
@@ -379,8 +397,10 @@ capture struct is flat, deterministic, and CoW-friendly.
   closure values as well — the spec's `go` contract bullet gains the
   closure-target form, and `GOF3008`'s scope grows accordingly; the
   implementation slice syncs `spec/language-v1.md` for this change
-- no existing diagnostic changes scope; named-function call errors stay
-  on their existing codes
+- one existing diagnostic grows scope: `GOF3008` (invalid `go` spawn
+  target) extends from named-function-only targets to closure targets;
+  all other existing diagnostics keep their scope, and named-function
+  call errors stay on their existing codes
 - owned-capture rules apply when RFC 0043's owned types ship; nothing
   shipped can violate them yet — the rule is fixed now so the first owned
   type lands inside this contract

@@ -116,9 +116,10 @@ Rules:
 - `Self` is a type placeholder valid **only** inside a protocol block, only
   as the direct annotation of a parameter or as the return type; it may not
   nest inside parameterized annotations
-- every other type in a requirement signature must be a known concrete
-  type (builtin, parameterized builtin, struct, or enum), exactly the
-  annotation grammar function signatures use today
+- every other type in a requirement signature must be a type the
+  function-signature annotation grammar accepts: builtins, parameterized
+  builtins, structs, enums, and — with the RFCs in this same set —
+  `Option[T]`, tuple types, and closure types
 - requirement names are unique within the protocol; protocol names join
   the top-level namespace and conflict with struct, enum, and function
   names under the existing top-level conflict rules
@@ -246,10 +247,11 @@ Rules:
   inference is always determined by the signature (unbounded type
   parameters are the Phase 1 generics RFC's decision, not this one)
 - type arguments are inferred at call sites by structural extraction from
-  argument types (`T` whole, or `T` nested one level inside
-  `list[T]` / `Result[T, E]`); there is no explicit `name[Type](...)`
-  call syntax in v1, so the grammar never has to disambiguate
-  instantiation from indexing
+  argument types (`T` whole, or `T` nested one level inside a
+  parameterized builtin annotation — `list[T]`, `dict[T]`, `channel[T]`,
+  `task[T]`, `Result[T, E]`, and `Option[T]` from RFC 0049); RFC 0048
+  adds the explicit `name[Type](...)` instantiation form and owns its
+  disambiguation from indexing
 - after inference, each bound is checked against the conformance table;
   only declared conformances satisfy bounds
 - inside the body, values of a type parameter may call exactly the
@@ -273,8 +275,10 @@ Rules:
 
 ### Dispatch contract (ADR 0004)
 
-Conformance is checked once, at compile time, in both profiles. The
-profiles differ only in how checked calls lower:
+Conformance is checked once, at compile time, in both profiles —
+"protocol conformance" throughout this RFC means the
+`(struct, protocol)` relation, never behavioral test conformance.
+The profiles differ only in how checked calls lower:
 
 - **Dev profile — witness tables.** Each generic function compiles once,
   type-erased. Each conforming `(struct, protocol)` pair emits one witness
@@ -470,11 +474,13 @@ bounds already express. None blocks the v1 use cases.
   conflict diagnostic extends to cover them (message update, no new code)
 - spec sync obligations for the implementation slice: `spec/language-v1.md`
   moves `protocol` from the v1 surface list into the implemented subset
-  with the binding rules above; `spec/diagnostics.md` gains the four new
-  codes; `roadmap.md` closes the Phase 0 protocol gate entry;
-  `docs/site/` and `examples/` gain a protocols walkthrough; the VS Code
-  extension grammar, snippets, and tests are updated per AGENTS.md §9
-  with `npm test` and `npm run package` verified
+  with the binding rules above, and its `go`-spawn and plain-call bullets
+  gain the instantiated-generic-call forms — the same bullets RFC 0047
+  extends for closure targets, so the edits merge; `spec/diagnostics.md`
+  gains the four new codes; `roadmap.md` closes the Phase 0 protocol gate
+  entry; `docs/site/` and `examples/` gain a protocols walkthrough; the
+  VS Code extension grammar, snippets, and tests are updated per
+  AGENTS.md §9 with `npm test` and `npm run package` verified
 
 ## Diagnostics Impact
 
@@ -541,7 +547,7 @@ and `mut`-receiver discipline on instantiated calls stays GOF3131.
 - cross-module fixtures: protocol declared in one module, conformance and
   generic use in another; imported-protocol name resolution; duplicate
   protocol names across the module graph
-- evaluator conformance: requirement calls resolve through the
+- evaluator behavioral conformance: requirement calls resolve through the
   conformance table with observable behavior identical before and after
   the static checks land
 - dev/release dispatch equivalence (native gate, Phase 2): the same

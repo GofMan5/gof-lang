@@ -84,7 +84,13 @@ unsafe:
   `:`, newline, `INDENT`, statements, `DEDENT`
 - valid wherever a statement is valid: `fn`, `test fn`, and fixture
   bodies, and inside `if` / `while` / `for` / `match` arm / `select` arm
-  bodies
+  bodies — but not inside closure bodies in v1 (`GOF3139` fires at the
+  `unsafe:` header): closures are mobile values (first-class `go` targets
+  and channel payloads per RFC 0047), and the safe-wrapper requirement
+  below is defined for named functions only. Unsafe work needed inside a
+  closure goes through a named wrapper function. The restriction lifts
+  only through a dedicated RFC that defines the wrapper obligation for
+  closures
 - it is a **statement, not a modifier**: `unsafe` cannot decorate `fn`,
   `struct`, `enum`, `protocol`, or any other statement or declaration
   (`GOF3140`)
@@ -181,14 +187,16 @@ The unsafe context is a property of source text, not of runtime behavior:
 
 - a position is in unsafe context if and only if it is inside an
   `unsafe:` block in the **same function body**
-- the context does not cross function boundaries: nested functions,
-  closures (Phase 1, RFC pending), and fixture or test bodies declared
-  textually inside an `unsafe:` block do not inherit it; their bodies
-  must open their own `unsafe:` blocks
+- the context does not cross function boundaries: closures, and fixture
+  or test bodies declared textually inside an `unsafe:` block, do not
+  inherit it; closure bodies may not open their own `unsafe:` blocks in
+  v1 (see the position rule above)
 - the context is not created or extended by dynamic execution: deferred
   work and late-run closures do not execute "in" a context they did not
-  lexically have. The `defer` RFC (pending) and the closures RFC (pending)
-  pin their exact wording against this principle
+  lexically have. RFC 0045 pins this for deferred calls (the registration
+  position licenses the deferred call's operations; the scope-exit
+  execution position never does) and RFC 0047 pins it for closures (the
+  capture position governs; closure bodies never inherit)
 
 ### Safe-wrapper requirement
 

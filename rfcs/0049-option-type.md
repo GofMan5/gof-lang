@@ -189,8 +189,10 @@ Why exactly these three, and nothing more:
   value must never coerce to `bool`.
 - Deliberately absent: `unwrap` / `expect` (see Alternatives), the
   higher-order combinators (`map`, `and_then`, `or_else`, `unwrap_or_else`,
-  `flatten`, `transpose`, `zip` — closures do not exist in the language
-  yet), and the `Option`↔`Result` bridges (`ok_or`, `ok`) — crossing
+  `flatten`, `transpose`, `zip` — their argument contracts would be
+  half-designed until closure types settle in real usage; RFC 0047 lands
+  closures in this same set, which is necessary but not sufficient), and
+  the `Option`↔`Result` bridges (`ok_or`, `ok`) — crossing
   channels is a semantic decision that stays explicit in user code via
   `match`.
 
@@ -249,8 +251,8 @@ propagate an `Err(e)` payload upward. `Option.None` carries no payload, so
 
 Rust's `Try`-trait unification lets `?` silently coerce between `Option`
 and `Result` across function boundaries; it is a known foot-gun that `gof`
-declines to copy. `?` on `Option` is deferred until closures land, and any
-future proposal must weigh it against real usage pain in a dedicated RFC —
+declines to copy. `?` on `Option` is deferred until closures land AND a
+future proposal weighs it against real usage pain in a dedicated RFC —
 not ride in on this one.
 
 ### Migrate `first` / `last` / `min` / `max` to `Option` now
@@ -364,8 +366,9 @@ of no implicit type coercion.
 ## Diagnostics Impact
 
 Four new error codes, all following the diagnostics contract
-(code/severity/span/message/note/optional fix-it). The last allocated code
-before this RFC was `GOF3128`; RFC 0043 reserved `GOF3129`–`GOF3131`; this
+(code/severity/span/message/note/optional fix-it). The last shipped code
+is `GOF3128`; RFC 0043 reserved `GOF3129`–`GOF3131`, and the sibling RFCs
+in this set allocate `GOF3132`–`GOF3145` and `GOF3155`–`GOF3157`; this
 RFC allocates `GOF3151`–`GOF3154` and nothing else:
 
 - `GOF3151` (error): invalid builtin `Option` variant reference — an

@@ -21,7 +21,10 @@ value taxa:
 
 Composites (lists, dicts, enums, structs, tuples, `Result`) take their
 duplication behavior from their fields: value fields duplicate under CoW;
-handle fields share the underlying resource exactly as if cloned directly.
+handle fields share the underlying resource exactly as if cloned directly;
+and a composite with any owned field, member, payload, or capture is
+itself an owned (move-only) value — ownership is contagious through
+composition.
 
 Access rules: analysis is strictly function-local — no global lifetimes, no
 borrow checker, no interprocedural aliasing analysis. Cross-task data
@@ -98,6 +101,8 @@ owned types:
 - container insertion and struct construction of owned values
 - `match` payload bindings of owned payloads (consumes the scrutinee
   binding when a payload moves out)
+- `defer` registration of owned arguments (RFC 0045) — the defer record is
+  an ownership-transfer site
 
 Everything else **borrows** (reads, never consumes):
 

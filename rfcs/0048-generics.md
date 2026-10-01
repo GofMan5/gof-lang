@@ -118,6 +118,13 @@ fn Pair.swapped(self: Pair[K, V]) -> Pair[V, K]:
   unchanged
 - generic functions may rely on return-type inference exactly like
   non-generic functions, with parameters treated as abstract atoms
+- closures created inside generic declarations may not capture
+  type-parameter-typed values, and generic signatures may not use closure
+  types mentioning the declaration's parameters — the RFC 0047 v1
+  restriction: the taxon of a `T`-typed capture is instantiation-
+  dependent, per-`T` capture layouts would force dev-profile
+  monomorphization, and witness tables carry method slots only
+  (violation reports `GOF3146`)
 
 Protocol names in the examples are illustrative; the concrete protocol
 surface is owned by RFC 0044.

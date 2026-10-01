@@ -68,10 +68,10 @@ defer_stmt := "defer" call_expr newline
 
 Executing a `defer` statement:
 
-1. resolves the call target (top-level function, method receiver, builtin)
-   and evaluates every argument expression immediately, exactly as an
-   ordinary call at that point — `?` inside an *argument* expression
-   propagates right then, and the defer is never registered
+1. resolves the call target (top-level function, method receiver, builtin,
+   or closure value) and evaluates every argument expression immediately,
+   exactly as an ordinary call at that point — `?` inside an *argument*
+   expression propagates right then, and the defer is never registered
 2. stores the resolved target plus the evaluated argument values in the
    enclosing block activation's pending-defer list
 3. continues with the next statement; nothing else observable happens
@@ -80,7 +80,10 @@ The deferred pair is subject to the RFC 0043 argument taxa at registration:
 value-type arguments duplicate (CoW), handle arguments share the underlying
 synchronized resource, and owned-type arguments **move** into the defer
 record at registration (later use of the moved-from binding is `GOF3129`,
-the ordinary move diagnostic).
+the ordinary move diagnostic). A closure call target is a value captured
+at registration by the same rules: value-taxon closures duplicate (O(1)
+CoW), and an owned-taxon closure target moves into the defer record
+(`GOF3129` on later use).
 
 The call itself — target resolution, argument evaluation, move checking — is
 typed and checked like any other call; only the *scheduling* is new. There is
@@ -282,6 +285,15 @@ running. There is no `recover`: panics are for broken invariants (AGENTS.md
 would open a second, dynamic error channel and make scope-exit behavior
 unpredictable. The exit that triggered unwinding always completes as it
 started, after defers run.
+
+### Interaction with `unsafe` blocks
+
+Unsafe context is lexical (RFC 0046): an explicitly-unsafe operation
+inside a deferred call is licensed if and only if its syntactic position —
+inside the `defer` statement's argument expression — is enclosed in an
+`unsafe:` block. Scope-exit execution happens outside the block, but the
+runtime position never creates or extends unsafe context; the permission
+was fixed at the syntactic position and travels with the deferred call.
 
 ### Task and concurrency interaction
 
