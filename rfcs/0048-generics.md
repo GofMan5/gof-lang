@@ -164,6 +164,18 @@ generic types. Two forms:
   annotations. The list must be complete: every declared parameter, in
   order. Partial lists and placeholders are not accepted in this RFC
 
+Disambiguation from indexing (the RFC 0047 interplay): an
+`Identifier[bracket](...)` sequence parses as explicit type application
+exactly when the bracket contents parse as a **type list** (type names,
+possibly nested `Name[...]`); every other bracket content — integer
+literals, general expressions — parses as indexing followed by a call,
+which is legal since RFC 0047 makes closures indexable container values
+(`fns[0](arg)`). In the rare conflict where a bracket identifier names
+both a type and an in-scope value, the type-list parse wins and the
+value use reports with a rename hint. A shared parser regression test
+with RFC 0047 pins both forms: `fns[0](arg)` is indexing;
+`identity[int](41)` is type application.
+
 Rules:
 
 - inference runs only when no explicit list is supplied; explicit arguments
