@@ -7,3 +7,4 @@ AGENTS.md
 /docs/book/book
 **/node_modules/
 **/*.vsix
+/.agent-*
