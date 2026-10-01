@@ -20,9 +20,11 @@ The real goal is not feature count. Every phase of language development must:
 
 ## Detailed Program Plans
 
-`roadmap.md` stays the summary-status index. Ordered implementation programs now
-live under `plans/roadmap/`:
+`roadmap.md` stays the summary-status index. The vision-level phased
+completion program and its hard constraints live in [VISION.md](VISION.md).
+Ordered implementation programs now live under `plans/roadmap/`:
 
+- [Vision and phased completion program](VISION.md)
 - [Roadmap index](plans/roadmap/00-index.md)
 - [Language platform program](plans/roadmap/10-language-platform.md)
 - [Testing platform overview](plans/roadmap/20-testing-platform/00-overview.md)
@@ -41,6 +43,7 @@ live under `plans/roadmap/`:
 
 ## Active Focus
 
+- `[~]` Vision-aligned completion program: Phase 0 architecture gates in flight — value ownership model ([RFC 0043](rfcs/0043-value-ownership-model.md)), runtime memory strategy ([ADR 0003](adrs/0003-runtime-memory-strategy.md)), and backend strategy ([ADR 0004](adrs/0004-backend-strategy.md)) accepted; core-semantics RFC drafts (protocols, defer, unsafe boundary, closures, generics, `Option[T]`, tuples) in progress
 - `[~]` M4: minimal useful standard library for CLI and bot-oriented programs
 - `[~]` M5: concurrency semantics beyond task spawn and await
 - `[~]` M7: bootstrap-native build path on the road to direct codegen
@@ -291,8 +294,8 @@ Hard sequencing rule:
 
 - `[x]` bootstrap-native host executable path via `gof build --native`
 - `[x]` bootstrap-native embedded source bundles preserve reachable imports and local package graph semantics
-- `[ ]` transition from SSA JSON artifact to real codegen
-- `[ ]` runtime allocation model formalization
+- `[ ]` transition from SSA JSON artifact to real codegen per the accepted backend strategy ([ADR 0004](adrs/0004-backend-strategy.md): Cranelift dev profile, LLVM release profile feature-gated, binary IR cache)
+- `[~]` runtime allocation model formalization through the accepted value ownership model ([RFC 0043](rfcs/0043-value-ownership-model.md)) and runtime memory strategy ([ADR 0003](adrs/0003-runtime-memory-strategy.md))
 - `[ ]` debug info and ABI smoke tests
 - `[ ]` performance baselines for startup, memory, throughput, and binary size
 - `[ ]` release quality gates based on benchmarks, not marketing
@@ -383,7 +386,7 @@ Hard sequencing rule:
 ### M11. Rust, C, and C++-Class Native Systems Coverage
 
 - `[ ]` real native backend beyond evaluator-wrapped host executables
-- `[ ]` formal memory model and aliasing rules
+- `[~]` formal memory model and aliasing rules through [RFC 0043](rfcs/0043-value-ownership-model.md) (value ownership: value/owned/handle taxa, local move checking, task-boundary rule)
 - `[ ]` explicit unsafe boundary design with safe wrappers
 - `[ ]` stable C ABI surface and FFI baseline
 - `[ ]` predictable layout control for performance-sensitive data types
