@@ -1,0 +1,54 @@
+# Tuple walkthrough (RFC 0050): fixed-arity heterogeneous values with
+# `.N` member access, destructuring in every binding position, pairwise
+# equality, lexicographic ordering, and value-semantics copying.
+
+fn bounds() -> (int, int):
+    # Return types infer member-by-member when left unannotated.
+    return (1, 100)
+
+fn clamp(value: int, limits: (int, int)) -> int:
+    # Tuple parameters destructure in the body with the same grammar.
+    (lo, hi) = limits
+    if value < lo:
+        return lo
+    if value > hi:
+        return hi
+    return value
+
+fn main() -> int:
+    # Literal with an explicit annotation; members are heterogeneous.
+    pair: (int, string) = (1, "one")
+    print(pair)
+
+    # `.N` reads members; access composes through nesting.
+    nested = ((1, 2), (3, 4))
+    assert(nested.1.0 == 3, "expected chained member access")
+
+    # Destructuring: fresh names, mut distribution, and nesting.
+    (lo, hi) = bounds()
+    mut (a, (b, c)) = (10, (20, 30))
+    a = a + b + c
+    assert(a == 60, "expected mut leaves to stay assignable")
+
+    # The right-hand side evaluates fully before any leaf binds.
+    mut left = 1
+    mut right = 2
+    (left, right) = (right, left)
+    assert(left == 2 and right == 1, "expected the swap")
+
+    # Tuples flow through loops and containers.
+    mut total = 0
+    for (x, y) in [(1, 2), (3, 4), (10, 0)]:
+        total = total + x * y
+    assert(total == 14, "expected per-element destructuring")
+
+    # Pairwise equality; lexicographic ordering, short-circuiting.
+    assert((1, 2) == (1, 2), "expected structural equality")
+    assert((1, 2) < (1, 3), "expected lexicographic ordering")
+    assert((1, 9) < (2, 0), "expected the first member to dominate")
+
+    # Parameters carry tuple types; the body destructures them.
+    assert(clamp(50, (lo, hi)) == 50, "expected the in-range value")
+    assert(clamp(500, (lo, hi)) == hi, "expected the high clamp")
+
+    return pair.0 + lo + hi + left + right

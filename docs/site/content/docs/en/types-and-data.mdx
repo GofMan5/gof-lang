@@ -195,7 +195,6 @@ Operational helpers now use the same contract:
 `Option[T]` is the explicit-absence baseline: a value is either
 `Option.Some(value)` or `Option.None`. There is no null and no default
 value for absence.
-
 ```gof
 fn find_user(id: int) -> Option[string]:
     if id == 1:
@@ -220,6 +219,40 @@ Current rules:
 - postfix `?` does not apply to `Option` — that operator belongs to `Result[T, E]`
 - option values participate in equality when the payload type is equality-comparable
 - there is no implicit coercion between `T` and `Option[T]` in either direction
+
+## Tuples
+
+`(T1, T2, ...)` is the fixed-arity structural value type: heterogeneous
+members, structural identity, cheap copying.
+
+```gof
+fn bounds() -> (int, int):
+    return (1, 100)
+
+fn main() -> int:
+    pair: (int, string) = (1, "one")
+    (lo, hi) = bounds()
+    mut (a, (b, c)) = (10, (20, 30))
+    for (x, y) in [(1, 2), (3, 4)]:
+        a = a + x * y
+    mut left = 1
+    mut right = 2
+    (left, right) = (right, left)
+    assert(pair.0 == 1, "expected the first member")
+    assert((1, 2) < (1, 3), "expected lexicographic ordering")
+    return pair.0 + lo + hi + left + right
+```
+
+Current rules:
+
+- tuples have two or more members; `()`, `(T)`, and trailing commas are rejected at parse time
+- tuple types are written `(T1, T2, ...)` in annotations; the `tuple[...]` spelling is rejected with a fix-it
+- `expr.N` accesses the Nth member for canonical decimal literals
+- destructuring works in binding statements, `for` bindings, and match payload positions; leaves are identifiers or nested tuple patterns
+- `mut (a, b) = ...` distributes `mut` across every leaf
+- the whole right-hand side evaluates before any leaf binds, so `(a, b) = (b, a)` swaps
+- equality holds pairwise when every member has equality semantics; ordering is lexicographic left to right when every member is `int` or `string` recursively
+- tuples render as `(member, member, ...)` through `print` and snapshots
 
 ## RuntimeError
 

@@ -146,3 +146,6 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3152`: invalid payload arity for a builtin `Option` variant constructor
 - `GOF3153`: invalid operand or contract for builtin `Option` helpers
 - `GOF3154`: implicit coercion between `T` and `Option[T]`
+- `GOF3155`: degenerate tuple shape or tuple arity mismatch (empty or single-member tuples, trailing commas, and pattern/arity mismatches)
+- `GOF3156`: tuple destructuring against a non-tuple value
+- `GOF3157`: tuple element access with an out-of-range index or a non-tuple target

@@ -64,6 +64,19 @@
     ],
     "description": "Resolve an Option exhaustively through match (RFC 0049)"
   },
+  "Tuple Bind": {
+    "prefix": "goftuple",
+    "body": ["(${1:a}, ${2:b}) = ${3:pair}"],
+    "description": "Destructure a tuple into two bindings (RFC 0050)"
+  },
+  "Tuple Function": {
+    "prefix": "goftuplefn",
+    "body": [
+      "fn ${1:bounds}() -> (${2:int}, ${3:int}):",
+      "    return (${4:1}, ${5:100})"
+    ],
+    "description": "Create a function that returns a tuple (RFC 0050)"
+  },
   "Struct": {
     "prefix": "gofstruct",
     "body": [

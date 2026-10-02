@@ -167,8 +167,9 @@ The bootstrap compiler in this repository currently supports:
 - plain function calls currently target only top-level named functions
 - struct constructors currently use positional field order from the declaration
 - enum variants may be unit variants or payload variants with named fields
-- equality currently works for `int`, `string`, `bool`, `json`, `unit`, `list[T]`, `dict[T]`, same-type `struct`, same-type `enum`, and compatible `Result[T, E]` values when every nested member also has explicit equality semantics
-- ordering currently works for `int` and `string`
+- equality currently works for `int`, `string`, `bool`, `json`, `unit`, `list[T]`, `dict[T]`, same-type `struct`, same-type `enum`, compatible `Result[T, E]` values, and compatible tuple values when every nested member also has explicit equality semantics
+- ordering currently works for `int` and `string`, and for tuples whose members are recursively orderable (`int` and `string`)
+- tuple ordering is currently lexicographic, left to right, short-circuiting at the first unequal member
 - string ordering is currently lexicographic
 - channel, task, and cancellation-token values currently do not participate in equality or ordering, even when nested inside structs, enums, lists, dicts, or `Result` payloads
 - enum declarations currently require unique variant names
@@ -208,6 +209,16 @@ The bootstrap compiler in this repository currently supports:
 - there is currently no implicit coercion between `T` and `Option[T]` in either direction
 - `Option` values currently participate in equality when both are `None` or both are `Some` with equal payloads, and never participate in ordering
 - postfix `?` currently rejects `Option` operands with a note that absence is resolved through `match` or `unwrap_or`
+- tuples `(T1, T2, ...)` are currently a builtin structural value type with two or more members and no single-member or empty form
+- tuple types are currently written `(T1, T2, ...)` in annotations; the identifier spelling `tuple[...]` is rejected with a fix-it pointing at the parenthesized form
+- tuple literals `(a, b, ...)` currently evaluate members left to right into a fixed-arity value
+- `expr.N` currently accesses the Nth tuple member when `N` is a canonical decimal literal (no leading zeros, no sign); non-canonical literals keep the field-access meaning
+- tuple destructuring currently works in binding statements `(a, b) = value`, loop bindings `for (a, b) in pairs`, and match payload positions `EnumName.Variant((a, b))`; pattern leaves are identifiers or nested tuple patterns
+- `mut (a, b) = value` currently distributes `mut` across every leaf; the whole right-hand side evaluates before any leaf binds, so `(a, b) = (b, a)` swaps
+- destructuring leaves currently follow the binding contract: fresh names bind, existing `mut` names reassign with type compatibility, existing immutable names report the immutable-reassignment diagnostic
+- tuple values currently flow through parameters, returns (declared and inferred), struct fields, enum payloads, and `list`/`dict`/`channel` element positions
+- tuple equality currently holds pairwise when every member has equality semantics; ordering is lexicographic left to right, short-circuiting at the first unequal member, and holds when every member is `int` or `string` recursively
+- tuples currently render as `(member, member, ...)` recursively through `print`, `to_string`, and snapshots; there is currently no tuple-to-`json` bridge
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
