@@ -1,0 +1,10 @@
+fn main() -> int:
+    # Option payloads render explicitly through print, including nesting.
+    some: Option[int] = Option.Some(1)
+    none: Option[int] = Option.None
+    nested: Option[Option[int]] = Option.Some(Option.Some(2))
+
+    assert(some == Option.Some(1), "expected the some payload")
+    assert(none == Option.None, "expected the none value")
+    assert(nested == Option.Some(Option.Some(2)), "expected nesting to compare structurally")
+    return 0

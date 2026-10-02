@@ -1,0 +1,27 @@
+# Handle payloads inside Option (RFC 0049 ownership interaction): a
+# channel payload through Option shares the resource — clone = the same
+# channel — and still flows through go/await/send/recv.
+
+fn producer(opt: Option[channel[int]]) -> int:
+    match opt:
+        Option.Some(ch):
+            send(ch, 42)
+            return 0
+        Option.None:
+            return 1
+
+fn main() -> int:
+    ch: channel[int] = channel()
+    holder: Option[channel[int]] = Option.Some(ch)
+
+    task = go producer(holder)
+    status = await task
+    assert(status == 0, "expected the producer to run")
+
+    result = recv(ch)
+    match result:
+        Result.Ok(value):
+            assert(value == 42, "expected the payload through the shared channel")
+        Result.Err(error):
+            assert(false, "expected the recv to succeed")
+    return 0
