@@ -77,6 +77,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | `Option[T]`, `Option.Some`, `Option.None`, exhaustive `match` over `Option`, `unwrap_or` / `is_some` / `is_none` | stable |
 | Tuples `(T1, T2, ...)` with `.N` access, destructuring in bindings / `for` / match payloads, pairwise equality, lexicographic ordering | stable |
 | Match guards `Variant(x) if x > 10:`, literal / wildcard payload patterns, guarded-arm fall-through, skeleton duplicate detection | stable |
+| Closures `fn (x: int) -> int:` with immutable snapshot captures, `fn(T) -> T` types, `go closure(args)`, defer value-capture | stable |
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, `defer`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |

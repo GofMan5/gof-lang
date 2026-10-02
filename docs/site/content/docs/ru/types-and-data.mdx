@@ -154,6 +154,34 @@ fn main() -> int:
 
 Встроенный operational error enum: `EnvMissing`, `Io`, `ChannelClosed`, `Cancelled`, `TaskFailed`, `TaskPanicked`, `ParseInt`, `EmptySequence`, `Slice`, `Json`, `Csv`, `Toml`, `HttpRequest`, `HttpStatus`.
 
+## Замыкания
+
+Анонимные функции — выражения со snapshot-моделью захватов.
+
+```gof
+fn make_adder(n: int) -> fn(int) -> int:
+    return fn (x: int) -> int:
+        return x + n
+
+fn apply_twice(op: fn(int) -> int, value: int) -> int:
+    return op(op(value))
+
+fn main() -> int:
+    add5 = make_adder(5)
+    assert(apply_twice(add5, 2) == 12, "expected 7 then 12")
+    square = fn (n: int) -> int:
+        return n * n
+    assert(square(9) == 81, "expected 81")
+    return 0
+```
+
+- `fn (x: int) -> int:` — выражение: параметры строго с аннотациями, `-> Ret` опционален, блок — часть выражения
+- тип замыкания: `fn(ParamTypes) -> RetType` — точная структурная совместимость, без variance
+- захватываются только immutable внешние биндинги, значения снапшотятся при создании; `fn`-выражение в цикле создаёт замыкание на каждую итерацию
+- handle-захваты разделяют ресурс: каналы проходят в `go closure(args)`
+- `defer` захватывает ЗНАЧЕНИЕ замыкания при регистрации: переприсваивание после defer всё равно вызовет зарегистрированное замыкание
+- замыкания не участвуют в равенстве, упорядочивании и печати
+
 ## Методы
 
 ```gof

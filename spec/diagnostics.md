@@ -154,3 +154,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3165`: match guard contract violation (non-bool guard, or `?`/`await`/`go` inside a guard)
 - `GOF3166`: duplicate match arm with an identical literal-containing arm skeleton
 - `GOF3167`: unreachable match arm (an arm after an unguarded all-irrefutable arm for the same variant)
+- `GOF3142`: closure parameter without an explicit type annotation
+- `GOF3143`: closure call contract violation (non-closure value called, wrong arity, or incompatible argument type)
+- `GOF3144`: closure reference to an enclosing mutable binding (reads, calls, and assignments)
+- `GOF3145`: owned-taxa capture without an explicit `clone` at the capture site (dormant until owned taxa land)

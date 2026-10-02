@@ -77,6 +77,14 @@
     ],
     "description": "A guarded match arm: pattern, bindings, then a bool guard (RFC 0052)"
   },
+  "Closure": {
+    "prefix": "gofclosure",
+    "body": [
+      "${1:add} = fn (${2:x}: ${3:int}) -> ${4:int}:",
+      "    ${5:return ${2:x}}"
+    ],
+    "description": "An anonymous function expression with annotated parameters (RFC 0047)"
+  },
   "Tuple Function": {
     "prefix": "goftuplefn",
     "body": [

@@ -275,6 +275,36 @@ It currently includes:
 - `HttpRequest(message: string)`
 - `HttpStatus(code: int, body: string)`
 
+## Closures
+
+Anonymous functions are expressions with a snapshot-capture model.
+
+```gof
+fn make_adder(n: int) -> fn(int) -> int:
+    return fn (x: int) -> int:
+        return x + n
+
+fn apply_twice(op: fn(int) -> int, value: int) -> int:
+    return op(op(value))
+
+fn main() -> int:
+    add5 = make_adder(5)
+    assert(apply_twice(add5, 2) == 12, "expected 7 then 12")
+    square = fn (n: int) -> int:
+        return n * n
+    assert(square(9) == 81, "expected 81")
+    return 0
+```
+
+Current rules:
+
+- `fn (x: int) -> int:` is an expression: parameters require explicit annotations, `-> Ret` is optional, the indented block is part of the expression
+- the closure type is `fn(ParamTypes) -> RetType` — usable in annotations, exact structural compatibility, no variance
+- closures capture only immutable enclosing bindings, snapshotting values at creation; a `fn` expression in a loop creates one closure per iteration
+- handle captures share the resource, so channels cross into spawned `go closure(args)` calls
+- `defer` captures the closure value at registration: rebinding the target afterwards still calls the registered closure
+- closures do not participate in equality, ordering, or printing
+
 ## Methods
 
 Methods are explicit, not magical.

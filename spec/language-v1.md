@@ -227,6 +227,17 @@ The bootstrap compiler in this repository currently supports:
 - tuple values currently flow through parameters, returns (declared and inferred), struct fields, enum payloads, and `list`/`dict`/`channel` element positions
 - tuple equality currently holds pairwise when every member has equality semantics; ordering is lexicographic left to right, short-circuiting at the first unequal member, and holds when every member is `int` or `string` recursively
 - tuples currently render as `(member, member, ...)` recursively through `print`, `to_string`, and snapshots; there is currently no tuple-to-`json` bridge
+- anonymous functions are currently expressions: `fn (x: int) -> int:` followed by an indented block; parameters require explicit type annotations, `-> Ret` is optional with body inference, and the block is part of the expression
+- the closure type is currently written `fn(ParamTypes) -> RetType` in annotations (no parameter names, mandatory return type) and is usable in function parameters, return types, typed locals, struct fields, and container payloads
+- closure type compatibility is currently exact structural match of parameter types and return type — no variance and no implicit coercion with any other type
+- closure values are currently first-class: passed, stored, and returned like any other value; calling a closure never consumes it
+- a closure's capture set is currently every free identifier in its body resolving lexically to an enclosing function-local binding; top-level names are never captures, and captures initialize (snapshot) when the `fn` expression evaluates
+- closure bodies currently may reference only immutable enclosing bindings: any reference to an enclosing `mut` binding reports the mutable-capture diagnostic, as does any assignment targeting an enclosing binding
+- a `fn` expression inside a loop currently creates one closure per iteration, each snapshotting that iteration's bindings
+- handle captures currently share the underlying resource; value captures duplicate at creation
+- `go closure(args)` currently spawns closure calls with the closure's return type carrying through the task
+- closures currently do not participate in equality, ordering, or printing
+- `defer` with a closure target currently captures the closure value at registration: rebinding the target after the `defer` still calls the registered closure at scope exit
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator
