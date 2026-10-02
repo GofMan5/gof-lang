@@ -35,6 +35,11 @@ pub struct CompiledModule {
     pub mir: MirModule,
     pub ssa: SsaModule,
     pub backend: BackendArtifact,
+    /// Warning-severity diagnostics from the typed layer (RFC 0046
+    /// GOF3141 and future lints): rendered by callers, never a compile
+    /// failure. Errors short-circuit through `Err` as before.
+    #[serde(skip)]
+    pub warnings: Diagnostics,
 }
 
 pub fn compile_source(
@@ -59,7 +64,7 @@ where
             .map_err(|diagnostics| diagnostics.with_source_path(source.path()))?,
     );
     let hir = lower_hir(&ast);
-    let typed_hir = lower_typed(&hir)?;
+    let (typed_hir, warnings) = lower_typed(&hir)?;
     let mir = lower_mir(&typed_hir);
     let ssa = lower_ssa(&mir);
     let backend = lower_backend(
@@ -78,6 +83,7 @@ where
         mir,
         ssa,
         backend,
+        warnings,
     })
 }
 
@@ -128,6 +134,17 @@ pub fn run_module_with_output_and_args(
 ) -> Result<ExecutionResult, Diagnostics> {
     let compiled = compile_source(source, CompileMode::Executable)?;
     run_interpreter_with_output_with_args(&compiled.ast, program_args.to_vec())
+}
+
+/// `gof run` surface: execution result plus the compile-time warnings —
+/// warnings never fail the run, but callers render them.
+pub fn run_module_with_output_and_args_and_warnings(
+    source: &SourceFile,
+    program_args: &[String],
+) -> Result<(ExecutionResult, Diagnostics), Diagnostics> {
+    let compiled = compile_source(source, CompileMode::Executable)?;
+    let result = run_interpreter_with_output_with_args(&compiled.ast, program_args.to_vec())?;
+    Ok((result, compiled.warnings))
 }
 
 pub fn run_embedded_bundle_with_output(

@@ -8,7 +8,7 @@ use gof_compiler::{
         find_package_root, package_library_entry_path, package_main_entry_path,
         write_lockfile_for_directory,
     },
-    run_module_with_output, run_module_with_output_and_args,
+    run_module_with_output, run_module_with_output_and_args_and_warnings,
 };
 use gof_runtime::profile;
 use serde_json::json;
@@ -210,6 +210,7 @@ fn build(args: BuildArgs) -> Result<()> {
     let source = SourceFile::from_path(&resolved_input)?;
     let compiled = compile_source(&source, CompileMode::Executable)
         .map_err(|error| render_error(&source, error))?;
+    render_warnings(&source, &compiled.warnings);
     let output = if args.native {
         default_native_build_path(&resolved_input, args.output)
     } else {
@@ -284,7 +285,8 @@ fn check_file(args: CheckArgs) -> Result<()> {
 
     let mode = compile_mode_for_entry_path(&resolved_input);
     match compile_source(&source, mode) {
-        Ok(_) => {
+        Ok(compiled) => {
+            render_warnings(&source, &compiled.warnings);
             if args.json {
                 emit_json_check_report(&resolved_input, true, Vec::new())?;
             }
@@ -470,8 +472,9 @@ pub(crate) fn run_package_test_report(entry_path: &Path) -> PackageTestReport {
 fn execute_run_target(target: &RunTarget, program_args: &[String]) -> Result<()> {
     ensure_package_lockfile(&target.entry_path, "run")?;
     let source = SourceFile::from_path(&target.entry_path)?;
-    let result = run_module_with_output_and_args(&source, program_args)
+    let (result, warnings) = run_module_with_output_and_args_and_warnings(&source, program_args)
         .map_err(|error| render_error(&source, error))?;
+    render_warnings(&source, &warnings);
     render_execution_result(&result);
     Ok(())
 }
@@ -771,7 +774,10 @@ fn classify_fixture_harness(path: &Path) -> FixtureHarnessKind {
         .any(|component| component.as_os_str() == "runtime")
     {
         FixtureHarnessKind::RuntimePass
-    } else if path.components().any(|component| component.as_os_str() == "ui") {
+    } else if path
+        .components()
+        .any(|component| component.as_os_str() == "ui")
+    {
         FixtureHarnessKind::UiCompileFail
     } else if path
         .components()
@@ -813,34 +819,37 @@ pub(crate) fn run_fixture_report(path: &Path, update_expected_artifacts: bool) -
             diagnostics: Vec::new(),
             failure_message: Some("expected fixture to fail during compilation".to_string()),
         },
-        Ok(_) if harness == FixtureHarnessKind::LegacyRuntimeFail => match run_module_with_output(&source) {
-            Ok(result) => {
-                let stdout = render_execution_stdout(&result);
-                let message = format!(
-                    "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
-                    result.stdout,
-                    result.value.cli_text()
-                );
-                FixtureRunReport {
-                    stdout,
-                    stderr: message.clone(),
-                    diagnostics: Vec::new(),
-                    failure_message: Some(message),
+        Ok(_) if harness == FixtureHarnessKind::LegacyRuntimeFail => {
+            match run_module_with_output(&source) {
+                Ok(result) => {
+                    let stdout = render_execution_stdout(&result);
+                    let message = format!(
+                        "expected runtime failure, but program succeeded with stdout {:?} and value {:?}",
+                        result.stdout,
+                        result.value.cli_text()
+                    );
+                    FixtureRunReport {
+                        stdout,
+                        stderr: message.clone(),
+                        diagnostics: Vec::new(),
+                        failure_message: Some(message),
+                    }
+                }
+                Err(error) => {
+                    let stderr = render_fixture_diagnostics(path, &source, &error);
+                    let failure_message =
+                        validate_expected_diagnostics(path, &error, update_expected_artifacts)
+                            .err()
+                            .map(|error| error.to_string());
+                    FixtureRunReport {
+                        stdout: String::new(),
+                        stderr,
+                        diagnostics: diagnostics_to_json(&source, &error),
+                        failure_message,
+                    }
                 }
             }
-            Err(error) => {
-                let stderr = render_fixture_diagnostics(path, &source, &error);
-                let failure_message = validate_expected_diagnostics(path, &error, update_expected_artifacts)
-                    .err()
-                    .map(|error| error.to_string());
-                FixtureRunReport {
-                    stdout: String::new(),
-                    stderr,
-                    diagnostics: diagnostics_to_json(&source, &error),
-                    failure_message,
-                }
-            }
-        },
+        }
         Ok(_) => FixtureRunReport {
             stdout: String::new(),
             stderr: String::new(),
@@ -849,9 +858,10 @@ pub(crate) fn run_fixture_report(path: &Path, update_expected_artifacts: bool) -
         },
         Err(error) if harness == FixtureHarnessKind::LegacyCompileFail => {
             let stderr = render_fixture_diagnostics(path, &source, &error);
-            let failure_message = validate_expected_diagnostics(path, &error, update_expected_artifacts)
-                .err()
-                .map(|error| error.to_string());
+            let failure_message =
+                validate_expected_diagnostics(path, &error, update_expected_artifacts)
+                    .err()
+                    .map(|error| error.to_string());
             FixtureRunReport {
                 stdout: String::new(),
                 stderr,
@@ -899,7 +909,8 @@ fn run_product_fixture_report(
         }
     };
     let (actual, diagnostics, failure_message) = match harness {
-        FixtureHarnessKind::UiCompileFail => match compile_source(&source, CompileMode::Executable) {
+        FixtureHarnessKind::UiCompileFail => match compile_source(&source, CompileMode::Executable)
+        {
             Ok(_) => (
                 FixtureArtifacts {
                     stdout: String::new(),
@@ -1011,7 +1022,11 @@ fn render_execution_stdout(result: &gof_compiler::ExecutionResult) -> String {
     normalize_artifact_text(&rendered)
 }
 
-fn render_fixture_diagnostics(path: &Path, source: &SourceFile, diagnostics: &Diagnostics) -> String {
+fn render_fixture_diagnostics(
+    path: &Path,
+    source: &SourceFile,
+    diagnostics: &Diagnostics,
+) -> String {
     let rendered = diagnostics.render(source);
     normalize_fixture_output_paths(path, &rendered)
 }
@@ -1121,7 +1136,11 @@ fn sync_fixture_artifact(
     }
 }
 
-fn remove_fixture_artifact(path: &Path, extension: &str, update_expected_artifacts: bool) -> Result<()> {
+fn remove_fixture_artifact(
+    path: &Path,
+    extension: &str,
+    update_expected_artifacts: bool,
+) -> Result<()> {
     if !update_expected_artifacts {
         return Ok(());
     }
@@ -1190,12 +1209,7 @@ fn path_spellings(path: &Path) -> Vec<String> {
     let rendered = display_path(path);
     let unix = rendered.replace('\\', "/");
     let windows = rendered.replace('/', "\\");
-    let mut values = vec![
-        rendered,
-        unix.clone(),
-        windows,
-        unix.replace('\\', "/"),
-    ];
+    let mut values = vec![rendered, unix.clone(), windows, unix.replace('\\', "/")];
     if cfg!(windows) {
         values.push(unix.to_ascii_lowercase());
     }
@@ -1206,6 +1220,14 @@ fn path_spellings(path: &Path) -> Vec<String> {
 
 fn render_error(source: &SourceFile, error: Diagnostics) -> anyhow::Error {
     anyhow!(error.render(source))
+}
+
+/// RFC 0046: warning-severity diagnostics never fail compilation, but
+/// they must stay visible — print them to stderr on the success path.
+fn render_warnings(source: &SourceFile, warnings: &Diagnostics) {
+    if !warnings.is_empty() {
+        eprintln!("{}", warnings.render(source));
+    }
 }
 
 fn render_package_error(error: PackageGraphError) -> anyhow::Error {

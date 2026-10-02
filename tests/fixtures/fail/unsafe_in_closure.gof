@@ -1,0 +1,8 @@
+fn make_guard() -> fn(int) -> int:
+    return fn (value: int) -> int:
+        unsafe:
+            return value * 2
+
+fn main() -> int:
+    guard = make_guard()
+    return guard(5)

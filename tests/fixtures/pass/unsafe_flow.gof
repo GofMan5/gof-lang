@@ -1,0 +1,32 @@
+# RFC 0046 unsafe boundary: `unsafe:` blocks are permission regions
+# with ordinary block semantics — typed checks apply unchanged, bindings
+# scope normally, and the evaluator runs them as plain blocks. The
+# GOF3141 warning fires (in v1 every unsafe block is inert); warnings
+# never fail compilation.
+
+fn compute(value: int) -> int:
+    mut result = value
+    unsafe:
+        result = result * 2
+    return result
+
+fn guarded(value: int) -> int:
+    if value > 0:
+        unsafe:
+            return value * 10
+    return 0
+
+fn main() -> int:
+    assert(compute(21) == 42, "unsafe blocks execute as plain blocks")
+    assert(guarded(4) == 40, "unsafe nests inside control flow")
+    # Nesting is legal and redundant: no error, no depth limit.
+    mut total = 0
+    unsafe:
+        mut inner = 1
+        unsafe:
+            inner = inner + 1
+        total = inner
+    assert(total == 2, "bindings scope through nested unsafe blocks")
+    # GOF3141 is a warning: the program still runs.
+    print(compute(5))
+    return 0

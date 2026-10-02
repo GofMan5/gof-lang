@@ -177,6 +177,14 @@ impl MirBuilder {
 
     fn lower_stmt(&mut self, stmt: &TypedStmt) {
         match stmt {
+            // NOTE (RFC 0044, MIR convention): calls whose typed callee
+            // symbol starts with `_generic.` are bounded-method
+            // dispatches on type-parameter values — the typed layer
+            // types them against the protocol requirements and the
+            // evaluator is the v1 execution surface; the native lowering
+            // resolves them through the conformance table's
+            // witness tables in Phase 2. The prefix is a typed-layer
+            // contract, not a user-visible name.
             TypedStmt::Return(expr) => {
                 let value = self.lower_expr(expr);
                 self.instructions.push(MirInstruction::Return { value });
@@ -230,6 +238,13 @@ impl MirBuilder {
                     .push(MirInstruction::BeginWhile { condition });
                 self.lower_block(body);
                 self.instructions.push(MirInstruction::EndWhile);
+            }
+            // RFC 0044: the unsafe marker is not a lowering input in v1
+            // (pipeline placement — "MIR/SSA/backend: no change in v1");
+            // the body lowers as an ordinary statement sequence. Phase 2
+            // operation RFCs define what the marker gates.
+            TypedStmt::Unsafe { body } => {
+                self.lower_block(body);
             }
             TypedStmt::For {
                 binding,

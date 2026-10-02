@@ -350,6 +350,35 @@ where
                     continue;
                 }
 
+                // RFC 0044: the protocol↔enum conflict rule is
+                // order-independent — this is the reverse arm of the
+                // protocol loop's check.
+                if let Some((original_path, original_span)) =
+                    seen_protocols.get(&decl.name).cloned()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between an enum and a protocol",
+                                decl.name
+                            ),
+                            format!(
+                                "the protocol was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it(
+                            "rename either the enum or the protocol so type names stay unambiguous",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
                 if let Some((original_path, original_span)) = seen.get(&decl.name).cloned() {
                     diagnostics.push(
                         Diagnostic::error(
@@ -528,6 +557,32 @@ where
                         )
                         .with_fix_it(
                             "rename either the protocol or the struct so type names stay unambiguous",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                // RFC 0044: protocol names conflict with enums under the
+                // same top-level rule.
+                if let Some((original_path, original_span)) = seen_enums.get(&decl.name).cloned() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between a protocol and an enum",
+                                decl.name
+                            ),
+                            format!(
+                                "the enum was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it(
+                            "rename either the protocol or the enum so type names stay unambiguous",
                         )
                         .with_source_path(path.clone()),
                     );

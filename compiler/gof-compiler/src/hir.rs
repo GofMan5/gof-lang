@@ -201,6 +201,10 @@ pub enum HirStmt {
     Break(Span),
     Continue(Span),
     Defer(HirExpr, Span),
+    /// RFC 0046 `unsafe:` block: permission marker, plain block
+    /// semantics. Rule 2: every typed-HIR check applies inside exactly
+    /// as outside; the evaluator runs it as an ordinary scoped block.
+    Unsafe(Vec<HirStmt>, Span),
     Match {
         value: HirExpr,
         arms: Vec<HirMatchArm>,
@@ -512,6 +516,7 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
         Stmt::Break(span) => HirStmt::Break(*span),
         Stmt::Continue(span) => HirStmt::Continue(*span),
         Stmt::Defer(call, span) => HirStmt::Defer(lower_expr(call), *span),
+        Stmt::Unsafe(body, span) => HirStmt::Unsafe(body.iter().map(lower_stmt).collect(), *span),
         Stmt::Match { value, arms, span } => HirStmt::Match {
             value: lower_expr(value),
             arms: arms.iter().map(lower_match_arm).collect(),

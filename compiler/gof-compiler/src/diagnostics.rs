@@ -37,6 +37,26 @@ impl Diagnostic {
         }
     }
 
+    /// Warning-severity diagnostics: migration signals and lints. They
+    /// never fail compilation — `Diagnostics::is_empty` stays the error
+    /// gate — but they render alongside errors.
+    pub fn warning(
+        code: &'static str,
+        message: impl Into<String>,
+        note: impl Into<String>,
+        span: Span,
+    ) -> Self {
+        Self {
+            code,
+            severity: Severity::Warning,
+            message: message.into(),
+            note: note.into(),
+            span,
+            fix_it: None,
+            source_path: None,
+        }
+    }
+
     pub fn with_fix_it(mut self, fix_it: impl Into<String>) -> Self {
         self.fix_it = Some(fix_it.into());
         self
@@ -85,6 +105,14 @@ impl Diagnostics {
 
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// The compile gate: warnings never fail compilation — only errors
+    /// do. Warning-only diagnostics flow to the caller for rendering.
+    pub fn has_errors(&self) -> bool {
+        self.0
+            .iter()
+            .any(|diagnostic| diagnostic.severity == Severity::Error)
     }
 
     pub fn codes(&self) -> Vec<&'static str> {

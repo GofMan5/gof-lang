@@ -4037,6 +4037,22 @@ fn eval_stmt(
                 .into()),
             }
         }
+        // RFC 0046: an `unsafe:` block executes as an ordinary scoped
+        // block — rule 2 (no check relaxations) and rule 4 (lexical
+        // context only) make it semantically identical to a plain block
+        // in v1.
+        Stmt::Unsafe(body, _) => eval_block(
+            body,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            loop_depth,
+            true,
+            source_path,
+        ),
         Stmt::While {
             condition, body, ..
         } => {

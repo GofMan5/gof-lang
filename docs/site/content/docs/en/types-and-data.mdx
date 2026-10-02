@@ -339,6 +339,29 @@ Current rules:
 - generic functions carry the bounds: `fn describe[T: Shape](shape: T)` — bodies may call exactly the bounded methods, and call sites check the inferred type's conformance
 - protocol names cannot be value types: v1 conformance is generics-only
 
+## Unsafe blocks
+
+`unsafe:` opens a permission region — nothing more.
+
+```gof
+fn double_safely(value: int) -> int:
+    if value < 0:
+        return 0
+    mut result = value
+    unsafe:
+        result = result * 2
+    return result
+
+fn main() -> int:
+    print(double_safely(21))
+    return 0
+```
+
+- every type and ownership check applies inside `unsafe:` exactly as outside — it is a permission region, not an escape hatch
+- no unsafe operation exists in v1, so every block is inert and reports a warning (GOF3141); warnings never fail compilation
+- `unsafe:` blocks are not valid inside closure bodies; unsafe work goes through a named wrapper function
+- `unsafe` is never a modifier: `unsafe fn` is a syntax error
+
 ## Methods
 
 Methods are explicit, not magical.

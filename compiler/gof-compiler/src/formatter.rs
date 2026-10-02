@@ -114,6 +114,9 @@ fn format_protocol(decl: &ProtocolDecl) -> String {
         .collect::<Vec<_>>()
         .join("\n");
     format!("protocol {}:\n{requirements}\n", decl.name)
+        .trim_end_matches('\n')
+        .to_string()
+        + "\n"
 }
 
 /// RFC 0044 explicit conformance: block-less, newline-terminated.
@@ -224,9 +227,13 @@ fn format_function_with_keyword(function: &Function, keyword: &str) -> String {
 }
 
 fn format_param(param: &Param) -> String {
+    // RFC 0044/0046: `mut` markers on parameters must survive formatting —
+    // dropping them silently changes program semantics (a mut-receiver
+    // method formatted without `mut` stops satisfying its requirement).
+    let prefix = if param.mutable { "mut " } else { "" };
     match &param.ty {
-        Some(ty) => format!("{}: {}", param.name, format_type_ref(ty)),
-        None => param.name.clone(),
+        Some(ty) => format!("{prefix}{}: {}", param.name, format_type_ref(ty)),
+        None => format!("{prefix}{}", param.name),
     }
 }
 
@@ -300,6 +307,9 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             format_expr_at(condition, indent_level),
             format_block(body, indent_level + 1)
         ),
+        Stmt::Unsafe(body, _) => {
+            format!("{indent}unsafe:\n{}", format_block(body, indent_level + 1))
+        }
         Stmt::For {
             pattern,
             iterable,

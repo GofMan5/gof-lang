@@ -162,3 +162,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3133`: invalid conformance declaration (`impl` targeting an unknown or non-struct type, a struct declared in another module, an unknown protocol, duplicates within one impl list, and `(struct, protocol)` pairs already declared elsewhere)
 - `GOF3134`: a type does not satisfy a protocol (a required method missing, or parameter types, return type, or receiver mutability mismatching after `Self` substitution; at a generic call site, the inferred type argument has no declared conformance for a bound)
 - `GOF3135`: protocol name used as a value type (local bindings, fields, parameters, returns, container element annotations, `Result` payloads, and `match` scrutinees)
+- `GOF3131`: mut-receiver requirement called through a non-`mut` generic parameter (the parameter-side instantiation rule of RFC 0044)
+- `GOF3139`: an `unsafe:` block header inside a closure body (closures are mobile values; unsafe work goes through a named wrapper function)
+- `GOF3140`: `unsafe` used as a declaration or statement modifier (`unsafe fn`, `unsafe struct`, `unsafe` prefixing a statement)
+- `GOF3141`: warning — an `unsafe:` block is inert (in v1 every unsafe block is inert because no explicitly-unsafe operation exists; warnings never fail compilation)

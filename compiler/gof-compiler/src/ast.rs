@@ -256,6 +256,10 @@ pub enum Stmt {
     Break(Span),
     Continue(Span),
     Defer(Expr, Span),
+    /// RFC 0046 `unsafe:` block statement: permission region, ordinary
+    /// block semantics, new lexical scope. `GOF3139` rejects it inside
+    /// closure bodies; `GOF3141` warns that it is inert in v1.
+    Unsafe(Vec<Stmt>, Span),
     Match {
         value: Expr,
         arms: Vec<MatchArm>,
@@ -467,6 +471,22 @@ impl<'a> Parser<'a> {
                 protocols.push(self.parse_protocol());
             } else if self.check(TokenDiscriminant::Impl) {
                 impls.push(self.parse_impl());
+            } else if self.check(TokenDiscriminant::Unsafe) {
+                // RFC 0046 GOF3140: `unsafe fn`, `unsafe struct`, and any
+                // other modifier misuse at declaration level. Report, skip
+                // the modifier, and parse the underlying declaration so
+                // its own diagnostics stay reachable.
+                self.advance();
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3140",
+                        "`unsafe` is a block statement in gof and never part of a signature",
+                        "write `unsafe:` followed by an indented block inside a function body, or remove the modifier",
+                        self.previous().span,
+                    )
+                    .with_fix_it("remove the `unsafe` modifier, leaving the valid declaration")
+                    .with_source_path(PathBuf::new()),
+                );
             } else {
                 functions.push(self.parse_function());
             }
@@ -1270,6 +1290,30 @@ impl<'a> Parser<'a> {
             let call = self.parse_expr();
             self.finish_stmt_line("expected a newline after `defer`");
             return Stmt::Defer(call, span);
+        }
+
+        // RFC 0046 `unsafe:` block: the same block shape as `if`/`while`
+        // bodies. An `unsafe` NOT followed by `:` is the modifier misuse
+        // (GOF3140) — the keyword never prefixes a statement.
+        if self.matches(TokenDiscriminant::Unsafe) {
+            let span = self.previous().span;
+            if self.check(TokenDiscriminant::Colon) {
+                self.advance();
+                let body = self.parse_block("expected an indented block after `unsafe:`");
+                return Stmt::Unsafe(body, span);
+            }
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3140",
+                    "`unsafe` is a block statement in gof and never part of a signature",
+                    "write `unsafe:` followed by an indented block, or remove the modifier",
+                    span,
+                )
+                .with_fix_it("remove the `unsafe` modifier, leaving the valid statement")
+                .with_source_path(PathBuf::new()),
+            );
+            // Recover: parse the statement the modifier was prefixing.
+            return self.parse_stmt();
         }
 
         if self.matches(TokenDiscriminant::Match) {
@@ -2830,6 +2874,7 @@ enum TokenDiscriminant {
     Enum,
     Protocol,
     Impl,
+    Unsafe,
     Test,
     Fixture,
     Fn,
@@ -2889,6 +2934,7 @@ impl TokenDiscriminant {
                 | (Self::Enum, TokenKind::Enum)
                 | (Self::Protocol, TokenKind::Protocol)
                 | (Self::Impl, TokenKind::Impl)
+                | (Self::Unsafe, TokenKind::Unsafe)
                 | (Self::Test, TokenKind::Test)
                 | (Self::Fixture, TokenKind::Fixture)
                 | (Self::Fn, TokenKind::Fn)
@@ -2947,6 +2993,7 @@ impl TokenDiscriminant {
             Self::Enum => "`enum`",
             Self::Protocol => "`protocol`",
             Self::Impl => "`impl`",
+            Self::Unsafe => "`unsafe`",
             Self::Fixture => "`fixture`",
             Self::Fn => "`fn`",
             Self::If => "`if`",

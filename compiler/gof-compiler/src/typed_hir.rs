@@ -238,6 +238,11 @@ pub struct TypedEnumVariantField {
 pub struct TypedParam {
     pub name: String,
     pub ty: Type,
+    /// RFC 0044: the `mut` marker from the declaration — mut-receiver
+    /// requirements are callable only through `mut` generic parameters
+    /// (GOF3131), so the binding mutability must survive typing.
+    #[serde(default)]
+    pub mutable: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -277,6 +282,12 @@ pub enum TypedStmt {
     },
     Select {
         arms: Vec<TypedSelectArm>,
+    },
+    /// RFC 0046 `unsafe:` block: the permission marker survives typing
+    /// for downstream layers; v1 lowering treats the body as an ordinary
+    /// scoped block (rule 2 — no check relaxations).
+    Unsafe {
+        body: Vec<TypedStmt>,
     },
     Expr(TypedExpr),
 }
@@ -712,7 +723,7 @@ impl ScopeStack {
                 (
                     param.name.clone(),
                     LocalBinding {
-                        mutable: false,
+                        mutable: param.mutable,
                         ty: param.ty.clone(),
                     },
                 )
@@ -848,7 +859,7 @@ enum CallKind {
     Unknown,
 }
 
-pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
+pub fn lower(module: &HirModule) -> Result<(TypedModule, Diagnostics), Diagnostics> {
     let mut diagnostics = Diagnostics::default();
     let builtin_enums = builtin_enum_signatures();
     let known_structs = module
@@ -960,6 +971,98 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
             })
             .collect::<Vec<_>>();
         let symbol_name = function_symbol_from_hir(function);
+
+        // RFC 0044 generic contract (GOF3132): (a) generic functions
+        // are plain top-level `fn` only — no generic methods, test fns,
+        // or fixture fns in v1; (b) every bound must name a declared
+        // protocol; (c) every type parameter must appear in at least one
+        // value parameter annotation (a dead bound is not checkable at
+        // call sites).
+        if !function.type_params.is_empty() {
+            if function.receiver_type.is_some() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        format!(
+                            "generic method `{}.{}` is not supported in v1",
+                            function.receiver_type.as_ref().expect("checked above").name,
+                            function.name
+                        ),
+                        "generic functions are top-level `fn` only; methods take concrete types",
+                        function.type_params[0].span,
+                    )
+                    .with_fix_it(
+                        "remove the type parameter list, or move the function to top level",
+                    )
+                    .with_source_path(function.source_path.clone()),
+                );
+            }
+            if function.kind != FunctionKind::Function {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        format!(
+                            "`{} {}` cannot be generic in v1",
+                            match function.kind {
+                                FunctionKind::Test => "test fn",
+                                _ => "fixture fn",
+                            },
+                            function.name
+                        ),
+                        "generic functions are plain top-level `fn` only in v1",
+                        function.type_params[0].span,
+                    )
+                    .with_fix_it("remove the type parameter list from the declaration")
+                    .with_source_path(function.source_path.clone()),
+                );
+            }
+            for type_param in &function.type_params {
+                for bound in &type_param.bounds {
+                    if !known_protocols.contains(bound) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3132",
+                                format!(
+                                    "type parameter `{}` bounds reference unknown protocol `{}`",
+                                    type_param.name, bound
+                                ),
+                                "bounds name protocols from the loaded module graph",
+                                type_param.span,
+                            )
+                            .with_fix_it(format!(
+                                "declare `protocol {bound}:` or fix the bound name"
+                            ))
+                            .with_source_path(function.source_path.clone()),
+                        );
+                    }
+                }
+                let used = param_types
+                    .iter()
+                    .any(|ty| type_contains(ty, &Type::TypeParam(type_param.name.clone())))
+                    || declared_return_type
+                        .as_ref()
+                        .map(|ty| type_contains(ty, &Type::TypeParam(type_param.name.clone())))
+                        .unwrap_or(false);
+                if !used {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3132",
+                            format!(
+                                "type parameter `{}` appears in no value parameter annotation or return type",
+                                type_param.name
+                            ),
+                            "a type parameter that binds nothing cannot be checked at call sites; its bounds would be dead",
+                            type_param.span,
+                        )
+                        .with_fix_it(format!(
+                            "annotate a parameter or the return type with `{}`, or remove the type parameter",
+                            type_param.name
+                        ))
+                        .with_source_path(function.source_path.clone()),
+                    );
+                }
+            }
+        }
 
         if function.kind == FunctionKind::Test {
             validate_test_contract(
@@ -1112,14 +1215,20 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         &mut diagnostics,
     );
 
-    if diagnostics.is_empty() {
-        Ok(TypedModule {
-            structs,
-            enums,
-            functions,
-        })
-    } else {
+    // The compile gate is errors-only: warning-severity diagnostics
+    // (RFC 0046 GOF3141 and future lints) flow to the caller through the
+    // Ok side for rendering and never fail compilation.
+    if diagnostics.has_errors() {
         Err(diagnostics)
+    } else {
+        Ok((
+            TypedModule {
+                structs,
+                enums,
+                functions,
+            },
+            diagnostics,
+        ))
     }
 }
 
@@ -1173,6 +1282,26 @@ fn infer_generic_call(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> Type {
+    // Arity: generic callees carry the same GOF3005 contract as ordinary
+    // functions — the inference path must not silently relax it.
+    if signature.arity != typed_args.len() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3005",
+                format!("wrong number of arguments for `{callee}`"),
+                format!(
+                    "expected {} argument(s), got {}",
+                    signature.arity,
+                    typed_args.len()
+                ),
+                span,
+            )
+            .with_fix_it("pass the exact number of parameters declared by the function")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
     let mut inferred: HashMap<String, Type> = HashMap::new();
     let mut conflicting = false;
 
@@ -1192,40 +1321,104 @@ fn infer_generic_call(
         );
     }
 
-    // Bounds: every inferred type must have declared conformance for
-    // every bound of its type parameter.
+    // Concrete-parameter checking: every position must agree with the
+    // parameter type AFTER substituting the inferred bindings. Concrete
+    // positions (`count: int`) check directly; nested positions
+    // (`list[T]`) check against the substituted member; bare type
+    // parameters check against themselves. This is the same contract
+    // `validate_call` enforces for non-generic callees — the generic
+    // intercept must not relax it.
+    for (index, (param_ty, arg)) in signature
+        .param_types
+        .iter()
+        .zip(typed_args.iter())
+        .enumerate()
+    {
+        let expected = substitute_type_params(param_ty, &inferred);
+        if expected.is_unknown() {
+            // An unbound type parameter in this position: the
+            // unused-type-parameter contract fires elsewhere; skip the
+            // cascade here.
+            continue;
+        }
+        ensure_type_compatibility(
+            &expected,
+            &arg.ty,
+            arg.span,
+            diagnostics,
+            format!("argument {index} for `{callee}` has incompatible type"),
+            format!(
+                "parameter expects `{}`, but the argument resolves to `{}`",
+                expected.display_name(),
+                arg.ty.display_name()
+            ),
+            source_path,
+        );
+    }
+
+    // Bounds: every inferred type must satisfy every bound of its type
+    // parameter. A concrete struct needs a declared conformance; a
+    // caller type parameter satisfies the bound when the caller's own
+    // bounds subsume the callee's (the RFC's generic-to-generic rule).
     for (type_param, bounds) in &signature.type_params {
         let Some(bound_type) = inferred.get(type_param) else {
             continue;
         };
-        let Type::Struct(struct_name) = bound_type else {
-            diagnostics.push(
-                Diagnostic::error(
-                    "GOF3134",
-                    format!("argument for `{callee}` does not satisfy the bounds of `{type_param}`"),
-                    format!(
-                        "`{}` is not a struct, and v1 conformance covers user-declared structs only",
-                        bound_type.display_name()
-                    ),
-                    span,
-                )
-                .with_fix_it("pass a struct value whose impl declares the bound")
-                .with_source_path(source_path.to_path_buf()),
-            );
-            continue;
-        };
-        for protocol in bounds {
-            if !generics.conforms(protocol, struct_name) {
+        match bound_type {
+            Type::Struct(struct_name) => {
+                for protocol in bounds {
+                    if !generics.conforms(protocol, struct_name) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3134",
+                                format!("`{struct_name}` has no declared conformance to `{protocol}`"),
+                                format!(
+                                    "the bound `[T: {protocol}]` of `{callee}` requires an `impl {struct_name}: {protocol}` declaration"
+                                ),
+                                span,
+                            )
+                            .with_fix_it(format!("declare `impl {struct_name}: {protocol}` next to the struct"))
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    }
+                }
+            }
+            Type::TypeParam(caller_param) => {
+                // Generic-to-generic pass-through: legal exactly when
+                // every callee bound is among the caller's bounds.
+                for protocol in bounds {
+                    if !generics.bound_includes(caller_param, protocol) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3132",
+                                format!(
+                                    "caller bounds for `{caller_param}` do not subsume the `{protocol}` bound of `{callee}`"
+                                ),
+                                format!(
+                                    "a type parameter may flow into another generic call only when the callee's bounds are a subset of the caller's"
+                                ),
+                                span,
+                            )
+                            .with_fix_it(format!(
+                                "add `{protocol}` to the bounds of `{caller_param}`, or pass a concrete struct"
+                            ))
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    }
+                }
+            }
+            other => {
                 diagnostics.push(
                     Diagnostic::error(
                         "GOF3134",
-                        format!("`{struct_name}` has no declared conformance to `{protocol}`"),
+                        format!("argument for `{callee}` does not satisfy the bounds of `{type_param}`"),
                         format!(
-                            "the bound `[T: {protocol}]` of `{callee}` requires an `impl {struct_name}: {protocol}` declaration"
+                            "`{}` is not a struct, and v1 conformance covers user-declared structs only",
+                            other.display_name()
                         ),
                         span,
                     )
-                    .with_fix_it(format!("declare `impl {struct_name}: {protocol}` next to the struct"))
+                    .with_fix_it("pass a struct value whose impl declares the bound")
                     .with_source_path(source_path.to_path_buf()),
                 );
             }
@@ -1292,6 +1485,24 @@ fn substitute_type_params(ty: &Type, inferred: &HashMap<String, Type>) -> Type {
                 .collect(),
         ),
         other => other.clone(),
+    }
+}
+
+/// Does a type tree contain the given type anywhere (used by the
+/// unused-type-parameter contract)?
+fn type_contains(haystack: &Type, needle: &Type) -> bool {
+    if haystack == needle {
+        return true;
+    }
+    match haystack {
+        Type::List(inner)
+        | Type::Dict(inner)
+        | Type::Channel(inner)
+        | Type::Task(inner)
+        | Type::Option(inner) => type_contains(inner, needle),
+        Type::Result(ok, err) => type_contains(ok, needle) || type_contains(err, needle),
+        Type::Tuple(members) => members.iter().any(|member| type_contains(member, needle)),
+        _ => false,
     }
 }
 
@@ -1991,6 +2202,7 @@ fn hir_stmt_span(stmt: &HirStmt) -> Span {
         | HirStmt::Break(span)
         | HirStmt::Continue(span)
         | HirStmt::Defer(_, span)
+        | HirStmt::Unsafe(_, span)
         | HirStmt::Expr(_, span) => *span,
         HirStmt::Bind { span, .. }
         | HirStmt::Assign { span, .. }
@@ -2031,6 +2243,7 @@ fn lower_function(
         .map(|(param, ty)| TypedParam {
             name: param.name.clone(),
             ty: ty.clone(),
+            mutable: param.mutable,
         })
         .collect::<Vec<_>>();
     let mut scopes = ScopeStack::new(&params);
@@ -2773,6 +2986,41 @@ fn lower_stmt(
                 source_path,
             );
             TypedStmt::While { condition, body }
+        }
+        HirStmt::Unsafe(body, span) => {
+            // RFC 0046 rule 2: every check applies inside `unsafe:`
+            // exactly as outside — the body lowers as an ordinary nested
+            // block with its own scope. GOF3141: in v1 the block is
+            // inert (no explicitly-unsafe operation exists), so warn
+            // with the removal fix-it and the safe-wrapper pointer.
+            diagnostics.push(
+                Diagnostic::warning(
+                    "GOF3141",
+                    "`unsafe:` block is inert: no explicitly-unsafe operation exists in v1",
+                    "unsafe blocks are permission regions for Phase 2+ operations; every type and ownership check already applies unchanged, and the safe-wrapper requirement (validate preconditions before the block, surface failures as Result) lands with the first operations",
+                    *span,
+                )
+                .with_fix_it("remove the `unsafe:` header line")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            let body = lower_block(
+                body,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                known_protocols,
+                generics,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                loop_depth,
+                true,
+                function_return_type,
+                source_path,
+            );
+            TypedStmt::Unsafe { body }
         }
         HirStmt::For {
             pattern,
@@ -4831,6 +5079,13 @@ fn lower_expr(
                     )
                 })
                 .collect::<Vec<_>>();
+            // RFC 0044: the receiver binding's mutability feeds the
+            // mut-receiver discipline (GOF3131) when the target is a
+            // type-parameter local.
+            let receiver_binding_mut = match &target.kind {
+                TypedExprKind::Local(name) => scopes.get(name).map(|binding| binding.mutable),
+                _ => None,
+            };
             let (symbol_name, ty) = resolve_method_call(
                 &target,
                 method,
@@ -4838,6 +5093,7 @@ fn lower_expr(
                 *span,
                 method_signatures,
                 generics,
+                receiver_binding_mut,
                 diagnostics,
                 source_path,
             );
@@ -4960,6 +5216,34 @@ fn lower_expr(
                         .with_fix_it("replace this expression with `go some_function(...)`")
                         .with_source_path(source_path.to_path_buf()),
                     );
+                }
+                // RFC 0044: `go describe(circle)` — instantiations are
+                // ordinary functions for spawn purposes. The generic
+                // path runs the same inference, bound checks, and result
+                // substitution as a plain call; the task carries the
+                // substituted return type.
+                if let CallKind::Function = call_kind {
+                    if let Some(signature) = signatures.get(callee) {
+                        if !signature.type_params.is_empty() {
+                            let return_type = infer_generic_call(
+                                callee,
+                                signature,
+                                &typed_args,
+                                generics,
+                                *call_span,
+                                diagnostics,
+                                source_path,
+                            );
+                            return TypedExpr {
+                                kind: TypedExprKind::Spawn {
+                                    callee: callee.clone(),
+                                    args: typed_args,
+                                },
+                                ty: Type::task(return_type),
+                                span: *span,
+                            };
+                        }
+                    }
                 }
                 validate_call(
                     callee,
@@ -5415,6 +5699,10 @@ impl<'a, 'd> ClosureCaptureWalker<'a, 'd> {
             HirStmt::Return(expr, _) | HirStmt::Expr(expr, _) | HirStmt::Defer(expr, _) => {
                 self.walk_expr(expr);
             }
+            // RFC 0046: the capture walker recurses through unsafe
+            // blocks — the permission marker changes nothing about
+            // which enclosing bindings the closure body references.
+            HirStmt::Unsafe(body, _) => self.walk_stmts(body),
             HirStmt::Bind { pattern, value, .. } => {
                 self.walk_expr(value);
                 for (name, target_span) in pattern.binding_names() {
@@ -5587,6 +5875,53 @@ fn match_arm_binding_names(pattern: &HirMatchPattern) -> Vec<(String, Span)> {
 /// enclosing loop is not reachable), and the resulting type is
 /// `fn(params) -> ret`.
 #[allow(clippy::too_many_arguments)]
+/// RFC 0046 GOF3139 case 2: reject an `unsafe:` block header anywhere
+/// inside a closure body (nested blocks included). The marker never
+/// crosses declaration boundaries, so the closure body cannot open its
+/// own region; unsafe work goes through a named wrapper function.
+fn check_closure_unsafe(stmts: &[HirStmt], diagnostics: &mut Diagnostics, source_path: &Path) {
+    for stmt in stmts {
+        match stmt {
+            HirStmt::Unsafe(_, span) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3139",
+                        "`unsafe:` blocks are not valid inside closure bodies in v1",
+                        "closures are mobile values (go targets and channel payloads), and the safe-wrapper requirement is defined for named functions only; unsafe work goes through a named wrapper function",
+                        *span,
+                    )
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            HirStmt::If {
+                then_body,
+                else_body,
+                ..
+            } => {
+                check_closure_unsafe(then_body, diagnostics, source_path);
+                check_closure_unsafe(else_body, diagnostics, source_path);
+            }
+            HirStmt::While { body, .. } | HirStmt::For { body, .. } => {
+                check_closure_unsafe(body, diagnostics, source_path);
+            }
+            HirStmt::Match { arms, .. } => {
+                for arm in arms {
+                    if let Some(guard) = &arm.guard {
+                        let _ = guard;
+                    }
+                    check_closure_unsafe(&arm.body, diagnostics, source_path);
+                }
+            }
+            HirStmt::Select { arms, .. } => {
+                for arm in arms {
+                    check_closure_unsafe(&arm.body, diagnostics, source_path);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn lower_closure_expr(
     params: &[HirParam],
     declared_return_type: Option<&HirTypeRef>,
@@ -5604,6 +5939,12 @@ fn lower_closure_expr(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> TypedExpr {
+    // RFC 0046 GOF3139: unsafe blocks are not valid inside closure
+    // bodies in v1 — closures are mobile values (first-class `go` targets
+    // and channel payloads), and the safe-wrapper requirement is defined
+    // for named functions only. Detect the marker at any statement depth.
+    check_closure_unsafe(body, diagnostics, source_path);
+
     let mut typed_params = Vec::with_capacity(params.len());
     for param in params {
         let ty = match &param.ty {
@@ -5641,6 +5982,7 @@ fn lower_closure_expr(
         typed_params.push(TypedParam {
             name: param.name.clone(),
             ty,
+            mutable: param.mutable,
         });
     }
 
@@ -6201,6 +6543,10 @@ fn resolve_method_call(
     span: Span,
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     generics: &GenericContext,
+    // The mutability of the receiver's binding when the target is a
+    // local read (RFC 0044: mut-receiver requirements are callable only
+    // through `mut` generic parameters).
+    receiver_binding_mut: Option<bool>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> (String, Type) {
@@ -6210,6 +6556,25 @@ fn resolve_method_call(
     if let Type::TypeParam(type_param) = &target.ty {
         return match generics.requirement_for(type_param, method) {
             Some(requirement) => {
+                // Mut-receiver discipline: a `mut receiver: Self`
+                // requirement needs a `mut` binding at the call site —
+                // the parameter-side instantiation rule (GOF3131).
+                if requirement.receiver_mut && receiver_binding_mut != Some(true) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3131",
+                            format!(
+                                "mut-receiver requirement `{method}` needs a `mut` binding for `{type_param}`"
+                            ),
+                            "mutating requirements are callable only through `mut` generic parameters, so the receiver's state change stays explicit at the call site",
+                            span,
+                        )
+                        .with_fix_it(format!(
+                            "declare the parameter as `mut {type_param}: {type_param}`"
+                        ))
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
                 let param_arity = requirement.param_types.len().saturating_sub(1);
                 if args.len() != param_arity {
                     diagnostics.push(
@@ -8154,6 +8519,9 @@ fn collect_return_types(
                 collect_return_types(code, label, else_body, returns, diagnostics, source_path);
             }
             TypedStmt::While { body, .. } => {
+                collect_return_types(code, label, body, returns, diagnostics, source_path);
+            }
+            TypedStmt::Unsafe { body } => {
                 collect_return_types(code, label, body, returns, diagnostics, source_path);
             }
             TypedStmt::For { body, .. } => {
@@ -12368,6 +12736,17 @@ impl GenericContext {
         self.bounds.contains_key(name)
     }
 
+    /// Does a type parameter's bounds include a specific protocol?
+    /// Generic-to-generic subsumption reads this: a caller type
+    /// parameter satisfies a callee bound exactly when its own bounds
+    /// include that protocol.
+    fn bound_includes(&self, type_param: &str, protocol: &str) -> bool {
+        self.bounds
+            .get(type_param)
+            .map(|bounds| bounds.iter().any(|bound| bound == protocol))
+            .unwrap_or(false)
+    }
+
     /// The declared-conformance oracle: does a struct conform to a
     /// protocol? Call-site bound checks read this.
     fn conforms(&self, protocol: &str, struct_name: &str) -> bool {
@@ -12578,7 +12957,39 @@ fn check_impl_conformances(
     let mut table: ConformanceTable = HashMap::new();
 
     // --- Impl validation (GOF3133) + conformance check (GOF3134) ---
+    // Struct ownership: the struct's own module is the single conformance
+    // authority — an `impl` may only target structs declared in the SAME
+    // file, so two modules can never disagree about one conformance.
+    let struct_origins: HashMap<&str, &PathBuf> = module
+        .structs
+        .iter()
+        .map(|decl| (decl.name.as_str(), &decl.source_path))
+        .collect();
     for impl_decl in &module.impls {
+        if let Some(origin) = struct_origins.get(impl_decl.struct_name.as_str()) {
+            if *origin != &impl_decl.source_path {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3133",
+                        format!(
+                            "`impl` targets `{}`, which is declared in another module",
+                            impl_decl.struct_name
+                        ),
+                        format!(
+                            "the struct was declared at {}; the struct's own module is the single conformance authority",
+                            origin.display()
+                        ),
+                        impl_decl.span,
+                    )
+                    .with_fix_it(format!(
+                        "move the `impl {}:` declaration into the struct's module, or declare a local struct",
+                        impl_decl.struct_name
+                    ))
+                    .with_source_path(impl_decl.source_path.clone()),
+                );
+                continue;
+            }
+        }
         if !known_structs.contains(&impl_decl.struct_name) {
             diagnostics.push(
                 Diagnostic::error(
@@ -12680,7 +13091,7 @@ fn check_impl_conformances(
                                     .map(|ty| ty.display_name())
                                     .unwrap_or_else(|| "<missing>".to_string()),
                             ),
-                            requirement.span,
+                            impl_decl.span,
                         )
                         .with_fix_it(format!(
                             "align parameter {index} of `fn {}.{}(...)` with the requirement",
@@ -12702,7 +13113,7 @@ fn check_impl_conformances(
                                 method.param_types.len()
                             ),
                             "the requirement and the method must agree on parameter count",
-                            requirement.span,
+                            impl_decl.span,
                         )
                         .with_fix_it(format!(
                             "align the parameter list of `fn {}.{}(...)` with the requirement",
@@ -12727,7 +13138,7 @@ fn check_impl_conformances(
                                 "the method currently returns {}",
                                 method.return_type.display_name()
                             ),
-                            requirement.span,
+                            impl_decl.span,
                         )
                         .with_fix_it(format!(
                             "align the return type of `fn {}.{}(...)` with the requirement",
@@ -12767,7 +13178,7 @@ fn check_impl_conformances(
                                 if requirement.receiver_mut { "declares" } else { "does not declare" },
                                 if method_receiver_mut { "declares" } else { "does not declare" },
                             ),
-                            requirement.span,
+                            impl_decl.span,
                         )
                         .with_fix_it(format!(
                             "align the receiver mutability of `fn {}.{}(...)` with the requirement",
@@ -12826,7 +13237,7 @@ mod tests {
         let tokens = lex(&source).expect("lexing should succeed");
         let ast = parse(&CstModule::new(tokens)).expect("parsing should succeed");
         let hir = lower_hir(&ast);
-        lower(&hir)
+        lower(&hir).map(|(module, _warnings)| module)
     }
 
     fn compile_typed_source(

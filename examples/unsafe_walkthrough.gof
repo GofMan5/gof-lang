@@ -1,0 +1,37 @@
+# Unsafe boundary walkthrough (RFC 0046): `unsafe:` blocks are
+# permission regions with ordinary block semantics. In v1 every block
+# is inert (no unsafe operations exist yet) and reports GOF3141 —
+# a warning, never a failure. Precondition validation stays in safe
+# code ahead of the block (the safe-wrapper requirement).
+
+fn double_safely(value: int) -> int:
+    # Preconditions in safe code, before the block.
+    if value < 0:
+        return 0
+    mut result = value
+    unsafe:
+        # Permission region: every check applies unchanged.
+        result = result * 2
+    return result
+
+fn classify(value: int) -> int:
+    # Control flow inside an unsafe block targets the enclosing
+    # function or loop, exactly as in a plain block.
+    if value > 10:
+        unsafe:
+            return 1
+    return 0
+
+fn main() -> int:
+    assert(double_safely(21) == 42, "unsafe blocks execute as plain blocks")
+    assert(classify(50) == 1, "return flows out of the unsafe block")
+    # Nesting is legal and redundant.
+    mut total = 0
+    unsafe:
+        mut inner = 5
+        unsafe:
+            inner = inner + 1
+        total = inner
+    assert(total == 6, "bindings scope through nested unsafe blocks")
+    print(double_safely(5))
+    return 0

@@ -85,6 +85,32 @@
     ],
     "description": "An anonymous function expression with annotated parameters (RFC 0047)"
   },
+  "Protocol": {
+    "prefix": "gofprotocol",
+    "body": [
+      "protocol ${1:Shape}:",
+      "    fn ${2:area}(self: Self) -> ${3:int}"
+    ],
+    "description": "A protocol declaration with a Self-annotated requirement (RFC 0044)"
+  },
+  "Impl Conformance": {
+    "prefix": "gofimpl",
+    "body": ["impl ${1:Circle}: ${2:Shape}"],
+    "description": "An explicit conformance declaration (RFC 0044)"
+  },
+  "Generic Function": {
+    "prefix": "gofgeneric",
+    "body": [
+      "fn ${1:describe}[T: ${2:Shape}](${3:shape}: T) -> ${4:string}:",
+      "    ${5:return ${3:shape}.${6:name}()}"
+    ],
+    "description": "A protocol-constrained generic function (RFC 0044)"
+  },
+  "Unsafe Block": {
+    "prefix": "gofunsafe",
+    "body": ["unsafe:", "    ${0:statement}"],
+    "description": "An unsafe permission-region block (RFC 0046)"
+  },
   "Tuple Function": {
     "prefix": "goftuplefn",
     "body": [

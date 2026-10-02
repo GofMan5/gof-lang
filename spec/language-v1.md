@@ -98,6 +98,8 @@ The bootstrap compiler in this repository currently supports:
 - generic function bodies currently may call on type-parameter values exactly the methods their bounds require; operators, equality, indexing, and field access on type-parameter values are rejected
 - generic call sites currently infer type arguments from argument types (whole or one level of nesting in `list`, `dict`, `channel`, `task`, `Result`, and `Option`) and check every bound against the declared conformances
 - protocol names currently cannot appear as value types — conformance is generics-only; `v1` conformance covers user-declared structs in the declaring module, with flat method sets and no associated types, protocol inheritance, or default bodies
+- `unsafe:` block statements open permission regions: valid wherever a statement is, they scope bindings like ordinary blocks, apply every type and ownership check unchanged, and are not valid inside closure bodies in v1
+- every `unsafe:` block is currently inert (no explicitly-unsafe operation exists in v1) and reports a warning; `unsafe` is never a declaration or statement modifier
 - field access through `value.field`
 - method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`

@@ -79,6 +79,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | Match guards `Variant(x) if x > 10:`, literal / wildcard payload patterns, guarded-arm fall-through, skeleton duplicate detection | stable |
 | Closures `fn (x: int) -> int:` with immutable snapshot captures, `fn(T) -> T` types, `go closure(args)`, defer value-capture | stable |
 | Protocols `protocol Name:` with `Self`-annotated requirements, explicit `impl Struct: Protocol` conformance checking, generic functions `fn f[T: Proto](x: T)` with call-site bound inference | stable |
+| `unsafe:` permission blocks (checks unchanged, inert in v1 with a warning), closure-body ban, modifier rejection | stable |
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, `defer`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |

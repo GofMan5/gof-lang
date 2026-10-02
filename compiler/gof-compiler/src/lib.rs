@@ -25,7 +25,7 @@ pub use pipeline::{
     CompileMode, CompiledModule, build_embedded_source_bundle, compile_source,
     compile_source_with_provider, format_source, run_embedded_bundle_with_output,
     run_embedded_bundle_with_output_and_args, run_module, run_module_with_output,
-    run_module_with_output_and_args,
+    run_module_with_output_and_args, run_module_with_output_and_args_and_warnings,
 };
 pub use source::{
     EmbeddedPackageContext, EmbeddedSourceBundle, EmbeddedSourceProvider, FileSystemSourceProvider,
