@@ -1,0 +1,3 @@
+fn main() -> int:
+    (a, b) = 5
+    return a + b

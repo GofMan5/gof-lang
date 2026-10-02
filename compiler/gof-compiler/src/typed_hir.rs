@@ -25,6 +25,7 @@ pub enum Type {
     Task(Box<Type>),
     Result(Box<Type>, Box<Type>),
     Option(Box<Type>),
+    Tuple(Vec<Type>),
     Unknown,
     Unit,
 }
@@ -80,6 +81,14 @@ impl Type {
                 format!("Result[{}, {}]", ok.display_name(), err.display_name())
             }
             Self::Option(value) => format!("Option[{}]", value.display_name()),
+            Self::Tuple(members) => format!(
+                "({})",
+                members
+                    .iter()
+                    .map(|member| member.display_name())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
         }
@@ -2017,32 +2026,80 @@ fn lower_stmt(
                 source_path,
                 diagnostics,
             );
-            // TUPLES-TODO(layer2): real tuple-pattern type checking
-            // (per-leaf types from the value type). Layer 1 rejects
-            // tuple destructuring with an explicit diagnostic so no
-            // untyped binding can slip through.
-            // TUPLES-TODO(layer2): real tuple-pattern type checking
-            // (per-leaf types from the value type). Layer 1 rejects
-            // tuple destructuring with an explicit diagnostic so no
-            // untyped binding can slip through.
             let (name, name_span) = match pattern {
                 HirBindingPattern::Name(name, span) => (name.clone(), *span),
-                HirBindingPattern::Tuple(_, span) => {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            "GOF3155",
-                            "tuple destructuring is not lowered yet",
-                            "tuple patterns parse, but typed lowering lands with the tuples semantic slice; use single-name bindings for now",
-                            *span,
-                        )
-                        .with_fix_it("bind the tuple to one name and use `.0`/`.1` once the slice lands")
-                        .with_source_path(source_path.to_path_buf()),
-                    );
-                    return TypedStmt::Bind {
-                        name: "__tuple_unsupported".to_string(),
-                        mutable: *mutable,
-                        value,
+                HirBindingPattern::Tuple(leaves, span) => {
+                    // RFC 0050 destructuring: each leaf types against the
+                    // corresponding tuple member. The typed output keeps a
+                    // synthetic anchor name (TUPLES-TODO(layer3): MIR
+                    // destructuring lowering); the evaluator reads the AST
+                    // pattern directly.
+                    let member_types = match &value.ty {
+                        Type::Tuple(members) => Some(members.clone()),
+                        Type::Unknown => None,
+                        other => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "GOF3156",
+                                    "tuple destructuring requires a tuple value",
+                                    format!(
+                                        "this initializer resolves to `{}`, not a tuple",
+                                        other.display_name()
+                                    ),
+                                    *span,
+                                )
+                                .with_fix_it("initialize the pattern from a tuple-typed expression")
+                                .with_source_path(source_path.to_path_buf()),
+                            );
+                            None
+                        }
                     };
+                    match member_types {
+                        Some(members) => {
+                            if leaves.len() != members.len() {
+                                diagnostics.push(
+                                    Diagnostic::error(
+                                        "GOF3155",
+                                        "tuple destructuring arity mismatch",
+                                        format!(
+                                            "the pattern expects {} binding(s), but the tuple has {} member(s)",
+                                            leaves.len(),
+                                            members.len()
+                                        ),
+                                        *span,
+                                    )
+                                    .with_fix_it("match the number of pattern leaves to the tuple arity")
+                                    .with_source_path(source_path.to_path_buf()),
+                                );
+                            }
+                            let zipped = leaves
+                                .iter()
+                                .zip(members.iter().chain(std::iter::repeat(&Type::Unknown)));
+                            for (leaf, member_ty) in zipped {
+                                type_binding_pattern_leaf(
+                                    leaf,
+                                    member_ty,
+                                    *mutable,
+                                    scopes,
+                                    diagnostics,
+                                    source_path,
+                                );
+                            }
+                        }
+                        None => {
+                            for leaf in leaves {
+                                type_binding_pattern_leaf(
+                                    leaf,
+                                    &Type::Unknown,
+                                    *mutable,
+                                    scopes,
+                                    diagnostics,
+                                    source_path,
+                                );
+                            }
+                        }
+                    }
+                    ("__tuple_destructure".to_string(), *span)
                 }
             };
             if scopes.contains_in_current(&name) {
@@ -2358,27 +2415,122 @@ fn lower_stmt(
                 function_return_type,
                 source_path,
             );
-            // TUPLES-TODO(layer2): tuple loop-pattern typing (element
-            // type split per leaf). Layer 1 rejects with GOF3155.
+            // RFC 0050 loop patterns: the element type splits across the
+            // pattern leaves. The typed output keeps a synthetic anchor
+            // name (TUPLES-TODO(layer3): MIR destructuring lowering);
+            // the evaluator reads the AST pattern directly.
             let binding = match pattern {
                 HirBindingPattern::Name(name, _) => name.clone(),
-                HirBindingPattern::Tuple(_, tuple_span) => {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            "GOF3155",
-                            "tuple loop patterns are not lowered yet",
-                            "tuple for-bindings parse, but typed lowering lands with the tuples semantic slice; use a single loop binding for now",
-                            *tuple_span,
-                        )
-                        .with_fix_it("bind each element to one name and destructure in the body")
-                        .with_source_path(source_path.to_path_buf()),
-                    );
-                    "__tuple_unsupported".to_string()
+                HirBindingPattern::Tuple(leaves, tuple_span) => {
+                    let anchor = "__tuple_loop_destructure".to_string();
+                    // Derive the element type without the binding-name
+                    // diagnostics (the anchor is synthetic): match the
+                    // iterable directly so non-iterables report the
+                    // tuple-specific GOF3156 below.
+                    let element_type = match &iterable.ty {
+                        Type::List(item) => item.as_ref().clone(),
+                        Type::String | Type::Dict(_) => Type::String,
+                        Type::Unknown => Type::Unknown,
+                        other => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "GOF3048",
+                                    "`for` requires an iterable value",
+                                    format!(
+                                        "this loop target resolves to `{}`, but bootstrap `for` currently supports only `list`, `string`, and `dict`",
+                                        other.display_name()
+                                    ),
+                                    *tuple_span,
+                                )
+                                .with_fix_it("iterate over a list, string, or dict value")
+                                .with_source_path(source_path.to_path_buf()),
+                            );
+                            Type::Unknown
+                        }
+                    };
+                    let member_types = match &element_type {
+                        Type::Tuple(members) => Some(members.clone()),
+                        Type::Unknown => None,
+                        other => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "GOF3156",
+                                    "tuple loop patterns require tuple elements",
+                                    format!(
+                                        "this iterable yields `{}`, not a tuple",
+                                        other.display_name()
+                                    ),
+                                    *tuple_span,
+                                )
+                                .with_fix_it(
+                                    "iterate a list of tuples, or bind each element to one name",
+                                )
+                                .with_source_path(source_path.to_path_buf()),
+                            );
+                            None
+                        }
+                    };
+                    match member_types {
+                        Some(members) => {
+                            if leaves.len() != members.len() {
+                                diagnostics.push(
+                                    Diagnostic::error(
+                                        "GOF3155",
+                                        "tuple loop pattern arity mismatch",
+                                        format!(
+                                            "the pattern expects {} binding(s), but each element has {} member(s)",
+                                            leaves.len(),
+                                            members.len()
+                                        ),
+                                        *tuple_span,
+                                    )
+                                    .with_fix_it("match the number of pattern leaves to the element arity")
+                                    .with_source_path(source_path.to_path_buf()),
+                                );
+                            }
+                            scopes.push();
+                            let zipped = leaves
+                                .iter()
+                                .zip(members.iter().chain(std::iter::repeat(&Type::Unknown)));
+                            for (leaf, member_ty) in zipped {
+                                type_binding_pattern_leaf(
+                                    leaf,
+                                    member_ty,
+                                    false,
+                                    scopes,
+                                    diagnostics,
+                                    source_path,
+                                );
+                            }
+                        }
+                        None => {
+                            scopes.push();
+                            for leaf in leaves {
+                                type_binding_pattern_leaf(
+                                    leaf,
+                                    &Type::Unknown,
+                                    false,
+                                    scopes,
+                                    diagnostics,
+                                    source_path,
+                                );
+                            }
+                        }
+                    }
+                    anchor
                 }
             };
-            let binding_type =
-                resolve_for_binding_type(&binding, &iterable, *span, diagnostics, source_path);
-            scopes.push();
+            let is_tuple_pattern = matches!(pattern, HirBindingPattern::Tuple(_, _));
+            let binding_type = if is_tuple_pattern {
+                // The anchor itself carries no user-visible name; the
+                // element type was already split across the leaves.
+                Type::Unknown
+            } else {
+                resolve_for_binding_type(&binding, &iterable, *span, diagnostics, source_path)
+            };
+            if !is_tuple_pattern {
+                scopes.push();
+            }
             scopes.define_current(
                 binding.clone(),
                 LocalBinding {
@@ -2870,31 +3022,21 @@ fn lower_match_pattern(
         );
     }
 
-    // TUPLES-TODO(layer2): tuple payload patterns with real per-leaf
-    // typing. Layer 1 flattens Name leaves (today's behavior) and
-    // rejects Tuple leaves with GOF3155 so no untyped binding slips
-    // through.
-    let flat_bindings = bindings
+    // RFC 0050 payload patterns: Name leaves keep today's behavior;
+    // Tuple leaves expand into per-leaf typed bindings split from the
+    // field's tuple type (GOF3156 on a non-tuple field, GOF3155 on
+    // arity mismatch). The pattern output flattens to a synthetic name —
+    // the evaluator reads the AST pattern directly (TUPLES-TODO(layer3):
+    // MIR destructuring lowering).
+    let flat_pattern_names = bindings
         .iter()
         .map(|binding| match binding {
             HirBindingPattern::Name(name, _) => name.clone(),
-            HirBindingPattern::Tuple(_, tuple_span) => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "GOF3155",
-                        "tuple match payload patterns are not lowered yet",
-                        "tuple payload patterns parse, but typed lowering lands with the tuples semantic slice; bind the payload to one name for now",
-                        *tuple_span,
-                    )
-                    .with_fix_it("bind the payload to a single name")
-                    .with_source_path(source_path.to_path_buf()),
-                );
-                "__tuple_unsupported".to_string()
-            }
+            HirBindingPattern::Tuple(_, _) => "__tuple_payload_destructure".to_string(),
         })
         .collect::<Vec<_>>();
 
-    if flat_bindings.len() != variant_fields.len() {
+    if flat_pattern_names.len() != variant_fields.len() {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3071",
@@ -2904,7 +3046,7 @@ fn lower_match_pattern(
                 format!(
                     "expected {} binding(s), got {}",
                     variant_fields.len(),
-                    flat_bindings.len()
+                    flat_pattern_names.len()
                 ),
                 *span,
             )
@@ -2929,48 +3071,124 @@ fn lower_match_pattern(
         );
     }
 
-    // TUPLES-TODO(layer2): tuple payload patterns with real per-leaf
-    // typing. Layer 1 flattens Name leaves (today's behavior) and
-    // rejects Tuple leaves with GOF3155 so no untyped binding slips
-    // through.
-    let flat_bindings = bindings
-        .iter()
-        .map(|binding| match binding {
-            HirBindingPattern::Name(name, _) => name.clone(),
-            HirBindingPattern::Tuple(_, tuple_span) => {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "GOF3155",
-                        "tuple match payload patterns are not lowered yet",
-                        "tuple payload patterns parse, but typed lowering lands with the tuples semantic slice; bind the payload to one name for now",
-                        *tuple_span,
-                    )
-                    .with_fix_it("bind the payload to a single name")
-                    .with_source_path(source_path.to_path_buf()),
-                );
-                "__tuple_unsupported".to_string()
+    let mut typed_bindings = Vec::new();
+    for (binding, field) in bindings.iter().zip(variant_fields.iter()) {
+        match binding {
+            HirBindingPattern::Name(name, _) => {
+                typed_bindings.push(TypedMatchBinding {
+                    name: name.clone(),
+                    ty: field.ty.clone(),
+                });
             }
-        })
-        .collect::<Vec<_>>();
-
-    let typed_bindings = flat_bindings
-        .iter()
-        .zip(variant_fields.iter())
-        .map(|(binding, field)| TypedMatchBinding {
-            name: binding.clone(),
-            ty: field.ty.clone(),
-        })
-        .collect::<Vec<_>>();
+            HirBindingPattern::Tuple(leaves, tuple_span) => match &field.ty {
+                Type::Tuple(members) => {
+                    if leaves.len() != members.len() {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3155",
+                                "tuple payload pattern arity mismatch",
+                                format!(
+                                    "the pattern expects {} binding(s), but the payload tuple has {} member(s)",
+                                    leaves.len(),
+                                    members.len()
+                                ),
+                                *tuple_span,
+                            )
+                            .with_fix_it(
+                                "match the number of pattern leaves to the payload arity",
+                            )
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    }
+                    let zipped = leaves
+                        .iter()
+                        .zip(members.iter().chain(std::iter::repeat(&Type::Unknown)));
+                    for (leaf, member_ty) in zipped {
+                        collect_payload_pattern_bindings(leaf, member_ty, &mut typed_bindings);
+                    }
+                }
+                Type::Unknown => {
+                    for leaf in leaves {
+                        collect_payload_pattern_bindings(leaf, &Type::Unknown, &mut typed_bindings);
+                    }
+                }
+                other => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3156",
+                            "tuple payload patterns require a tuple payload",
+                            format!(
+                                "this payload resolves to `{}`, not a tuple",
+                                other.display_name()
+                            ),
+                            *tuple_span,
+                        )
+                        .with_fix_it("bind the payload to a single name for non-tuple fields")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
+            },
+        }
+    }
 
     (
         TypedMatchPattern::EnumVariant {
             enum_name: enum_name.clone(),
             variant: variant.clone(),
-            bindings: typed_bindings.clone(),
+            bindings: flat_pattern_names
+                .iter()
+                .zip(variant_fields.iter())
+                .map(|(name, field)| TypedMatchBinding {
+                    name: name.clone(),
+                    ty: field.ty.clone(),
+                })
+                .collect(),
             span: *span,
         },
         typed_bindings,
     )
+}
+
+/// Expand one payload-pattern leaf into flat typed bindings: Name leaves
+/// bind directly; nested Tuple leaves recurse through the member type.
+fn collect_payload_pattern_bindings(
+    leaf: &HirBindingPattern,
+    member_ty: &Type,
+    typed_bindings: &mut Vec<TypedMatchBinding>,
+) {
+    match leaf {
+        HirBindingPattern::Name(name, _) => {
+            typed_bindings.push(TypedMatchBinding {
+                name: name.clone(),
+                ty: member_ty.clone(),
+            });
+        }
+        HirBindingPattern::Tuple(leaves, _) => {
+            let nested = match member_ty {
+                Type::Tuple(members) => Some(members.clone()),
+                _ => None,
+            };
+            match nested {
+                Some(members) => {
+                    let zipped = leaves
+                        .iter()
+                        .zip(members.iter().chain(std::iter::repeat(&Type::Unknown)));
+                    for (nested_leaf, nested_ty) in zipped {
+                        collect_payload_pattern_bindings(nested_leaf, nested_ty, typed_bindings);
+                    }
+                }
+                None => {
+                    for nested_leaf in leaves {
+                        collect_payload_pattern_bindings(
+                            nested_leaf,
+                            &Type::Unknown,
+                            typed_bindings,
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn ensure_match_exhaustive(
@@ -3024,6 +3242,110 @@ fn ensure_match_exhaustive(
             .with_fix_it("add match arms for every remaining enum variant")
             .with_source_path(source_path.to_path_buf()),
         );
+    }
+}
+
+/// Type one destructuring leaf against a tuple member type. Name leaves
+/// follow today's Bind semantics (fresh = immutable local; existing mut
+/// binding = reassign with compatibility; existing immutable = GOF3003);
+/// nested Tuple leaves recurse with the member's tuple type.
+fn type_binding_pattern_leaf(
+    leaf: &HirBindingPattern,
+    member_ty: &Type,
+    mutable: bool,
+    scopes: &mut ScopeStack,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    match leaf {
+        HirBindingPattern::Name(name, span) => {
+            if scopes.contains_in_current(name) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3006",
+                        format!("duplicate binding `{name}`"),
+                        "gof currently does not allow duplicate bindings in the same block scope",
+                        *span,
+                    )
+                    .with_fix_it("rename this binding or reuse the existing one")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            scopes.define_current(
+                name.clone(),
+                LocalBinding {
+                    mutable,
+                    ty: member_ty.clone(),
+                },
+            );
+        }
+        HirBindingPattern::Tuple(leaves, span) => {
+            let nested_members = match member_ty {
+                Type::Tuple(members) => Some(members.clone()),
+                Type::Unknown => None,
+                other => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3156",
+                            "tuple destructuring requires a tuple value",
+                            format!(
+                                "this member resolves to `{}`, not a nested tuple",
+                                other.display_name()
+                            ),
+                            *span,
+                        )
+                        .with_fix_it("use an identifier leaf for non-tuple members")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                    None
+                }
+            };
+            match nested_members {
+                Some(members) => {
+                    if leaves.len() != members.len() {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3155",
+                                "tuple destructuring arity mismatch",
+                                format!(
+                                    "the nested pattern expects {} binding(s), but the member tuple has {} member(s)",
+                                    leaves.len(),
+                                    members.len()
+                                ),
+                                *span,
+                            )
+                            .with_fix_it("match the number of pattern leaves to the tuple arity")
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    }
+                    let zipped = leaves
+                        .iter()
+                        .zip(members.iter().chain(std::iter::repeat(&Type::Unknown)));
+                    for (nested_leaf, nested_ty) in zipped {
+                        type_binding_pattern_leaf(
+                            nested_leaf,
+                            nested_ty,
+                            mutable,
+                            scopes,
+                            diagnostics,
+                            source_path,
+                        );
+                    }
+                }
+                None => {
+                    for nested_leaf in leaves {
+                        type_binding_pattern_leaf(
+                            nested_leaf,
+                            &Type::Unknown,
+                            mutable,
+                            scopes,
+                            diagnostics,
+                            source_path,
+                        );
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -3915,48 +4237,103 @@ fn lower_expr(
                 span: *span,
             }
         }
-        // TUPLES-TODO(layer2): real tuple typing (Type::Tuple, member
-        // inference, equality/ordering capability). Layer 1 rejects the
-        // new expression forms at the typed layer so no untyped value
-        // can flow; the parser already accepts the syntax.
-        HirExpr::Tuple { span, .. } => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "GOF3155",
-                    "tuple literals are not lowered yet",
-                    "tuple literals parse, but typed lowering lands with the tuples semantic slice; use separate values for now",
-                    *span,
-                )
-                .with_fix_it("bind tuple members to separate names until the tuples slice lands")
-                .with_source_path(source_path.to_path_buf()),
-            );
+        // RFC 0050 tuple literals: heterogeneous member types, no
+        // unification. The parser guarantees 2+ items.
+        HirExpr::Tuple { items, span } => {
+            let lowered_items = items
+                .iter()
+                .map(|item| {
+                    lower_expr(
+                        item,
+                        scopes,
+                        signatures,
+                        method_signatures,
+                        known_structs,
+                        known_enums,
+                        struct_signatures,
+                        enum_signatures,
+                        diagnostics,
+                        function_return_type,
+                        source_path,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let ty = Type::Tuple(lowered_items.iter().map(|item| item.ty.clone()).collect());
             TypedExpr {
-                kind: TypedExprKind::Tuple { items: Vec::new() },
-                ty: Type::Unknown,
+                kind: TypedExprKind::Tuple {
+                    items: lowered_items,
+                },
+                ty,
                 span: *span,
             }
         }
-        HirExpr::TupleIndex { span, .. } => {
-            diagnostics.push(
-                Diagnostic::error(
-                    "GOF3157",
-                    "tuple element access is not lowered yet",
-                    "tuple `.N` access parses, but typed lowering lands with the tuples semantic slice",
-                    *span,
-                )
-                .with_fix_it("access tuple members through single-value bindings until the tuples slice lands")
-                .with_source_path(source_path.to_path_buf()),
+        // RFC 0050 element access: `.N` loads the Nth member of a tuple.
+        HirExpr::TupleIndex {
+            target,
+            index,
+            span,
+        } => {
+            let target = lower_expr(
+                target,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                function_return_type,
+                source_path,
             );
+            let ty = match &target.ty {
+                Type::Tuple(members) => {
+                    if *index < members.len() {
+                        members[*index].clone()
+                    } else {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3157",
+                                format!(
+                                    "index {index} is out of range for a tuple of {} member(s)",
+                                    members.len()
+                                ),
+                                "tuple element access must stay within the declared arity",
+                                *span,
+                            )
+                            .with_fix_it(format!(
+                                "use an index between 0 and {}",
+                                members.len().saturating_sub(1)
+                            ))
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                        Type::Unknown
+                    }
+                }
+                Type::Unknown => Type::Unknown,
+                other => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3157",
+                            "tuple element access requires a tuple value",
+                            format!(
+                                "this target resolves to `{}`, not a tuple",
+                                other.display_name()
+                            ),
+                            *span,
+                        )
+                        .with_fix_it("apply `.N` only to tuple values")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                    Type::Unknown
+                }
+            };
             TypedExpr {
                 kind: TypedExprKind::TupleIndex {
-                    target: Box::new(TypedExpr {
-                        kind: TypedExprKind::Int(0),
-                        ty: Type::Int,
-                        span: *span,
-                    }),
-                    index: 0,
+                    target: Box::new(target),
+                    index: *index,
                 },
-                ty: Type::Unknown,
+                ty,
                 span: *span,
             }
         }
@@ -4623,6 +5000,18 @@ fn resolve_type_annotation(
             diagnostics,
             ty.span,
         ),
+        // RFC 0050 tuple types: written `(T1, T2)` in source; the parser
+        // builds TypeRef { name: "tuple", args: members } (user-written
+        // `tuple[...]` is rejected at the parser, so this arm only fires
+        // for the parenthesized form). Arity is 2+ by parser contract.
+        "tuple" => resolve_tuple_type(
+            &ty.args,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
         name if is_builtin_opaque_type_name(name) => resolve_named_type_without_args(
             name,
             &ty.args,
@@ -4819,6 +5208,45 @@ fn resolve_option_type(
         source_path,
         diagnostics,
     ))
+}
+
+fn resolve_tuple_type(
+    args: &[HirTypeRef],
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    source_path: &Path,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+) -> Type {
+    // The parser rejects `()`, `(T)`, and trailing commas before the
+    // TypeRef reaches this arm, so arity below 2 is a defensive check.
+    if args.len() < 2 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3155",
+                "tuple types require two or more members",
+                "gof has no single-member or empty tuple type; a single type needs no parentheses",
+                span,
+            )
+            .with_fix_it("remove the parentheses, or add a second member type")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    let members = args
+        .iter()
+        .map(|member| {
+            resolve_type_annotation(
+                Some(member),
+                known_structs,
+                known_enums,
+                source_path,
+                diagnostics,
+            )
+        })
+        .collect::<Vec<_>>();
+    Type::Tuple(members)
 }
 
 fn resolve_call_kind(
@@ -5339,13 +5767,41 @@ fn is_ordering_op(op: BinaryOp) -> bool {
 }
 
 fn supports_ordering(lhs: &Type, rhs: &Type) -> bool {
+    if matches!(lhs, Type::Unknown) || matches!(rhs, Type::Unknown) {
+        return true;
+    }
+
+    if !types_compatible(lhs, rhs) {
+        return false;
+    }
+
+    // RFC 0050: tuples order lexicographically when every member is
+    // orderable (int/string recursively).
+    if let Type::Tuple(members) = lhs {
+        return members
+            .iter()
+            .all(|member| type_supports_self_ordering(member));
+    }
+    if let Type::Tuple(members) = rhs {
+        return members
+            .iter()
+            .all(|member| type_supports_self_ordering(member));
+    }
+
     matches!(
         (lhs, rhs),
-        (Type::Unknown, _)
-            | (_, Type::Unknown)
-            | (Type::Int, Type::Int)
-            | (Type::String, Type::String)
+        (Type::Int, Type::Int) | (Type::String, Type::String)
     )
+}
+
+/// Whether a type participates in `<`-style ordering: int and string
+/// directly; tuples recursively when every member orders.
+fn type_supports_self_ordering(ty: &Type) -> bool {
+    match ty {
+        Type::Unknown | Type::Int | Type::String => true,
+        Type::Tuple(members) => members.iter().all(type_supports_self_ordering),
+        _ => false,
+    }
 }
 
 fn supports_equality(
@@ -5404,6 +5860,15 @@ fn type_supports_self_equality_inner(
                 _ => unreachable!("non-list/dict/channel/task branch should be unreachable"),
             }
         }
+        Type::Tuple(members) => members.iter().all(|member| {
+            type_supports_self_equality_inner(
+                member,
+                struct_signatures,
+                enum_signatures,
+                active_structs,
+                active_enums,
+            )
+        }),
         Type::CancelToken => false,
         Type::Opaque(name) => matches!(name.as_str(), "Bytes" | "SocketAddr" | "NetDeadline"),
         Type::Struct(name) => {
@@ -6167,6 +6632,16 @@ fn merge_return_types(current: &Type, candidate: &Type) -> Option<Type> {
         (Type::Option(current), Type::Option(candidate)) => {
             merge_return_types(current, candidate).map(Type::option)
         }
+        (Type::Tuple(current), Type::Tuple(candidate)) => {
+            if current.len() != candidate.len() {
+                return None;
+            }
+            let mut merged = Vec::with_capacity(current.len());
+            for (current_member, candidate_member) in current.iter().zip(candidate.iter()) {
+                merged.push(merge_return_types(current_member, candidate_member)?);
+            }
+            Some(Type::Tuple(merged))
+        }
         _ => None,
     }
 }
@@ -6255,6 +6730,13 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
             types_compatible(expected_ok, actual_ok) && types_compatible(expected_err, actual_err)
         }
         (Type::Option(expected), Type::Option(actual)) => types_compatible(expected, actual),
+        (Type::Tuple(expected), Type::Tuple(actual)) => {
+            expected.len() == actual.len()
+                && expected
+                    .iter()
+                    .zip(actual.iter())
+                    .all(|(expected, actual)| types_compatible(expected, actual))
+        }
         (expected, actual) => expected == actual,
     }
 }
@@ -10049,6 +10531,7 @@ fn is_printable_type(ty: &Type) -> bool {
         ),
         Type::Result(ok, err) => is_printable_type(ok) && is_printable_type(err),
         Type::Option(value) => is_printable_type(value),
+        Type::Tuple(members) => members.iter().all(is_printable_type),
         Type::Channel(_) | Type::Task(_) | Type::CancelToken | Type::Unit => false,
     }
 }
@@ -10666,6 +11149,104 @@ mod tests {
                 .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3067"]);
+    }
+
+    #[test]
+    fn types_tuple_literals_and_element_access() {
+        let module = lower_source("fn main() -> int:\n    pair = (1, \"x\")\n    return pair.0\n")
+            .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::Tuple(vec![Type::Int, Type::String]));
+            }
+            other => panic!("expected tuple bind, got {other:?}"),
+        }
+        match &module.functions[0].body[1] {
+            TypedStmt::Return(value) => assert_eq!(value.ty, Type::Int),
+            other => panic!("expected return, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_tuple_element_access_out_of_range() {
+        let diagnostics = lower_source("fn main() -> int:\n    pair = (1, 2)\n    return pair.5\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3157"]);
+    }
+
+    #[test]
+    fn rejects_tuple_element_access_on_non_tuple() {
+        let diagnostics = lower_source("fn main() -> int:\n    value = 5\n    return value.0\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3157"]);
+    }
+
+    #[test]
+    fn rejects_tuple_destructuring_against_non_tuple() {
+        let diagnostics = lower_source("fn main() -> int:\n    (a, b) = 5\n    return a + b\n")
+            .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3156"]);
+    }
+
+    #[test]
+    fn rejects_tuple_destructuring_arity_mismatch() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    pair = (1, 2, 3)\n    (a, b) = pair\n    return a\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3155"]);
+    }
+
+    #[test]
+    fn tuple_equality_requires_comparable_members() {
+        // Same-type tuples of ints support equality.
+        lower_source("fn main() -> bool:\n    a = (1, 2)\n    b = (3, 4)\n    return a == b\n")
+            .expect("typing should succeed");
+
+        // A channel member has no equality semantics.
+        let diagnostics = lower_source(
+            "fn main() -> bool:\n    a = (channel(), 2)\n    b = (channel(), 4)\n    return a == b\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3087"]);
+    }
+
+    #[test]
+    fn tuple_ordering_requires_orderable_members() {
+        // All-int tuples order lexicographically.
+        lower_source("fn main() -> bool:\n    a = (1, 2)\n    b = (1, 3)\n    return a < b\n")
+            .expect("typing should succeed");
+
+        // A bool member is not orderable.
+        let diagnostics = lower_source(
+            "fn main() -> bool:\n    a = (1, true)\n    b = (1, false)\n    return a < b\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3087"]);
+    }
+
+    #[test]
+    fn infers_tuple_return_types() {
+        let module = lower_source(
+            "fn bounds() -> (int, int):\n    return (1, 100)\n\nfn inferred():\n    return (2, 200)\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(
+            module.functions[0].return_type,
+            Type::Tuple(vec![Type::Int, Type::Int])
+        );
+        assert_eq!(
+            module.functions[1].return_type,
+            Type::Tuple(vec![Type::Int, Type::Int])
+        );
     }
 
     #[test]
