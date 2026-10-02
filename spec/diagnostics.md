@@ -158,3 +158,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3143`: closure call contract violation (non-closure value called, wrong arity, or incompatible argument type)
 - `GOF3144`: closure reference to an enclosing mutable binding (reads, calls, and assignments)
 - `GOF3145`: owned-taxa capture without an explicit `clone` at the capture site (dormant until owned taxa land)
+- `GOF3132`: invalid `protocol` declaration or protocol-constrained generic function contract (duplicate requirement names, `Self` outside its receiver/return positions, requirements without return types, empty protocol blocks, duplicate protocol names across the module graph, type parameters that appear in no value parameter annotation, and method calls on type-parameter values their bounds do not guarantee)
+- `GOF3133`: invalid conformance declaration (`impl` targeting an unknown or non-struct type, a struct declared in another module, an unknown protocol, duplicates within one impl list, and `(struct, protocol)` pairs already declared elsewhere)
+- `GOF3134`: a type does not satisfy a protocol (a required method missing, or parameter types, return type, or receiver mutability mismatching after `Self` substitution; at a generic call site, the inferred type argument has no declared conformance for a bound)
+- `GOF3135`: protocol name used as a value type (local bindings, fields, parameters, returns, container element annotations, `Result` payloads, and `match` scrutinees)

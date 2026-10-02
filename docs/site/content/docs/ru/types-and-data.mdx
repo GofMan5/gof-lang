@@ -182,6 +182,38 @@ fn main() -> int:
 - `defer` захватывает ЗНАЧЕНИЕ замыкания при регистрации: переприсваивание после defer всё равно вызовет зарегистрированное замыкание
 - замыкания не участвуют в равенстве, упорядочивании и печати
 
+## Протоколы
+
+Протоколы — контракты методов; конформность явная.
+
+```gof
+protocol Shape:
+    fn area(self: Self) -> int
+    fn name(self: Self) -> string
+
+struct Circle:
+    radius: int
+
+fn Circle.area(self: Circle) -> int:
+    return self.radius * self.radius * 3
+
+fn Circle.name(self: Circle) -> string:
+    return "circle"
+
+impl Circle: Shape
+
+fn main() -> int:
+    print(Circle(2).name())
+    print(Circle(2).area())
+    return 0
+```
+
+- `protocol Name:` объявляет сигнатурные `fn`-требования; ресивер аннотируется `Self`, `mut receiver: Self` — мутирующее требование
+- `impl Struct: Protocol` объявляет конформность явно: совпадающие методы сами по себе НЕ конформят
+- проверка требует от каждого требования метод с идентичными типами параметров, возвратом и mutability ресивера после подстановки `Self`
+- generic-функции несут границы: `fn describe[T: Shape](shape: T)` — тело вызывает только bounded-методы, вызовы проверяют конформность выведенного типа
+- имена протоколов не могут быть типами значений: конформность v1 — только через generic
+
 ## Методы
 
 ```gof

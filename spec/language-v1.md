@@ -91,6 +91,13 @@ The bootstrap compiler in this repository currently supports:
 - postfix propagation through `expr?`
 - statement-level `select` over send/receive operations plus a single `default` fallback arm
 - struct receiver methods through `fn TypeName.method(...)`
+- protocol declarations through `protocol Name:` with signature-only `fn` requirement lines (no bodies, no trailing colons); the first parameter of a requirement is the receiver annotated `Self`, and `mut receiver: Self` declares mutating requirements
+- explicit conformance through `impl Struct: Protocol[, Protocol2]` — a block-less top-level declaration; the conforming struct must be declared in the same module, and conformance is explicit: matching methods alone do not conform
+- conformance checking currently requires, for every requirement, a method `fn Struct.name(...)` with identical parameter types, return type, and receiver mutability after substituting `Self` with the conforming struct
+- protocol-constrained generic functions through `fn name[T: Protocol](param: T)`; type parameters must carry at least one protocol bound and appear in at least one value parameter annotation
+- generic function bodies currently may call on type-parameter values exactly the methods their bounds require; operators, equality, indexing, and field access on type-parameter values are rejected
+- generic call sites currently infer type arguments from argument types (whole or one level of nesting in `list`, `dict`, `channel`, `task`, `Result`, and `Option`) and check every bound against the declared conformances
+- protocol names currently cannot appear as value types — conformance is generics-only; `v1` conformance covers user-declared structs in the declaring module, with flat method sets and no associated types, protocol inheritance, or default bodies
 - field access through `value.field`
 - method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`

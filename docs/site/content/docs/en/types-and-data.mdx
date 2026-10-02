@@ -305,6 +305,40 @@ Current rules:
 - `defer` captures the closure value at registration: rebinding the target afterwards still calls the registered closure
 - closures do not participate in equality, ordering, or printing
 
+## Protocols
+
+Protocols are method contracts; conformance is explicit.
+
+```gof
+protocol Shape:
+    fn area(self: Self) -> int
+    fn name(self: Self) -> string
+
+struct Circle:
+    radius: int
+
+fn Circle.area(self: Circle) -> int:
+    return self.radius * self.radius * 3
+
+fn Circle.name(self: Circle) -> string:
+    return "circle"
+
+impl Circle: Shape
+
+fn main() -> int:
+    print(Circle(2).name())
+    print(Circle(2).area())
+    return 0
+```
+
+Current rules:
+
+- `protocol Name:` declares signature-only `fn` requirement lines; the receiver is annotated `Self`, and `mut receiver: Self` declares mutating requirements
+- `impl Struct: Protocol` declares conformance explicitly — methods that happen to match do not conform until an `impl` says so
+- the conformance check requires every requirement to have a method with identical parameter types, return type, and receiver mutability after substituting `Self`
+- generic functions carry the bounds: `fn describe[T: Shape](shape: T)` — bodies may call exactly the bounded methods, and call sites check the inferred type's conformance
+- protocol names cannot be value types: v1 conformance is generics-only
+
 ## Methods
 
 Methods are explicit, not magical.

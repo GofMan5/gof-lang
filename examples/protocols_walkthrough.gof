@@ -1,0 +1,38 @@
+# Protocols walkthrough (RFC 0044): protocols are method contracts,
+# conformance is explicit, and generic functions carry the bounds.
+
+protocol Shape:
+    fn area(self: Self) -> int
+    fn name(self: Self) -> string
+
+struct Circle:
+    radius: int
+
+struct Square:
+    side: int
+
+fn Circle.area(self: Circle) -> int:
+    return self.radius * self.radius * 3
+
+fn Circle.name(self: Circle) -> string:
+    return "circle"
+
+fn Square.area(self: Square) -> int:
+    return self.side * self.side
+
+fn Square.name(self: Square) -> string:
+    return "square"
+
+# Conformance is explicit: matching methods alone do not conform.
+impl Circle: Shape
+impl Square: Shape
+
+# Generic functions carry bounds; the body may call exactly what the
+# bounds require on type-parameter values.
+fn describe[T: Shape](shape: T) -> string:
+    return shape.name() + " " + to_string(shape.area())
+
+fn main() -> int:
+    print(describe(Circle(2)))
+    print(describe(Square(3)))
+    return 0
