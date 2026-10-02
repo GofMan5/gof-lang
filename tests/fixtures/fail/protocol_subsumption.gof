@@ -1,0 +1,26 @@
+protocol Shape:
+    fn area(self: Self) -> int
+
+protocol Named:
+    fn label(self: Self) -> string
+
+struct Circle:
+    radius: int
+
+fn Circle.area(self: Circle) -> int:
+    return self.radius * self.radius * 3
+
+fn Circle.label(self: Circle) -> string:
+    return "circle"
+
+impl Circle: Shape
+impl Circle: Named
+
+fn specific[T: Shape, Named](shape: T) -> int:
+    return shape.area()
+
+fn loose[T: Shape](shape: T) -> int:
+    return specific(shape)
+
+fn main() -> int:
+    return 0

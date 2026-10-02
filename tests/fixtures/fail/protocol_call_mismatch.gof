@@ -1,0 +1,23 @@
+protocol Shape:
+    fn area(self: Self) -> int
+
+struct Circle:
+    radius: int
+
+fn Circle.area(self: Circle) -> int:
+    return self.radius * self.radius * 3
+
+impl Circle: Shape
+
+struct Triangle:
+    base: int
+
+fn Triangle.area(self: Triangle) -> int:
+    return self.base * 2
+
+fn describe[T: Shape](shape: T) -> string:
+    return to_string(shape.area())
+
+fn main() -> int:
+    print(describe(Triangle(4)))
+    return 0

@@ -1,0 +1,16 @@
+protocol Counter:
+    fn bump(mut self: Self) -> int
+
+struct Tally:
+    count: int
+
+fn Tally.bump(mut self: Tally) -> int:
+    return self.count + 1
+
+impl Tally: Counter
+
+fn use_it[T: Counter](counter: T) -> int:
+    return counter.bump()
+
+fn main() -> int:
+    return 0
