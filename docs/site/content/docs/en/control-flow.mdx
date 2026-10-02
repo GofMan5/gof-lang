@@ -1,6 +1,6 @@
 ---
 title: Control Flow
-description: How gof keeps control flow obvious — if, while, match, and postfix error propagation.
+description: How gof keeps control flow obvious — if, while, match, defer, and postfix error propagation.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -159,6 +159,41 @@ Current rules:
 This matters because `gof` is deliberately choosing explicit recoverable control
 flow over hidden exception behavior.
 
+## `defer`
+
+`defer` schedules a call to run when its block exits — on every exit path,
+in reverse registration order (LIFO).
+
+```gof
+fn sweep(paths: list[string]) -> Result[int, RuntimeError]:
+    mut total = 0
+    for path in paths:
+        stream = open_read_stream(path)?
+        defer stream.close()
+        text = stream.read_all_string()?
+        total = total + len(text)
+    return Result.Ok(total)
+```
+
+If a read propagates an error, the current iteration's `stream.close()`
+still runs before the error leaves the function.
+
+Current rules:
+
+- the deferred expression must be a call (function, method, or builtin)
+- arguments are evaluated at registration, not at scope exit
+- deferred calls run LIFO when their block exits — normal completion,
+  `return`, `?`, runtime diagnostics, and `break`/`continue`
+- `defer` inside a loop body runs at the end of each iteration
+- a deferred call that fails surfaces as `GOF3138` and the remaining
+  deferred calls still run before reporting
+- the deferred call's result is discarded — `defer f(x)?` is rejected
+
+<Callout type="info">
+  `defer` arguments are captured at registration. A `mut` rebinding after
+  the `defer` statement does not redirect the deferred call.
+</Callout>
+
 ## When to use which form
 
 Use:
@@ -169,3 +204,4 @@ Use:
 - `match` for exhaustive state dispatch
 - `?` for recoverable error propagation
 - `break`/`continue` for loop control
+- `defer` for scope-exit cleanup
