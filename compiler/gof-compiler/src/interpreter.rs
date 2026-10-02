@@ -3981,6 +3981,11 @@ fn eval_stmt(
                     .into_iter()
                     .filter(|variant| !seen_variants.contains(variant))
                     .collect::<Vec<_>>()
+            } else if target_enum.name == "Option" {
+                ["Some".to_string(), "None".to_string()]
+                    .into_iter()
+                    .filter(|variant| !seen_variants.contains(variant))
+                    .collect::<Vec<_>>()
             } else {
                 enums
                     .get(&target_enum.name)
@@ -5290,6 +5295,9 @@ fn eval_expr(
                     if name == "Result" {
                         return eval_result_variant(field, &[], *span, source_path);
                     }
+                    if name == "Option" {
+                        return eval_option_variant(field, &[], *span, source_path);
+                    }
                     if let Some(decl) = enums.get(name) {
                         return eval_enum_variant(decl, field, &[], *span, source_path);
                     }
@@ -5325,6 +5333,24 @@ fn eval_expr(
                             .collect::<EvalResult<Vec<_>>>()?;
                         return eval_result_variant(method, &payloads, *span, source_path);
                     }
+                    if name == "Option" {
+                        let payloads = args
+                            .iter()
+                            .map(|arg| {
+                                eval_expr(
+                                    arg,
+                                    scopes,
+                                    functions,
+                                    methods,
+                                    structs,
+                                    enums,
+                                    output,
+                                    source_path,
+                                )
+                            })
+                            .collect::<EvalResult<Vec<_>>>()?;
+                        return eval_option_variant(method, &payloads, *span, source_path);
+                    }
                     if let Some(decl) = enums.get(name) {
                         let payloads = args
                             .iter()
@@ -5348,6 +5374,24 @@ fn eval_expr(
 
             let receiver =
                 eval_expr(target, scopes, functions, methods, structs, enums, output, source_path)?;
+            if let Value::Enum(enum_value) = &receiver {
+                if enum_value.name == "Option" {
+                    let mut helper_args = Vec::with_capacity(args.len());
+                    for arg in args {
+                        helper_args.push(eval_expr(
+                            arg,
+                            scopes,
+                            functions,
+                            methods,
+                            structs,
+                            enums,
+                            output,
+                            source_path,
+                        )?);
+                    }
+                    return eval_option_helper(enum_value, method, helper_args, *span, source_path);
+                }
+            }
             let receiver_name = match &receiver {
                 Value::Struct(value) => value.name.clone(),
                 Value::Opaque(value) => value.receiver_name().to_string(),
@@ -5485,6 +5529,21 @@ fn eval_expr(
                 }
                 Value::Enum(result) if result.name == "Result" && result.variant == "Err" => {
                     Err(EvalSignal::Propagate(Value::Enum(result)))
+                }
+                Value::Enum(option_value) if option_value.name == "Option" => {
+                    Err(Diagnostics(vec![
+                        Diagnostic::error(
+                            "GOF3074",
+                            "postfix `?` requires a `Result[T, E]` operand",
+                            "this operand is an `Option` value; `Option` absence is resolved through `match` or `unwrap_or`, not `?`",
+                            *span,
+                        )
+                        .with_fix_it(
+                            "resolve `Option[T]` values with `match` or `unwrap_or` instead of `?`",
+                        )
+                        .with_source_path(source_path.to_path_buf()),
+                    ])
+                    .into())
                 }
                 other => Err(Diagnostics(vec![
                     Diagnostic::error(
@@ -5829,6 +5888,129 @@ fn eval_result_variant(
     }))
 }
 
+fn eval_option_variant(
+    variant: &str,
+    payloads: &[Value],
+    span: Span,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    match variant {
+        "None" => {
+            if !payloads.is_empty() {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3152",
+                        "wrong number of payload values for `Option.None`",
+                        format!(
+                            "the unit variant takes no payload values, got {}",
+                            payloads.len()
+                        ),
+                        span,
+                    )
+                    .with_fix_it("construct it as `Option.None` without parentheses or payloads")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+            Ok(enum_value("Option", "None", Vec::new()))
+        }
+        "Some" => {
+            if payloads.len() != 1 {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3152",
+                        "wrong number of payload values for `Option.Some`",
+                        format!("expected 1 payload value, got {}", payloads.len()),
+                        span,
+                    )
+                    .with_fix_it("pass exactly one payload value to `Option.Some`")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+            Ok(Value::Enum(EnumValue {
+                name: "Option".to_string(),
+                variant: "Some".to_string(),
+                payloads: vec![("value".to_string(), payloads[0].clone())],
+            }))
+        }
+        _ => eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3151",
+                format!("unknown option variant `Option.{variant}`"),
+                "the builtin option type exposes only `Option.Some(value)` and `Option.None`",
+                span,
+            )
+            .with_fix_it("use `Option.Some(value)` or `Option.None`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
+fn eval_option_helper(
+    receiver: &EnumValue,
+    method: &str,
+    args: Vec<Value>,
+    span: Span,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    match method {
+        "unwrap_or" => {
+            if args.len() != 1 {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3153",
+                        "wrong number of arguments for `Option.unwrap_or`",
+                        format!("expected 1 argument, got {}", args.len()),
+                        span,
+                    )
+                    .with_fix_it("pass exactly one default value to `Option.unwrap_or`")
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+
+            let default = args.into_iter().next().unwrap_or(Value::Unit);
+            if receiver.variant == "Some" {
+                Ok(receiver
+                    .payloads
+                    .first()
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or(Value::Unit))
+            } else {
+                Ok(default)
+            }
+        }
+        "is_some" | "is_none" => {
+            if !args.is_empty() {
+                return eval_diagnostics(Diagnostics(vec![
+                    Diagnostic::error(
+                        "GOF3153",
+                        format!("wrong number of arguments for `Option.{method}`"),
+                        format!("expected 0 arguments, got {}", args.len()),
+                        span,
+                    )
+                    .with_fix_it(format!("call `Option.{method}()` without arguments"))
+                    .with_source_path(source_path.to_path_buf()),
+                ]));
+            }
+
+            if method == "is_some" {
+                Ok(Value::Bool(receiver.variant == "Some"))
+            } else {
+                Ok(Value::Bool(receiver.variant == "None"))
+            }
+        }
+        _ => eval_diagnostics(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3153",
+                format!("unknown option helper `Option.{method}`"),
+                "the builtin option type exposes only `unwrap_or(default)`, `is_some()`, and `is_none()` as receiver helpers",
+                span,
+            )
+            .with_fix_it("use `opt.unwrap_or(default)`, `opt.is_some()`, or `opt.is_none()`")
+            .with_source_path(source_path.to_path_buf()),
+        ])),
+    }
+}
+
 fn match_variant_field_names(
     expected_enum: &str,
     variant: &str,
@@ -5848,6 +6030,23 @@ fn match_variant_field_names(
                     span,
                 )
                 .with_fix_it("use `Result.Ok(value)` or `Result.Err(error)`")
+                .with_source_path(source_path.to_path_buf()),
+            ])),
+        };
+    }
+
+    if expected_enum == "Option" {
+        return match variant {
+            "Some" => Ok(vec!["value".to_string()]),
+            "None" => Ok(Vec::new()),
+            _ => eval_diagnostics(Diagnostics(vec![
+                Diagnostic::error(
+                    "GOF3151",
+                    format!("unknown option variant `Option.{variant}`"),
+                    "the builtin option type exposes only `Option.Some(value)` and `Option.None`",
+                    span,
+                )
+                .with_fix_it("use `Option.Some(value)` or `Option.None`")
                 .with_source_path(source_path.to_path_buf()),
             ])),
         };
@@ -15685,6 +15884,86 @@ mod tests {
         )
         .expect("program should run");
         assert_eq!(value, Value::Int(42));
+    }
+
+    #[test]
+    fn evaluates_option_match_and_helpers() {
+        let value = run_source(
+            "fn find_arg(args: list[string], prefix: string) -> Option[string]:\n    for arg in args:\n        if starts_with(arg, prefix):\n            return Option.Some(arg)\n    return Option.None\n\nfn main() -> int:\n    match find_arg([\"--port=8080\"], \"--port=\"):\n        Option.Some(value):\n            assert(value == \"--port=8080\", \"expected the port argument payload\")\n        Option.None:\n            assert(false, \"expected the port argument\")\n    assert(find_arg([\"--x\"], \"--missing=\") == Option.None, \"expected absence\")\n    retries: Option[int] = Option.Some(5)\n    assert(retries.unwrap_or(1) == 5, \"expected the some payload\")\n    absent: Option[int] = Option.None\n    assert(absent.unwrap_or(9) == 9, \"expected the default\")\n    assert(retries.is_some(), \"expected some\")\n    assert(not retries.is_none(), \"expected not none\")\n    assert(absent.is_none(), \"expected none\")\n    assert(not absent.is_some(), \"expected not some\")\n    return 0\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(0));
+    }
+
+    #[test]
+    fn evaluates_option_equality_matrix() {
+        let value = run_source(
+            "fn main() -> int:\n    mut score = 0\n    if Option.None == Option.None:\n        score = score + 1\n    if Option.Some(2) == Option.Some(2):\n        score = score + 1\n    if Option.Some(1) != Option.None:\n        score = score + 1\n    if Option.Some(\"a\") == Option.Some(\"a\"):\n        score = score + 1\n    if Option.Some(Option.Some(1)) == Option.Some(Option.Some(1)):\n        score = score + 1\n    return score\n",
+        )
+        .expect("program should run");
+        assert_eq!(value, Value::Int(5));
+    }
+
+    #[test]
+    fn renders_option_values() {
+        let some = run_source("fn main() -> Option[int]:\n    return Option.Some(3)\n")
+            .expect("program should run");
+        assert_eq!(some.cli_text().as_deref(), Some("Option.Some(value: 3)"));
+
+        let none = run_source("fn main() -> Option[int]:\n    return Option.None\n")
+            .expect("program should run");
+        assert_eq!(none.cli_text().as_deref(), Some("Option.None"));
+    }
+
+    #[test]
+    fn rejects_unknown_option_variants() {
+        let diagnostics =
+            run_source("fn main() -> int:\n    value = Option.Maybe(1)\n    return 0\n")
+                .expect_err("unknown option variant should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3151"]);
+    }
+
+    #[test]
+    fn rejects_invalid_option_payload_arity() {
+        let missing = run_source("fn main() -> int:\n    value = Option.Some()\n    return 0\n")
+            .expect_err("option some arity should fail");
+        assert_eq!(missing.codes(), vec!["GOF3152"]);
+
+        let extra = run_source("fn main() -> int:\n    value = Option.Some(1, 2)\n    return 0\n")
+            .expect_err("option some arity should fail");
+        assert_eq!(extra.codes(), vec!["GOF3152"]);
+
+        let unit_with_payload =
+            run_source("fn main() -> int:\n    value = Option.None(1)\n    return 0\n")
+                .expect_err("option none payload should fail");
+        assert_eq!(unit_with_payload.codes(), vec!["GOF3152"]);
+    }
+
+    #[test]
+    fn rejects_option_helper_contract_violations() {
+        let wrong_arity =
+            run_source("fn main() -> int:\n    opt = Option.Some(2)\n    return opt.unwrap_or()\n")
+                .expect_err("option helper arity should fail");
+        assert_eq!(wrong_arity.codes(), vec!["GOF3153"]);
+
+        let unknown_helper =
+            run_source("fn main() -> int:\n    opt = Option.Some(2)\n    return opt.unwrap()\n")
+                .expect_err("unknown option helper should fail");
+        assert_eq!(unknown_helper.codes(), vec!["GOF3153"]);
+
+        let predicate_arity =
+            run_source("fn main() -> bool:\n    opt = Option.Some(2)\n    return opt.is_some(1)\n")
+                .expect_err("option predicate arity should fail");
+        assert_eq!(predicate_arity.codes(), vec!["GOF3153"]);
+    }
+
+    #[test]
+    fn rejects_option_propagation_operands() {
+        let diagnostics = run_source(
+            "fn main() -> int:\n    opt = Option.Some(1)\n    value = opt?\n    return value\n",
+        )
+        .expect_err("option propagate operand should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3074"]);
     }
 
     #[test]

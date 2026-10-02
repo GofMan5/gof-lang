@@ -1,0 +1,3 @@
+fn main() -> int:
+    port: Option[int] = 8080
+    return 0

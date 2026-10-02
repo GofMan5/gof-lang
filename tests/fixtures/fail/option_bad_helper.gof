@@ -1,0 +1,3 @@
+fn main() -> int:
+    count: Option[int] = Option.Some(2)
+    return count.unwrap_or("oops")

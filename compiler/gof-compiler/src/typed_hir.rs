@@ -24,6 +24,7 @@ pub enum Type {
     Channel(Box<Type>),
     Task(Box<Type>),
     Result(Box<Type>, Box<Type>),
+    Option(Box<Type>),
     Unknown,
     Unit,
 }
@@ -53,6 +54,10 @@ impl Type {
         Self::Result(Box::new(ok), Box::new(err))
     }
 
+    fn option(value: Type) -> Self {
+        Self::Option(Box::new(value))
+    }
+
     fn is_unknown(&self) -> bool {
         matches!(self, Self::Unknown)
     }
@@ -74,6 +79,7 @@ impl Type {
             Self::Result(ok, err) => {
                 format!("Result[{}, {}]", ok.display_name(), err.display_name())
             }
+            Self::Option(value) => format!("Option[{}]", value.display_name()),
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
         }
@@ -407,6 +413,7 @@ struct LocalBinding {
 enum MatchTargetKind {
     Enum(String),
     Result { ok: Type, err: Type },
+    Option { value: Type },
 }
 
 impl MatchTargetKind {
@@ -414,6 +421,7 @@ impl MatchTargetKind {
         match self {
             Self::Enum(name) => name,
             Self::Result { .. } => "Result",
+            Self::Option { .. } => "Option",
         }
     }
 }
@@ -2399,6 +2407,9 @@ fn lower_match_arms(
             ok: ok.as_ref().clone(),
             err: err.as_ref().clone(),
         }),
+        Type::Option(value) => Some(MatchTargetKind::Option {
+            value: value.as_ref().clone(),
+        }),
         Type::Unknown => None,
         other => {
             diagnostics.push(
@@ -2411,7 +2422,7 @@ fn lower_match_arms(
                     ),
                     value.span,
                 )
-                .with_fix_it("match over an enum value or a `Result[T, E]` expression")
+                .with_fix_it("match over an enum value, a `Result[T, E]` expression, or an `Option[T]` expression")
                 .with_source_path(source_path.to_path_buf()),
             );
             None
@@ -2732,6 +2743,26 @@ fn lower_match_pattern(
                 return (fallback_match_pattern(pattern), Vec::new());
             }
         },
+        MatchTargetKind::Option { value } => match variant.as_str() {
+            "Some" => vec![EnumVariantFieldSignature {
+                name: "value".to_string(),
+                ty: value.clone(),
+            }],
+            "None" => Vec::new(),
+            _ => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3151",
+                        format!("unknown option variant `Option.{variant}`"),
+                        "the builtin option type exposes only `Option.Some(value)` and `Option.None`",
+                        *span,
+                    )
+                    .with_fix_it("use `Option.Some(value)` or `Option.None`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return (fallback_match_pattern(pattern), Vec::new());
+            }
+        },
     };
 
     if !seen_variants.insert(variant.clone()) {
@@ -2826,6 +2857,10 @@ fn ensure_match_exhaustive(
                 .collect::<Vec<_>>()
         }
         MatchTargetKind::Result { .. } => ["Ok".to_string(), "Err".to_string()]
+            .into_iter()
+            .filter(|variant| !seen_variants.contains(variant))
+            .collect::<Vec<_>>(),
+        MatchTargetKind::Option { .. } => ["Some".to_string(), "None".to_string()]
             .into_iter()
             .filter(|variant| !seen_variants.contains(variant))
             .collect::<Vec<_>>(),
@@ -3194,6 +3229,19 @@ fn lower_expr(
                         span: Span::new(target_span.line, target_span.column, span.end_column),
                     };
                 }
+                if scopes.get(name).is_none() && name == "Option" {
+                    let ty =
+                        resolve_option_variant_reference(field, diagnostics, *span, source_path);
+                    return TypedExpr {
+                        kind: TypedExprKind::EnumVariant {
+                            enum_name: name.clone(),
+                            variant: field.clone(),
+                            args: Vec::new(),
+                        },
+                        ty,
+                        span: Span::new(target_span.line, target_span.column, span.end_column),
+                    };
+                }
                 if scopes.get(name).is_none() && enum_signatures.contains_key(name) {
                     let (ty, payload_fields) = resolve_enum_variant_reference(
                         name,
@@ -3299,6 +3347,42 @@ fn lower_expr(
                         })
                         .collect::<Vec<_>>();
                     let ty = resolve_result_variant_call(
+                        method,
+                        &typed_args,
+                        *span,
+                        diagnostics,
+                        source_path,
+                    );
+                    return TypedExpr {
+                        kind: TypedExprKind::EnumVariant {
+                            enum_name: name.clone(),
+                            variant: method.clone(),
+                            args: typed_args,
+                        },
+                        ty,
+                        span: Span::new(target_span.line, target_span.column, span.end_column),
+                    };
+                }
+                if scopes.get(name).is_none() && name == "Option" {
+                    let typed_args = args
+                        .iter()
+                        .map(|arg| {
+                            lower_expr(
+                                arg,
+                                scopes,
+                                signatures,
+                                method_signatures,
+                                known_structs,
+                                known_enums,
+                                struct_signatures,
+                                enum_signatures,
+                                diagnostics,
+                                function_return_type,
+                                source_path,
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    let ty = resolve_option_variant_call(
                         method,
                         &typed_args,
                         *span,
@@ -4045,6 +4129,36 @@ fn resolve_method_call(
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> (String, Type) {
+    if let Type::Option(value) = &target.ty {
+        return resolve_option_helper_call(value, method, args, span, diagnostics, source_path);
+    }
+
+    if is_option_helper_name(method) && !target.ty.is_unknown() {
+        // The receiver is a known, non-`Option[T]` type, so this call can only
+        // be a builtin option helper used on the wrong receiver — unless a
+        // user-declared receiver method with the same name exists and wins.
+        let shadowed_by_receiver_method =
+            type_method_receiver_name(&target.ty).is_some_and(|receiver_name| {
+                method_signatures.contains_key(&(receiver_name, method.to_string()))
+            });
+        if !shadowed_by_receiver_method {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3153",
+                    format!("method call `{method}` requires an `Option[T]` receiver"),
+                    format!(
+                        "this target resolves to `{}`, but `{method}` is a builtin option helper",
+                        target.ty.display_name()
+                    ),
+                    target.span,
+                )
+                .with_fix_it("call `unwrap_or`, `is_some`, or `is_none` only on `Option[T]` values")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            return (format!("Option.{method}"), Type::Unknown);
+        }
+    }
+
     let receiver_name = match &target.ty {
         Type::Struct(name) | Type::Opaque(name) => Some(name.clone()),
         Type::Unknown => None,
@@ -4122,6 +4236,88 @@ fn resolve_method_call(
     }
 
     (signature.symbol_name.clone(), signature.return_type.clone())
+}
+
+fn is_option_helper_name(method: &str) -> bool {
+    matches!(method, "unwrap_or" | "is_some" | "is_none")
+}
+
+fn resolve_option_helper_call(
+    value_type: &Type,
+    method: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> (String, Type) {
+    let symbol_name = format!("Option.{method}");
+
+    match method {
+        "unwrap_or" => {
+            if args.len() != 1 {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3153",
+                        "wrong number of arguments for `Option.unwrap_or`",
+                        format!("expected 1 argument, got {}", args.len()),
+                        span,
+                    )
+                    .with_fix_it("pass exactly one default value to `Option.unwrap_or`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return (symbol_name, Type::Unknown);
+            }
+
+            if !types_compatible(value_type, &args[0].ty) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3153",
+                        "default value for `Option.unwrap_or` has incompatible type",
+                        format!(
+                            "the payload type is `{}`, but the default resolves to `{}`",
+                            value_type.display_name(),
+                            args[0].ty.display_name()
+                        ),
+                        args[0].span,
+                    )
+                    .with_fix_it("pass a default value compatible with the payload type")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+
+            (symbol_name, value_type.clone())
+        }
+        "is_some" | "is_none" => {
+            if !args.is_empty() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3153",
+                        format!("wrong number of arguments for `Option.{method}`"),
+                        format!("expected 0 arguments, got {}", args.len()),
+                        span,
+                    )
+                    .with_fix_it(format!("call `Option.{method}()` without arguments"))
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                return (symbol_name, Type::Unknown);
+            }
+
+            (symbol_name, Type::Bool)
+        }
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3153",
+                    format!("unknown option helper `Option.{method}`"),
+                    "the builtin option type exposes only `unwrap_or(default)`, `is_some()`, and `is_none()` as receiver helpers",
+                    span,
+                )
+                .with_fix_it("use `opt.unwrap_or(default)`, `opt.is_some()`, or `opt.is_none()`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            (symbol_name, Type::Unknown)
+        }
+    }
 }
 
 fn resolve_type_annotation(
@@ -4225,6 +4421,14 @@ fn resolve_type_annotation(
             ty.span,
         ),
         "Result" => resolve_result_type(
+            &ty.args,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
+        "Option" => resolve_option_type(
             &ty.args,
             known_structs,
             known_enums,
@@ -4397,6 +4601,37 @@ fn resolve_result_type(
             diagnostics,
         ),
     )
+}
+
+fn resolve_option_type(
+    args: &[HirTypeRef],
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    source_path: &Path,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+) -> Type {
+    if args.len() != 1 {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3067",
+                "`Option` requires exactly one type argument",
+                "use `Option[T]` with one inner value type",
+                span,
+            )
+            .with_fix_it("rewrite this annotation as `Option[some_value_type]`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    Type::option(resolve_type_annotation(
+        Some(&args[0]),
+        known_structs,
+        known_enums,
+        source_path,
+        diagnostics,
+    ))
 }
 
 fn resolve_call_kind(
@@ -5037,6 +5272,13 @@ fn type_supports_self_equality_inner(
                 active_enums,
             )
         }
+        Type::Option(value) => type_supports_self_equality_inner(
+            value,
+            struct_signatures,
+            enum_signatures,
+            active_structs,
+            active_enums,
+        ),
     }
 }
 
@@ -5296,6 +5538,101 @@ fn resolve_result_variant_call(
     }
 }
 
+fn resolve_option_variant_reference(
+    variant: &str,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+    source_path: &Path,
+) -> Type {
+    if variant == "None" {
+        return Type::option(Type::Unknown);
+    }
+
+    if variant == "Some" {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3151",
+                "option variant `Option.Some` requires a payload value",
+                "`Option.Some(value)` carries exactly one payload value; use `Option.None` for absence",
+                span,
+            )
+            .with_fix_it("construct it as `Option.Some(value)`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    } else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3151",
+                format!("unknown option variant `Option.{variant}`"),
+                "the builtin option type exposes only `Option.Some(value)` and `Option.None`",
+                span,
+            )
+            .with_fix_it("use `Option.Some(value)` or `Option.None`")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    Type::Unknown
+}
+
+fn resolve_option_variant_call(
+    variant: &str,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    let expected_payload_count = match variant {
+        "Some" => 1,
+        "None" => 0,
+        _ => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3151",
+                    format!("unknown option variant `Option.{variant}`"),
+                    "the builtin option type exposes only `Option.Some(value)` and `Option.None`",
+                    span,
+                )
+                .with_fix_it("use `Option.Some(value)` or `Option.None`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            return Type::Unknown;
+        }
+    };
+
+    if args.len() != expected_payload_count {
+        let note = if variant == "Some" {
+            format!("expected 1 payload value, got {}", args.len())
+        } else {
+            format!(
+                "the unit variant takes no payload values, got {}",
+                args.len()
+            )
+        };
+        let fix_it = if variant == "Some" {
+            "pass exactly one payload value to `Option.Some`".to_string()
+        } else {
+            "construct it as `Option.None` without parentheses or payloads".to_string()
+        };
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3152",
+                format!("wrong number of payload values for `Option.{variant}`"),
+                note,
+                span,
+            )
+            .with_fix_it(fix_it)
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    match variant {
+        "Some" => Type::option(args[0].ty.clone()),
+        _ => Type::option(Type::Unknown),
+    }
+}
+
 fn validate_propagate_expr(
     value: &TypedExpr,
     function_return_type: &Type,
@@ -5306,6 +5643,22 @@ fn validate_propagate_expr(
     let (ok_type, error_type) = match &value.ty {
         Type::Result(ok, error) => (ok.as_ref().clone(), error.as_ref().clone()),
         Type::Unknown => return Type::Unknown,
+        Type::Option(_) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3074",
+                    "postfix `?` requires a `Result[T, E]` operand",
+                    format!(
+                        "this operand resolves to `{}`; `Option` absence is resolved through `match` or `unwrap_or`, not `?`",
+                        value.ty.display_name()
+                    ),
+                    span,
+                )
+                .with_fix_it("resolve `Option[T]` values with `match` or `unwrap_or` instead of `?`")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            return Type::Unknown;
+        }
         other => {
             diagnostics.push(
                 Diagnostic::error(
@@ -5596,6 +5949,9 @@ fn merge_return_types(current: &Type, candidate: &Type) -> Option<Type> {
             let err = merge_return_types(current_err, candidate_err)?;
             Some(Type::result(ok, err))
         }
+        (Type::Option(current), Type::Option(candidate)) => {
+            merge_return_types(current, candidate).map(Type::option)
+        }
         _ => None,
     }
 }
@@ -5619,13 +5975,58 @@ fn ensure_type_compatibility(
     note: String,
     source_path: &Path,
 ) {
-    if !types_compatible(expected, actual) {
-        diagnostics.push(
-            Diagnostic::error("GOF3013", message, note, span)
-                .with_fix_it("align the declared type and the expression type")
-                .with_source_path(source_path.to_path_buf()),
-        );
+    if types_compatible(expected, actual) {
+        return;
     }
+
+    if let Some(coercion) = implicit_option_coercion(expected, actual) {
+        match coercion {
+            OptionCoercion::Wrap => diagnostics.push(
+                Diagnostic::error("GOF3154", message, note, span)
+                    .with_fix_it("wrap the value in `Option.Some(...)` to make the absent case explicit")
+                    .with_source_path(source_path.to_path_buf()),
+            ),
+            OptionCoercion::Unwrap => diagnostics.push(
+                Diagnostic::error(
+                    "GOF3154",
+                    message,
+                    format!(
+                        "{note}; gof has no implicit coercion from `Option[T]` to `T`, so resolve the absence explicitly with `match` or `unwrap_or`"
+                    ),
+                    span,
+                )
+                .with_source_path(source_path.to_path_buf()),
+            ),
+        }
+        return;
+    }
+
+    diagnostics.push(
+        Diagnostic::error("GOF3013", message, note, span)
+            .with_fix_it("align the declared type and the expression type")
+            .with_source_path(source_path.to_path_buf()),
+    );
+}
+
+enum OptionCoercion {
+    Wrap,
+    Unwrap,
+}
+
+fn implicit_option_coercion(expected: &Type, actual: &Type) -> Option<OptionCoercion> {
+    if let Type::Option(expected_value) = expected {
+        if types_compatible(expected_value, actual) {
+            return Some(OptionCoercion::Wrap);
+        }
+    }
+
+    if let Type::Option(actual_value) = actual {
+        if types_compatible(expected, actual_value) {
+            return Some(OptionCoercion::Unwrap);
+        }
+    }
+
+    None
 }
 
 fn types_compatible(expected: &Type, actual: &Type) -> bool {
@@ -5638,6 +6039,7 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
         (Type::Result(expected_ok, expected_err), Type::Result(actual_ok, actual_err)) => {
             types_compatible(expected_ok, actual_ok) && types_compatible(expected_err, actual_err)
         }
+        (Type::Option(expected), Type::Option(actual)) => types_compatible(expected, actual),
         (expected, actual) => expected == actual,
     }
 }
@@ -9431,13 +9833,16 @@ fn is_printable_type(ty: &Type) -> bool {
             Type::Task(_) | Type::Unit | Type::Channel(_) | Type::CancelToken | Type::Opaque(_)
         ),
         Type::Result(ok, err) => is_printable_type(ok) && is_printable_type(err),
+        Type::Option(value) => is_printable_type(value),
         Type::Channel(_) | Type::Task(_) | Type::CancelToken | Type::Unit => false,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Type, TypedExprKind, TypedMatchPattern, TypedSelectArmKind, TypedStmt, lower};
+    use super::{
+        Type, TypedExpr, TypedExprKind, TypedMatchPattern, TypedSelectArmKind, TypedStmt, lower,
+    };
     use crate::ast::parse;
     use crate::ast::{BinaryOp, FixtureScope, FunctionKind};
     use crate::cst::CstModule;
@@ -11229,6 +11634,194 @@ mod tests {
                 .expect_err("result payload arity should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3073"]);
+    }
+
+    #[test]
+    fn supports_option_constructors_match_helpers_and_inference() {
+        let module = lower_source(
+            "fn find_arg(args: list[string], prefix: string) -> Option[string]:\n    for arg in args:\n        if starts_with(arg, prefix):\n            return Option.Some(arg)\n    return Option.None\n\nfn inferred():\n    return Option.Some(3)\n\nfn main() -> int:\n    arg = find_arg([\"--port=8080\"], \"--port=\")\n    match arg:\n        Option.Some(value):\n            assert(value == \"8080\", \"expected the port payload\")\n        Option.None:\n            assert(false, \"expected the port argument to be present\")\n    count = inferred()\n    assert(count == Option.Some(3), \"expected the inferred payload\")\n    retries: Option[int] = Option.Some(5)\n    assert(retries.unwrap_or(1) == 5, \"expected the some payload\")\n    assert(retries.is_some(), \"expected some\")\n    assert(not retries.is_none(), \"expected not none\")\n    return 0\n",
+        )
+        .expect("typing should succeed");
+
+        assert_eq!(module.functions[0].return_type, Type::option(Type::String));
+        assert_eq!(module.functions[1].return_type, Type::option(Type::Int));
+
+        match &module.functions[2].body[1] {
+            TypedStmt::Match { value, arms } => {
+                assert_eq!(value.ty, Type::option(Type::String));
+                assert!(matches!(
+                    &arms[0].pattern,
+                    TypedMatchPattern::EnumVariant {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } if enum_name == "Option"
+                        && variant == "Some"
+                        && bindings.len() == 1
+                        && bindings[0].name == "value"
+                        && bindings[0].ty == Type::String
+                ));
+                assert!(matches!(
+                    &arms[1].pattern,
+                    TypedMatchPattern::EnumVariant {
+                        enum_name,
+                        variant,
+                        bindings,
+                        ..
+                    } if enum_name == "Option"
+                        && variant == "None"
+                        && bindings.is_empty()
+                ));
+            }
+            other => panic!("expected option match, got {other:?}"),
+        }
+
+        match &module.functions[2].body[2] {
+            TypedStmt::Bind { value, .. } => {
+                assert_eq!(value.ty, Type::option(Type::Int));
+            }
+            other => panic!("expected inferred option bind, got {other:?}"),
+        }
+
+        match &module.functions[2].body[5] {
+            TypedStmt::Expr(TypedExpr {
+                kind: TypedExprKind::Call { callee, args, .. },
+                ..
+            }) if callee == "assert" => match &args[0].kind {
+                TypedExprKind::Binary { lhs, .. } => assert_eq!(lhs.ty, Type::Int),
+                other => panic!("expected unwrap_or comparison, got {other:?}"),
+            },
+            other => panic!("expected option helper assertion, got {other:?}"),
+        }
+
+        match &module.functions[2].body[6] {
+            TypedStmt::Expr(TypedExpr {
+                kind: TypedExprKind::Call { callee, args, .. },
+                ..
+            }) if callee == "assert" => assert_eq!(args[0].ty, Type::Bool),
+            other => panic!("expected option predicate assertion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_option_type_arity() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    value: Option[int, string] = Option.None\n    return 0\n",
+        )
+        .expect_err("option type arity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3067"]);
+    }
+
+    #[test]
+    fn rejects_unknown_option_variants() {
+        let diagnostics = lower_source("fn main() -> Option[int]:\n    return Option.Maybe(1)\n")
+            .expect_err("unknown option variant should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3151"]);
+    }
+
+    #[test]
+    fn rejects_option_some_without_payload() {
+        let diagnostics = lower_source("fn main() -> Option[int]:\n    return Option.Some\n")
+            .expect_err("option some without payload should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3151"]);
+    }
+
+    #[test]
+    fn rejects_invalid_option_payload_arity() {
+        let diagnostics = lower_source("fn main() -> Option[int]:\n    return Option.Some()\n")
+            .expect_err("option payload arity should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3152"]);
+    }
+
+    #[test]
+    fn rejects_option_none_with_payload() {
+        let diagnostics = lower_source("fn main() -> Option[int]:\n    return Option.None(1)\n")
+            .expect_err("option none payload should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3152"]);
+    }
+
+    #[test]
+    fn rejects_option_helper_contract_violations() {
+        let wrong_default = lower_source(
+            "fn main() -> int:\n    count: Option[int] = Option.Some(2)\n    return count.unwrap_or(\"oops\")\n",
+        )
+        .expect_err("option helper default type should fail");
+        assert_eq!(wrong_default.codes(), vec!["GOF3153"]);
+
+        let wrong_receiver = lower_source("fn main() -> int:\n    return 5.unwrap_or(1)\n")
+            .expect_err("option helper receiver should fail");
+        assert_eq!(wrong_receiver.codes(), vec!["GOF3153"]);
+
+        let wrong_arity = lower_source(
+            "fn main() -> bool:\n    count: Option[int] = Option.Some(2)\n    return count.is_some(1)\n",
+        )
+        .expect_err("option helper arity should fail");
+        assert_eq!(wrong_arity.codes(), vec!["GOF3153"]);
+
+        let unknown_helper = lower_source(
+            "fn main() -> int:\n    count: Option[int] = Option.Some(2)\n    return count.unwrap()\n",
+        )
+        .expect_err("unknown option helper should fail");
+        assert_eq!(unknown_helper.codes(), vec!["GOF3153"]);
+    }
+
+    #[test]
+    fn rejects_implicit_option_coercion_in_both_directions() {
+        let wrap = lower_source("fn main() -> int:\n    port: Option[int] = 8080\n    return 0\n")
+            .expect_err("implicit wrap coercion should fail");
+        assert_eq!(wrap.codes(), vec!["GOF3154"]);
+
+        let unwrap = lower_source(
+            "fn main() -> int:\n    opt: Option[int] = Option.Some(2)\n    port: int = opt\n    return port\n",
+        )
+        .expect_err("implicit unwrap coercion should fail");
+        assert_eq!(unwrap.codes(), vec!["GOF3154"]);
+    }
+
+    #[test]
+    fn rejects_option_propagation_operands() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    opt: Option[int] = Option.Some(1)\n    value = opt?\n    return value\n",
+        )
+        .expect_err("option propagate operand should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3074"]);
+    }
+
+    #[test]
+    fn rejects_option_equality_when_payload_is_not_comparable() {
+        let diagnostics = lower_source(
+            "fn main() -> bool:\n    left: Option[channel[int]] = Option.Some(channel())\n    right: Option[channel[int]] = Option.Some(channel())\n    return left == right\n",
+        )
+        .expect_err("option equality with non-comparable payload should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3087"]);
+    }
+
+    #[test]
+    fn rejects_non_exhaustive_option_match() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    opt: Option[int] = Option.Some(1)\n    match opt:\n        Option.Some(value):\n            return value\n",
+        )
+        .expect_err("non-exhaustive option match should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3033"]);
+    }
+
+    #[test]
+    fn rejects_option_match_arms_from_result_namespace() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    opt: Option[int] = Option.Some(1)\n    match opt:\n        Option.Some(value):\n            return value\n        Result.Err(error):\n            return 0\n        Option.None:\n            return 1\n",
+        )
+        .expect_err("wrong-namespace option match arm should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3031"]);
     }
 
     #[test]

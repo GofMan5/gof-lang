@@ -1,0 +1,4 @@
+fn main() -> int:
+    opt: Option[int] = Option.Some(1)
+    value = opt?
+    return value

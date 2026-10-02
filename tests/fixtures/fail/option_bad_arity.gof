@@ -1,0 +1,2 @@
+fn main() -> Option[int]:
+    return Option.Some()

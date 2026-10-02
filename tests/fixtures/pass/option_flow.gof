@@ -1,0 +1,77 @@
+fn find_arg(args: list[string], prefix: string) -> Option[string]:
+    for arg in args:
+        if starts_with(arg, prefix):
+            return Option.Some(arg)
+    return Option.None
+
+fn port_from_args(args: list[string]) -> Result[int, RuntimeError]:
+    arg = find_arg(args, "--port=")
+    match arg:
+        Option.Some(value):
+            parts = split(value, "=")
+            return parse_int(parts[1])
+        Option.None:
+            return Result.Err(RuntimeError.EnvMissing("port"))
+
+fn inferred_some():
+    return Option.Some(3)
+
+fn inferred_none():
+    return Option.None
+
+fn inferred_merged(found: bool):
+    if found:
+        return Option.Some(7)
+    return Option.None
+
+fn main() -> int:
+    args = ["--port=8080", "--verbose"]
+    match find_arg(args, "--port="):
+        Option.Some(value):
+            assert(value == "--port=8080", "expected the port argument payload")
+        Option.None:
+            assert(false, "expected the port argument to be present")
+
+    outcome = port_from_args(args)
+    match outcome:
+        Result.Ok(port):
+            assert(port == 8080, "expected the parsed port")
+        Result.Err(error):
+            assert(false, "expected the port to parse")
+
+    match find_arg(args, "--missing="):
+        Option.Some(value):
+            assert(false, "expected no missing argument")
+        Option.None:
+            assert(true, "expected absence")
+
+    assert(find_arg(args, "--missing=") == Option.None, "expected none equality")
+    assert(Option.Some(1) == Option.Some(1), "expected equal payloads")
+    assert(Option.Some(1) != Option.None, "expected some to differ from none")
+
+    some_count = inferred_some()
+    assert(some_count == Option.Some(3), "expected inferred some return")
+    none_count = inferred_none()
+    assert(none_count == Option.None, "expected inferred none return")
+    merged_count = inferred_merged(true)
+    assert(merged_count == Option.Some(7), "expected merged return inference")
+
+    retries: Option[int] = Option.Some(5)
+    assert(retries.unwrap_or(1) == 5, "expected the some payload")
+    absent: Option[int] = Option.None
+    assert(absent.unwrap_or(9) == 9, "expected the default")
+    assert(retries.is_some(), "expected is_some on some")
+    assert(not retries.is_none(), "expected is_none to be false on some")
+    assert(absent.is_none(), "expected is_none on none")
+    assert(not absent.is_some(), "expected is_some to be false on none")
+
+    flag = find_arg(args, "--verbose").unwrap_or("--off")
+    assert(flag == "--verbose", "expected the matched flag")
+    default_flag = find_arg(args, "--quiet=").unwrap_or("--off")
+    assert(default_flag == "--off", "expected the fallback flag")
+    assert(find_arg(args, "--verbose").is_some(), "expected a present flag")
+    assert(find_arg(args, "--quiet=").is_none(), "expected an absent flag")
+
+    nested: Option[Option[int]] = Option.Some(Option.Some(2))
+    assert(nested == Option.Some(Option.Some(2)), "expected nested option equality")
+    return 0
