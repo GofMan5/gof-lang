@@ -13240,6 +13240,152 @@ mod tests {
         lower(&hir).map(|(module, _warnings)| module)
     }
 
+    fn lower_source_with_warnings(
+        text: &str,
+    ) -> Result<
+        (super::TypedModule, crate::diagnostics::Diagnostics),
+        crate::diagnostics::Diagnostics,
+    > {
+        let source = SourceFile::new("typed.gof", text);
+        let tokens = lex(&source).expect("lexing should succeed");
+        let ast = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        let hir = lower_hir(&ast);
+        lower(&hir)
+    }
+
+    /// Shared protocol/struct conformance prelude for the generic tests.
+    const SHAPE_PRELUDE: &str = "protocol Shape:\n    fn area(self: Self) -> int\n\nstruct Circle:\n    radius: int\n\nfn Circle.area(self: Circle) -> int:\n    return self.radius * self.radius * 3\n\nimpl Circle: Shape\n\n";
+
+    #[test]
+    fn generic_call_checks_concrete_parameters() {
+        let diagnostics = lower_source(&format!(
+            "{SHAPE_PRELUDE}fn announce[T: Shape](count: int, shape: T) -> string:\n    return to_string(count)\n\nfn main() -> int:\n    print(announce(\"wrong\", Circle(1)))\n    return 0\n"
+        ))
+        .expect_err("a string argument against an int parameter must fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3013"));
+    }
+
+    #[test]
+    fn generic_call_checks_arity() {
+        let diagnostics = lower_source(&format!(
+            "{SHAPE_PRELUDE}fn describe[T: Shape](shape: T) -> string:\n    return \"x\"\n\nfn main() -> int:\n    print(describe())\n    return 0\n"
+        ))
+        .expect_err("a generic call with the wrong arity must fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3005"));
+    }
+
+    #[test]
+    fn generic_to_generic_subsumption_passes() {
+        lower_source(&format!(
+            "{SHAPE_PRELUDE}fn double[T: Shape](shape: T) -> int:\n    return shape.area() + shape.area()\n\nfn quad[T: Shape](shape: T) -> int:\n    return double(shape)\n"
+        ))
+        .expect("passing a type parameter through identical bounds must typecheck");
+    }
+
+    #[test]
+    fn generic_to_generic_subsumption_violation_rejected() {
+        let diagnostics = lower_source(&format!(
+            "{SHAPE_PRELUDE}protocol Named:\n    fn label(self: Self) -> string\n\nfn specific[T: Shape, Named](shape: T) -> int:\n    return shape.area()\n\nfn loose[T: Shape](shape: T) -> int:\n    return specific(shape)\n"
+        ))
+        .expect_err("passing a bounded parameter into stricter bounds must fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3132"));
+    }
+
+    #[test]
+    fn go_spawn_accepts_generic_instantiation() {
+        let module = lower_source(&format!(
+            "{SHAPE_PRELUDE}fn area_of[T: Shape](shape: T) -> int:\n    return shape.area()\n\nfn main() -> int:\n    task = go area_of(Circle(2))\n    return await task\n"
+        ))
+        .expect("spawning a generic instantiation must typecheck");
+
+        let main = module
+            .functions
+            .iter()
+            .find(|function| function.name == "main")
+            .expect("main should exist");
+        assert_eq!(main.return_type, Type::Int);
+    }
+
+    #[test]
+    fn mut_receiver_requirement_needs_mut_parameter() {
+        let diagnostics = lower_source(&format!(
+            "{SHAPE_PRELUDE}protocol Counter:\n    fn bump(mut self: Self) -> int\n\nstruct Tally:\n    count: int\n\nfn Tally.bump(mut self: Tally) -> int:\n    return self.count + 1\n\nimpl Tally: Counter\n\nfn use_it[T: Counter](counter: T) -> int:\n    return counter.bump()\n"
+        ))
+        .expect_err("a mut-receiver requirement through a non-mut parameter must fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3131"));
+    }
+
+    #[test]
+    fn rejects_unused_type_parameter() {
+        let diagnostics = lower_source(&format!(
+            "{SHAPE_PRELUDE}fn make[T: Shape](count: int) -> int:\n    return count\n"
+        ))
+        .expect_err("a type parameter in no annotation must fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3132"));
+    }
+
+    #[test]
+    fn rejects_unknown_bound_protocol() {
+        let diagnostics = lower_source(&format!(
+            "{SHAPE_PRELUDE}fn make[T: Nope](shape: T) -> int:\n    return 1\n"
+        ))
+        .expect_err("an unknown protocol bound must fail");
+
+        assert!(diagnostics.codes().contains(&"GOF3132"));
+    }
+
+    #[test]
+    fn rejects_generic_method() {
+        let diagnostics = lower_source(&format!(
+            "{SHAPE_PRELUDE}fn Circle.scale[T: Shape](self: Circle, factor: int) -> int:\n    return self.radius * factor\n"
+        ))
+        .expect_err("generic methods are outside the v1 scope");
+
+        assert!(diagnostics.codes().contains(&"GOF3132"));
+    }
+
+    #[test]
+    fn unsafe_block_emits_inert_warning_without_failing() {
+        let (module, warnings) = lower_source_with_warnings(
+            "fn compute(value: int) -> int:\n    mut result = value\n    unsafe:\n        result = result * 2\n    return result\n",
+        )
+        .expect("an inert unsafe block must not fail compilation");
+
+        assert!(warnings.codes().contains(&"GOF3141"));
+        assert_eq!(module.functions[0].return_type, Type::Int);
+    }
+
+    #[test]
+    fn rejects_unsafe_block_in_closure() {
+        let diagnostics = lower_source(
+            "fn make_guard() -> fn(int) -> int:\n    return fn (value: int) -> int:\n        unsafe:\n            return value * 2\n",
+        )
+        .expect_err("unsafe blocks are not valid inside closure bodies");
+
+        assert!(diagnostics.codes().contains(&"GOF3139"));
+    }
+
+    #[test]
+    fn rejects_unsafe_modifier_on_function() {
+        // The modifier rejection fires in the PARSER (recovery skips the
+        // modifier and parses the underlying declaration), so the
+        // diagnostics come from the parse stage itself.
+        let source = SourceFile::new(
+            "typed.gof",
+            "unsafe fn guarded(value: int) -> int:\n    return value\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let diagnostics =
+            parse(&CstModule::new(tokens)).expect_err("unsafe cannot decorate a function");
+
+        assert!(diagnostics.codes().contains(&"GOF3140"));
+    }
+
     fn compile_typed_source(
         path: &str,
         text: &str,
