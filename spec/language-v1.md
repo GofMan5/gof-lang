@@ -201,6 +201,13 @@ The bootstrap compiler in this repository currently supports:
 - postfix `expr?` currently unwraps `Result.Ok(value)` to `value`
 - postfix `expr?` currently returns early with `Result.Err(error)` from the enclosing function
 - postfix `expr?` currently requires the enclosing function to resolve to a compatible `Result[_, E]`
+- `Option[T]` is currently a builtin parameterized sum type for typed absence, with exactly one type parameter
+- `Option.Some(value)` and `Option.None` are currently recognized as builtin option constructors; `Some` takes exactly one payload and `None` is a unit variant written without parentheses
+- `match` over an `Option` value currently requires exactly the `Option.Some(binding)` and `Option.None` arms, with the same duplicate-arm and exhaustiveness rules as `match` over `Result`
+- `opt.unwrap_or(default)`, `opt.is_some()`, and `opt.is_none()` are currently builtin receiver-style helpers on `Option` values; `unwrap_or` is total
+- there is currently no implicit coercion between `T` and `Option[T]` in either direction
+- `Option` values currently participate in equality when both are `None` or both are `Some` with equal payloads, and never participate in ordering
+- postfix `?` currently rejects `Option` operands with a note that absence is resolved through `match` or `unwrap_or`
 - `len(value)` is currently a builtin recognized by the compiler and evaluator
 - `print(value)` is currently a builtin recognized by the compiler and evaluator
 - `assert(condition[, message])` is currently a builtin recognized by the compiler and evaluator

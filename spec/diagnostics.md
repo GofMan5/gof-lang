@@ -142,3 +142,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3136`: invalid `defer` target
 - `GOF3137`: postfix `?` applied to a deferred call
 - `GOF3138`: deferred call failed at scope exit
+- `GOF3151`: invalid builtin `Option` variant reference
+- `GOF3152`: invalid payload arity for a builtin `Option` variant constructor
+- `GOF3153`: invalid operand or contract for builtin `Option` helpers
+- `GOF3154`: implicit coercion between `T` and `Option[T]`

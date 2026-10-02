@@ -74,6 +74,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | Functions, typed params, parameterized type annotations, return contracts | stable |
 | `struct`, payload `enum`, exhaustive `match` with destructuring | stable |
 | `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, exhaustive `match` over `Result` | stable |
+| `Option[T]`, `Option.Some`, `Option.None`, exhaustive `match` over `Option`, `unwrap_or` / `is_some` / `is_none` | stable |
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, `defer`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
