@@ -1,0 +1,59 @@
+# Defer walkthrough (RFC 0045): deferred calls run LIFO at block exit,
+# on every exit path, with arguments evaluated at registration.
+
+fn producer(ch: channel[int]) -> int:
+    # Registrations: first `defer send(ch, 30)`, then `defer send(ch, 20)`.
+    # At function exit they run LIFO: 20 first, then 30.
+    defer send(ch, 30)
+    defer send(ch, 20)
+    # The body send runs normally before any deferred call.
+    send(ch, 10)
+    return 0
+
+fn snapshot(ch: channel[int]) -> int:
+    mut value = 99
+    # Arguments evaluate at REGISTRATION: this defer captures 99, even
+    # though `value` is reassigned afterwards.
+    defer send(ch, value)
+    value = 11
+    send(ch, 11)
+    return 0
+
+fn main() -> int:
+    first: channel[int] = channel()
+    second: channel[int] = channel()
+
+    task_one = go producer(first)
+    task_two = go snapshot(second)
+
+    a = recv(first)
+    b = recv(first)
+    c = recv(first)
+    d = recv(second)
+    e = recv(second)
+    await task_one
+    await task_two
+
+    match a:
+        Result.Ok(a):
+            match b:
+                Result.Ok(b):
+                    match c:
+                        Result.Ok(c):
+                            match d:
+                                Result.Ok(d):
+                                    match e:
+                                        Result.Ok(e):
+                                            if a == 10 and b == 20 and c == 30 and d == 11 and e == 99:
+                                                return 0
+                                            return 1
+                                        Result.Err(error):
+                                            return 2
+                                Result.Err(error):
+                                    return 2
+                        Result.Err(error):
+                            return 2
+                Result.Err(error):
+                    return 2
+        Result.Err(error):
+            return 2

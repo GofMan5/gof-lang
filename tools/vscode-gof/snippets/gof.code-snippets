@@ -36,6 +36,13 @@
     ],
     "description": "Create a typed gof fixture with explicit scope and return contract"
   },
+  "Defer": {
+    "prefix": "gofdefer",
+    "body": [
+      "defer ${1:close}(${2:stream})"
+    ],
+    "description": "Defer a call to run LIFO at the exit of the current block (RFC 0045)"
+  },
   "Struct": {
     "prefix": "gofstruct",
     "body": [
