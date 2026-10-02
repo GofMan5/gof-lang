@@ -3383,6 +3383,20 @@ fn type_binding_pattern_leaf(
                 PatternBindingMode::Fresh => {
                     // Loop and match leaves shadow: the outer binding is
                     // untouched, and the leaf is immutable in its scope.
+                    // A duplicate leaf name INSIDE one pattern is a typo,
+                    // not shadowing — reject it like match arms do.
+                    if scopes.contains_in_current(name) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3006",
+                                format!("duplicate binding `{name}`"),
+                                "pattern leaf names must be unique within one destructuring pattern",
+                                *span,
+                            )
+                            .with_fix_it("rename this leaf or remove the duplicate")
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    }
                     scopes.define_current(
                         name.clone(),
                         LocalBinding {
@@ -11316,6 +11330,16 @@ mod tests {
         .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3155"]);
+    }
+
+    #[test]
+    fn rejects_duplicate_leaves_in_tuple_loop_patterns() {
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    for (x, x) in [(1, 2)]:\n        print(x)\n    return 0\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3006"]);
     }
 
     #[test]

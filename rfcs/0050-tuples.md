@@ -452,8 +452,8 @@ This RFC adds three error codes:
   trailing comma or parentheses, or add or remove bindings
 - `GOF3156`: tuple destructuring against a non-tuple value — a
   destructuring pattern applied to a value or payload field that is not
-  a tuple (including nested leaves). The note names the expected and
-  found member types
+  a tuple (including nested leaves). The note names the found type and
+  the mismatch position
 - `GOF3157`: invalid tuple element access — element access on a
   non-tuple value or an index outside the tuple's arity (extraction of
   an owned member joins with RFC 0043's move checker when owned taxa
