@@ -111,11 +111,48 @@ pub struct TypeRef {
     pub span: Span,
 }
 
+/// A destructuring target. `Name` is today's single-identifier binding;
+/// `Tuple` is the RFC 0050 tuple pattern, shared by binding statements,
+/// loop bindings, and match payload positions.
+#[derive(Debug, Clone, Serialize)]
+pub enum BindingPattern {
+    Name(String, Span),
+    Tuple(Vec<BindingPattern>, Span),
+}
+
+impl BindingPattern {
+    pub fn span(&self) -> Span {
+        match self {
+            BindingPattern::Name(_, span) | BindingPattern::Tuple(_, span) => *span,
+        }
+    }
+
+    /// Every leaf binding name in this pattern, left to right. Used by
+    /// layers that still lower patterns to flat name lists (HIR, typed
+    /// HIR, MIR) while tuple destructuring semantics land layer by layer.
+    pub fn binding_names(&self) -> Vec<(String, Span)> {
+        let mut names = Vec::new();
+        self.collect_names(&mut names);
+        names
+    }
+
+    fn collect_names(&self, names: &mut Vec<(String, Span)>) {
+        match self {
+            BindingPattern::Name(name, span) => names.push((name.clone(), *span)),
+            BindingPattern::Tuple(leafs, _) => {
+                for leaf in leafs {
+                    leaf.collect_names(names);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum Stmt {
     Return(Expr, Span),
     Bind {
-        name: String,
+        pattern: BindingPattern,
         mutable: bool,
         ty: Option<TypeRef>,
         value: Expr,
@@ -138,7 +175,7 @@ pub enum Stmt {
         span: Span,
     },
     For {
-        binding: String,
+        pattern: BindingPattern,
         iterable: Expr,
         body: Vec<Stmt>,
         span: Span,
@@ -170,7 +207,7 @@ pub enum MatchPattern {
     EnumVariant {
         enum_name: String,
         variant: String,
-        bindings: Vec<String>,
+        bindings: Vec<BindingPattern>,
         span: Span,
     },
 }
@@ -251,6 +288,15 @@ pub enum Expr {
         lhs: Box<Expr>,
         op: BinaryOp,
         rhs: Box<Expr>,
+        span: Span,
+    },
+    Tuple {
+        items: Vec<Expr>,
+        span: Span,
+    },
+    TupleIndex {
+        target: Box<Expr>,
+        index: usize,
         span: Span,
     },
 }
@@ -624,7 +670,36 @@ impl<'a> Parser<'a> {
 
         if self.matches(TokenDiscriminant::For) {
             let span = self.previous().span;
-            let binding = self.expect_ident("expected a loop binding after `for`");
+            // RFC 0050: `for (a, b) in pairs:` destructures each element.
+            // Statements may begin with `(` in the loop-binding position, so
+            // the tuple pattern is parsed speculatively: it is kept only when
+            // a well-formed pattern is followed by `in`; otherwise the parser
+            // rewinds and takes today's single-identifier binding path.
+            let pattern = if self.check(TokenDiscriminant::LParen) {
+                let token_mark = self.mark();
+                let diagnostic_mark = self.diagnostics.0.len();
+                let pattern = self.parse_binding_pattern();
+                if self.check(TokenDiscriminant::In) {
+                    pattern
+                } else {
+                    // Rewind and mirror today's grammar: a parenthesized
+                    // loop target is not a binding, so the expression is
+                    // consumed and the shared `in` expectation reports the
+                    // single recoverable error.
+                    self.reset(token_mark);
+                    self.diagnostics.0.truncate(diagnostic_mark);
+                    let _ = self.parse_expr();
+                    BindingPattern::Name(
+                        "__parenthesized_loop_target".to_string(),
+                        self.previous().span,
+                    )
+                }
+            } else {
+                BindingPattern::Name(
+                    self.expect_ident("expected a loop binding after `for`"),
+                    self.previous().span,
+                )
+            };
             self.expect(
                 TokenDiscriminant::In,
                 "expected `in` after the loop binding",
@@ -636,7 +711,7 @@ impl<'a> Parser<'a> {
             );
             let body = self.parse_block("expected an indented block after `for`");
             return Stmt::For {
-                binding,
+                pattern,
                 iterable,
                 body,
                 span,
@@ -688,6 +763,26 @@ impl<'a> Parser<'a> {
 
         if self.matches(TokenDiscriminant::Mut) {
             let span = self.previous().span;
+            // RFC 0050: `mut (a, b) = pair` distributes `mut` over every leaf
+            // of a tuple pattern. A `mut` target written with parentheses is
+            // parsed as an expression first and reinterpreted as a pattern.
+            if self.check(TokenDiscriminant::LParen) {
+                let expr = self.parse_expr();
+                self.expect(TokenDiscriminant::Equal, "expected `=` in a binding");
+                let pattern = self.binding_pattern_from_expr(expr);
+                let value = self.parse_expr();
+                self.expect(
+                    TokenDiscriminant::Newline,
+                    "expected a newline after binding",
+                );
+                return Stmt::Bind {
+                    pattern,
+                    mutable: true,
+                    ty: None,
+                    value,
+                    span,
+                };
+            }
             let name = self.expect_ident("expected an identifier after `mut`");
             let ty = self.parse_optional_type_ref();
             self.expect(TokenDiscriminant::Equal, "expected `=` in a binding");
@@ -697,7 +792,7 @@ impl<'a> Parser<'a> {
                 "expected a newline after binding",
             );
             return Stmt::Bind {
-                name,
+                pattern: BindingPattern::Name(name, span),
                 mutable: true,
                 ty,
                 value,
@@ -720,7 +815,7 @@ impl<'a> Parser<'a> {
             );
             return if ty.is_some() {
                 Stmt::Bind {
-                    name,
+                    pattern: BindingPattern::Name(name, span),
                     mutable: false,
                     ty,
                     value,
@@ -729,6 +824,38 @@ impl<'a> Parser<'a> {
             } else {
                 Stmt::Assign { name, value, span }
             };
+        }
+
+        // RFC 0050: statements may now begin with `(`. The parenthesized form
+        // is parsed as an expression; when `=` follows, the tuple literal is
+        // reinterpreted as a destructuring pattern whose leaves must be
+        // identifiers or nested tuple literals. Both forms were parse errors
+        // before, so no existing program changes meaning.
+        if self.check(TokenDiscriminant::LParen) {
+            let expr = self.parse_expr();
+            if self.check(TokenDiscriminant::Equal) {
+                let span = expr.span();
+                self.advance();
+                let pattern = self.binding_pattern_from_expr(expr);
+                let value = self.parse_expr();
+                self.expect(
+                    TokenDiscriminant::Newline,
+                    "expected a newline after binding",
+                );
+                return Stmt::Bind {
+                    pattern,
+                    mutable: false,
+                    ty: None,
+                    value,
+                    span,
+                };
+            }
+            let span = expr.span();
+            self.expect(
+                TokenDiscriminant::Newline,
+                "expected a newline after expression",
+            );
+            return Stmt::Expr(expr, span);
         }
 
         let expr = self.parse_expr();
@@ -799,9 +926,10 @@ impl<'a> Parser<'a> {
         let mut bindings = Vec::new();
         if self.matches(TokenDiscriminant::LParen) {
             loop {
-                bindings.push(
-                    self.expect_ident("expected a binding name in the payload match pattern"),
-                );
+                // RFC 0050: each payload binding position accepts a plain
+                // identifier (today's behavior) or a nested tuple pattern
+                // that destructures a tuple-typed payload field in place.
+                bindings.push(self.parse_match_binding());
                 if !self.matches(TokenDiscriminant::Comma) {
                     break;
                 }
@@ -1081,6 +1209,19 @@ impl<'a> Parser<'a> {
 
             if self.matches(TokenDiscriminant::Dot) {
                 let start = expr.span();
+                // RFC 0050: postfix `.` followed by a canonical decimal
+                // integer literal accesses a tuple member. Non-canonical
+                // literals (leading zeros like `01`) fall through to the
+                // existing field path.
+                if let Some(index) = self.peek_tuple_index() {
+                    let end = self.advance().span;
+                    expr = Expr::TupleIndex {
+                        target: Box::new(expr),
+                        index,
+                        span: Span::new(start.line, start.column, end.end_column),
+                    };
+                    continue;
+                }
                 let field = self.expect_member_name("expected a field name after `.`");
                 if self.matches(TokenDiscriminant::LParen) {
                     let args = self.parse_args();
@@ -1160,12 +1301,75 @@ impl<'a> Parser<'a> {
             TokenKind::False => Expr::Bool(false, token.span),
             TokenKind::Ident(value) => Expr::Ident(value, token.span),
             TokenKind::LParen => {
-                let expr = self.parse_expr();
-                self.expect(
+                // RFC 0050: the comma decides. `()` and `(x,)` are the
+                // degenerate shapes only the parser can see, so it emits
+                // GOF3155 directly; one item without a comma stays today's
+                // grouping; two or more comma-separated items form a tuple.
+                if self.check(TokenDiscriminant::RParen) {
+                    let end = self.advance().span;
+                    let span = Span::new(token.span.line, token.span.column, end.end_column);
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3155",
+                            "tuples require two or more members",
+                            "gof has no empty tuple; the unit type is written `unit`",
+                            span,
+                        )
+                        .with_fix_it("replace `()` with `unit`, or add two or more members"),
+                    );
+                    return Expr::Ident("_error".to_string(), span);
+                }
+                let first = self.parse_expr();
+                if !self.matches(TokenDiscriminant::Comma) {
+                    self.expect(
+                        TokenDiscriminant::RParen,
+                        "expected `)` to close grouped expression",
+                    );
+                    return first;
+                }
+                if self.check(TokenDiscriminant::RParen) {
+                    let end = self.advance().span;
+                    let span = Span::new(token.span.line, token.span.column, end.end_column);
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3155",
+                            "tuples require two or more members",
+                            "tuples have no single-member form and reject trailing commas",
+                            span,
+                        )
+                        .with_fix_it("remove the trailing comma, or add a second member"),
+                    );
+                    return Expr::Ident("_error".to_string(), span);
+                }
+                let mut items = vec![first];
+                loop {
+                    items.push(self.parse_expr());
+                    if !self.matches(TokenDiscriminant::Comma) {
+                        break;
+                    }
+                    if self.check(TokenDiscriminant::RParen) {
+                        let end = self.advance().span;
+                        let span = Span::new(token.span.line, token.span.column, end.end_column);
+                        self.diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3155",
+                                "tuple literals do not allow trailing commas",
+                                "the parser requires an expression after every comma, as with list and dict literals",
+                                span,
+                            )
+                            .with_fix_it("remove the trailing comma"),
+                        );
+                        return Expr::Tuple { items, span };
+                    }
+                }
+                let end = self.expect(
                     TokenDiscriminant::RParen,
-                    "expected `)` to close grouped expression",
+                    "expected `)` to close the tuple literal",
                 );
-                expr
+                Expr::Tuple {
+                    items,
+                    span: Span::new(token.span.line, token.span.column, end.end_column),
+                }
             }
             TokenKind::LBracket => {
                 let mut items = Vec::new();
@@ -1240,7 +1444,25 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_ref(&mut self, message: &'static str) -> TypeRef {
+        // RFC 0050: `(T1, T2, ...)` with two or more members is a tuple type.
+        // The type grammar has no grouping, so a single item in parentheses
+        // is the attempted 1-tuple shape and gets GOF3155.
+        if self.check(TokenDiscriminant::LParen) {
+            return self.parse_tuple_type_ref();
+        }
         let name = self.expect_ident(message);
+        if name == "tuple" {
+            let span = self.previous().span;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3155",
+                    "tuple types are written (T1, T2)",
+                    "the `tuple` name is not a type on its own; a tuple type is its member types in parentheses",
+                    span,
+                )
+                .with_fix_it("replace `tuple` with a tuple type like `(int, string)`"),
+            );
+        }
         let start = self.previous().span;
         let mut end = start;
         let mut args = Vec::new();
@@ -1262,6 +1484,102 @@ impl<'a> Parser<'a> {
 
         TypeRef {
             name,
+            args,
+            span: Span::new(start.line, start.column, end.end_column),
+        }
+    }
+
+    fn parse_tuple_type_ref(&mut self) -> TypeRef {
+        let start = self.advance().span;
+        if self.check(TokenDiscriminant::RParen) {
+            let end = self.advance().span;
+            let span = Span::new(start.line, start.column, end.end_column);
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3155",
+                    "tuple types require two or more members",
+                    "gof has no empty tuple type; the unit type is written `unit`",
+                    span,
+                )
+                .with_fix_it("replace `()` with `unit`, or add two or more member types"),
+            );
+            return TypeRef {
+                name: "tuple".to_string(),
+                args: Vec::new(),
+                span,
+            };
+        }
+        let first = self.parse_type_ref("expected a type inside the tuple type");
+        if !self.matches(TokenDiscriminant::Comma) {
+            let end = self.expect(
+                TokenDiscriminant::RParen,
+                "expected `)` to close the tuple type",
+            );
+            let span = Span::new(start.line, start.column, end.end_column);
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3155",
+                    "tuple types require two or more members",
+                    "the type grammar has no grouping; write the type directly without parentheses",
+                    span,
+                )
+                .with_fix_it("remove the parentheses, or add a second member type"),
+            );
+            return TypeRef {
+                name: "tuple".to_string(),
+                args: vec![first],
+                span,
+            };
+        }
+        if self.check(TokenDiscriminant::RParen) {
+            let end = self.advance().span;
+            let span = Span::new(start.line, start.column, end.end_column);
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3155",
+                    "tuple types require two or more members",
+                    "tuple types have no single-member form and reject trailing commas",
+                    span,
+                )
+                .with_fix_it("remove the trailing comma, or add a second member type"),
+            );
+            return TypeRef {
+                name: "tuple".to_string(),
+                args: vec![first],
+                span,
+            };
+        }
+        let mut args = vec![first];
+        loop {
+            args.push(self.parse_type_ref("expected a type inside the tuple type"));
+            if !self.matches(TokenDiscriminant::Comma) {
+                break;
+            }
+            if self.check(TokenDiscriminant::RParen) {
+                let end = self.advance().span;
+                let span = Span::new(start.line, start.column, end.end_column);
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3155",
+                        "tuple types do not allow trailing commas",
+                        "the parser requires a type after every comma, as with list and dict types",
+                        span,
+                    )
+                    .with_fix_it("remove the trailing comma"),
+                );
+                return TypeRef {
+                    name: "tuple".to_string(),
+                    args,
+                    span,
+                };
+            }
+        }
+        let end = self.expect(
+            TokenDiscriminant::RParen,
+            "expected `)` to close the tuple type",
+        );
+        TypeRef {
+            name: "tuple".to_string(),
             args,
             span: Span::new(start.line, start.column, end.end_column),
         }
@@ -1359,6 +1677,209 @@ impl<'a> Parser<'a> {
             )
     }
 
+    /// Save the current token position so a speculative parse can be undone.
+    fn mark(&self) -> usize {
+        self.current
+    }
+
+    /// Restore a token position saved by [`Parser::mark`]. Callers that also
+    /// need to undo speculative diagnostics must truncate them separately.
+    fn reset(&mut self, mark: usize) {
+        self.current = mark;
+    }
+
+    /// Peek at a tuple element index: a postfix `.` followed by a canonical
+    /// decimal integer literal (no leading zeros, no sign). The lexer keeps
+    /// no raw text, so canonicity is checked by comparing the literal's
+    /// source width with the value's own digit count (`01` is width 2 for
+    /// the value 1). Non-canonical literals return `None` so the caller
+    /// falls through to the field-access path.
+    fn peek_tuple_index(&self) -> Option<usize> {
+        let token = self.peek();
+        let TokenKind::IntLiteral(value) = token.kind else {
+            return None;
+        };
+        if value < 0 {
+            return None;
+        }
+        let source_width = token.span.end_column.saturating_sub(token.span.column);
+        if source_width == 0 || value.to_string().len() != source_width {
+            return None;
+        }
+        Some(value as usize)
+    }
+
+    /// Parse one binding position in a match arm payload: a plain identifier
+    /// (today's behavior, unchanged) or a nested tuple pattern.
+    fn parse_match_binding(&mut self) -> BindingPattern {
+        if self.check(TokenDiscriminant::LParen) {
+            return self.parse_binding_pattern();
+        }
+        let name = self.expect_ident("expected a binding name in the payload match pattern");
+        BindingPattern::Name(name, self.previous().span)
+    }
+
+    /// Parse a binding pattern: an identifier leaf or a parenthesized tuple
+    /// pattern with two or more members. The degenerate shapes (`()`,
+    /// `(x)`, trailing commas) are parser-visible and emit GOF3155 directly.
+    fn parse_binding_pattern(&mut self) -> BindingPattern {
+        if !self.check(TokenDiscriminant::LParen) {
+            let name = self.expect_ident("expected a binding name");
+            return BindingPattern::Name(name, self.previous().span);
+        }
+        let start = self.advance().span;
+        if self.check(TokenDiscriminant::RParen) {
+            let end = self.advance().span;
+            let span = Span::new(start.line, start.column, end.end_column);
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3155",
+                    "tuples require two or more members",
+                    "gof has no empty tuple pattern; bind a single name instead",
+                    span,
+                )
+                .with_fix_it("replace `()` with a binding name, or add two or more binding names"),
+            );
+            return BindingPattern::Tuple(Vec::new(), span);
+        }
+        let mut leaves = vec![self.parse_binding_pattern()];
+        if !self.matches(TokenDiscriminant::Comma) {
+            if self.check(TokenDiscriminant::RParen) {
+                let end = self.advance().span;
+                let span = Span::new(start.line, start.column, end.end_column);
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3155",
+                        "tuples require two or more members",
+                        "the pattern grammar has no grouping; a single name needs no parentheses",
+                        span,
+                    )
+                    .with_fix_it("remove the parentheses, or add a second binding name"),
+                );
+                return BindingPattern::Tuple(leaves, span);
+            }
+            let end = self.expect(
+                TokenDiscriminant::RParen,
+                "expected `)` to close the tuple pattern",
+            );
+            return BindingPattern::Tuple(
+                leaves,
+                Span::new(start.line, start.column, end.end_column),
+            );
+        }
+        if self.check(TokenDiscriminant::RParen) {
+            let end = self.advance().span;
+            let span = Span::new(start.line, start.column, end.end_column);
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3155",
+                    "tuples require two or more members",
+                    "tuple patterns have no single-member form and reject trailing commas",
+                    span,
+                )
+                .with_fix_it("remove the trailing comma, or add a second binding name"),
+            );
+            return BindingPattern::Tuple(leaves, span);
+        }
+        loop {
+            leaves.push(self.parse_binding_pattern());
+            if !self.matches(TokenDiscriminant::Comma) {
+                break;
+            }
+            if self.check(TokenDiscriminant::RParen) {
+                let end = self.advance().span;
+                let span = Span::new(start.line, start.column, end.end_column);
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3155",
+                        "tuple patterns do not allow trailing commas",
+                        "the parser requires a binding name after every comma",
+                        span,
+                    )
+                    .with_fix_it("remove the trailing comma"),
+                );
+                return BindingPattern::Tuple(leaves, span);
+            }
+        }
+        let end = self.expect(
+            TokenDiscriminant::RParen,
+            "expected `)` to close the tuple pattern",
+        );
+        BindingPattern::Tuple(leaves, Span::new(start.line, start.column, end.end_column))
+    }
+
+    /// Reinterpret a parsed tuple literal as a destructuring pattern. The
+    /// statement began with `(` and is followed by `=`, so the expression is
+    /// a tuple literal (`(a, b)`) whose leaves must be identifiers or nested
+    /// tuple literals. A bare identifier can only come from grouping
+    /// parentheses like `(x)` — the single-member target shape — and is
+    /// rejected with GOF3155.
+    fn binding_pattern_from_expr(&mut self, expr: Expr) -> BindingPattern {
+        match expr {
+            Expr::Tuple { items, span } => {
+                let leaves = items
+                    .into_iter()
+                    .map(|item| self.pattern_leaf_from_expr(item))
+                    .collect();
+                BindingPattern::Tuple(leaves, span)
+            }
+            // A bare identifier at the TOP level means the user wrote
+            // `(a) = ...`: the expression parser collapses the grouping,
+            // so the pattern grammar's no-grouping rule fires here.
+            Expr::Ident(name, span) => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3155",
+                        "tuples require two or more members",
+                        "the target grammar has no grouping; a single name needs no parentheses",
+                        span,
+                    )
+                    .with_fix_it("remove the parentheses around the binding name"),
+                );
+                BindingPattern::Name(name, span)
+            }
+            other => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF2001",
+                        "pattern leaves must be identifiers or nested tuple patterns",
+                        "tuple destructuring targets must be binding names, not arbitrary expressions",
+                        other.span(),
+                    )
+                    .with_fix_it("replace this expression with a binding name or a nested tuple pattern"),
+                );
+                BindingPattern::Name("_error".to_string(), other.span())
+            }
+        }
+    }
+
+    /// A leaf INSIDE a tuple pattern: an identifier is the good case
+    /// (silent); nested tuples recurse; anything else is GOF2001.
+    fn pattern_leaf_from_expr(&mut self, expr: Expr) -> BindingPattern {
+        match expr {
+            Expr::Tuple { items, span } => {
+                let leaves = items
+                    .into_iter()
+                    .map(|item| self.pattern_leaf_from_expr(item))
+                    .collect();
+                BindingPattern::Tuple(leaves, span)
+            }
+            Expr::Ident(name, span) => BindingPattern::Name(name, span),
+            other => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF2001",
+                        "pattern leaves must be identifiers or nested tuple patterns",
+                        "tuple destructuring targets must be binding names, not arbitrary expressions",
+                        other.span(),
+                    )
+                    .with_fix_it("replace this expression with a binding name or a nested tuple pattern"),
+                );
+                BindingPattern::Name("_error".to_string(), other.span())
+            }
+        }
+    }
+
     fn previous_kind_matches(&self, expected: TokenDiscriminant) -> bool {
         expected.matches(&self.previous().kind)
     }
@@ -1404,7 +1925,9 @@ impl Expr {
             | Expr::Await { span, .. }
             | Expr::Propagate { span, .. }
             | Expr::Unary { span, .. }
-            | Expr::Binary { span, .. } => *span,
+            | Expr::Binary { span, .. }
+            | Expr::Tuple { span, .. }
+            | Expr::TupleIndex { span, .. } => *span,
         }
     }
 }
@@ -1600,7 +2123,10 @@ fn token_debug_name(kind: &TokenKind) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{BinaryOp, Expr, FunctionKind, MatchPattern, SelectArmKind, Stmt, UnaryOp, parse};
+    use super::{
+        BinaryOp, BindingPattern, Expr, FunctionKind, MatchPattern, SelectArmKind, Stmt, UnaryOp,
+        parse,
+    };
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
@@ -1732,7 +2258,10 @@ mod tests {
         let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
         assert!(matches!(
             &module.functions[0].body[1],
-            Stmt::For { binding, .. } if binding == "value"
+            Stmt::For {
+                pattern: BindingPattern::Name(name, _),
+                ..
+            } if name == "value"
         ));
     }
 
@@ -1909,7 +2438,10 @@ mod tests {
                         variant,
                         bindings,
                         ..
-                    } if enum_name == "JobState" && variant == "Running" && bindings == &vec!["pid".to_string()]
+                    } if enum_name == "JobState"
+                        && variant == "Running"
+                        && bindings.len() == 1
+                        && matches!(&bindings[0], BindingPattern::Name(name, _) if name == "pid")
                 )
                 && matches!(
                     &arms[2].pattern,
@@ -1918,7 +2450,10 @@ mod tests {
                         variant,
                         bindings,
                         ..
-                    } if enum_name == "JobState" && variant == "Failed" && bindings == &vec!["message".to_string()]
+                    } if enum_name == "JobState"
+                        && variant == "Failed"
+                        && bindings.len() == 1
+                        && matches!(&bindings[0], BindingPattern::Name(name, _) if name == "message")
                 )
         ));
     }
@@ -2117,5 +2652,279 @@ mod tests {
         assert_eq!(parse_return.args[1].name, "string");
 
         assert_eq!(module.functions[1].body.len(), 2);
+    }
+
+    fn parse_body(source_text: &str) -> Vec<Stmt> {
+        let source = SourceFile::new("test.gof", source_text);
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        module
+            .functions
+            .into_iter()
+            .next()
+            .expect("source should contain a function")
+            .body
+    }
+
+    fn parse_diagnostics(source_text: &str) -> Vec<&'static str> {
+        let source = SourceFile::new("test.gof", source_text);
+        let tokens = lex(&source).expect("lexing should succeed");
+        parse(&CstModule::new(tokens))
+            .expect_err("parsing should fail")
+            .codes()
+    }
+
+    #[test]
+    fn parses_tuple_literals_and_preserves_grouping() {
+        let body = parse_body(
+            "fn main():\n    pair = (1, 2)\n    nested = ((1, 2), (3, 4))\n    grouped = (1 + 2) * 3\n    single = (pair)\n",
+        );
+        assert!(matches!(
+            &body[0],
+            Stmt::Assign {
+                value: Expr::Tuple { items, .. },
+                ..
+            } if items.len() == 2
+        ));
+        assert!(matches!(
+            &body[1],
+            Stmt::Assign {
+                value: Expr::Tuple { items, .. },
+                ..
+            } if items.len() == 2
+                && matches!(&items[0], Expr::Tuple { .. })
+                && matches!(&items[1], Expr::Tuple { .. })
+        ));
+        // `(x)` stays grouping: `(1 + 2) * 3` is a binary expression.
+        assert!(matches!(
+            &body[2],
+            Stmt::Assign {
+                value: Expr::Binary { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &body[3],
+            Stmt::Assign {
+                value: Expr::Ident(name, _),
+                ..
+            } if name == "pair"
+        ));
+    }
+
+    #[test]
+    fn tuple_degenerate_shapes_report_gof3155() {
+        assert_eq!(
+            parse_diagnostics("fn main():\n    empty = ()\n"),
+            vec!["GOF3155"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main():\n    single = (1,)\n"),
+            vec!["GOF3155"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main():\n    trailing = (1, 2,)\n"),
+            vec!["GOF3155"]
+        );
+    }
+
+    #[test]
+    fn parses_tuple_element_access() {
+        let body = parse_body("fn main() -> int:\n    pair = (1, 2)\n    return pair.0 + pair.1\n");
+        assert!(matches!(
+            &body[1],
+            Stmt::Return(
+                Expr::Binary {
+                    lhs,
+                    rhs,
+                    ..
+                },
+                _
+            ) if matches!(
+                lhs.as_ref(),
+                Expr::TupleIndex { index: 0, .. }
+            ) && matches!(rhs.as_ref(), Expr::TupleIndex { index: 1, .. })
+        ));
+    }
+
+    #[test]
+    fn non_canonical_tuple_index_falls_through_to_field_path() {
+        // `pair.01` is not a canonical decimal literal, so it is rejected by
+        // the existing member-name path rather than read as index 1.
+        assert_eq!(
+            parse_diagnostics("fn main() -> int:\n    pair = (1, 2)\n    return pair.01\n"),
+            vec!["GOF2002"]
+        );
+    }
+
+    #[test]
+    fn parses_tuple_type_refs() {
+        let body = parse_body(
+            "fn main(point: (int, int)) -> list[(int, string)]:\n    x: ((int, int), string) = point\n    return []\n",
+        );
+        // The function-level annotations are checked through parse_body's
+        // module; here the local annotation proves nesting works.
+        assert!(matches!(
+            &body[0],
+            Stmt::Bind { ty: Some(ty), .. } if ty.name == "tuple"
+                && ty.args.len() == 2
+                && ty.args[0].name == "tuple"
+                && ty.args[0].args.len() == 2
+                && ty.args[1].name == "string"
+        ));
+    }
+
+    #[test]
+    fn tuple_type_degenerate_shapes_report_gof3155() {
+        assert_eq!(
+            parse_diagnostics("fn main(x: (int)):\n    return 0\n"),
+            vec!["GOF3155"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main(x: (int,)):\n    return 0\n"),
+            vec!["GOF3155"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main(x: (int, string,)):\n    return 0\n"),
+            vec!["GOF3155"]
+        );
+    }
+
+    #[test]
+    fn bare_tuple_type_name_is_rejected() {
+        assert_eq!(
+            parse_diagnostics("fn main(x: tuple):\n    return 0\n"),
+            vec!["GOF3155"]
+        );
+    }
+
+    #[test]
+    fn parses_tuple_patterns_in_bind_statements() {
+        let body = parse_body(
+            "fn main():\n    (a, b) = origin\n    mut (w, h) = size\n    (x, (y, z)) = frame\n",
+        );
+        assert!(matches!(
+            &body[0],
+            Stmt::Bind {
+                pattern: BindingPattern::Tuple(leaves, _),
+                mutable: false,
+                ty: None,
+                ..
+            } if leaves.len() == 2
+        ));
+        assert!(matches!(
+            &body[1],
+            Stmt::Bind {
+                pattern: BindingPattern::Tuple(..),
+                mutable: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &body[2],
+            Stmt::Bind {
+                pattern: BindingPattern::Tuple(leaves, _),
+                ..
+            } if leaves.len() == 2
+                && matches!(&leaves[1], BindingPattern::Tuple(inner, _) if inner.len() == 2)
+        ));
+    }
+
+    #[test]
+    fn tuple_pattern_leaves_must_be_identifiers() {
+        assert_eq!(
+            parse_diagnostics("fn main():\n    (a, 1) = origin\n"),
+            vec!["GOF2001"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main():\n    (a) = origin\n"),
+            vec!["GOF3155"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main():\n    mut (a + b) = origin\n"),
+            vec!["GOF2001"]
+        );
+    }
+
+    #[test]
+    fn parses_tuple_patterns_in_for_loops() {
+        let body = parse_body(
+            "fn main():\n    total = 0\n    for (w, h) in boxes:\n        total = total + w * h\n    for (a, (b, c)) in triples:\n        total = total + a\n    for value in values:\n        total = total + value\n",
+        );
+        assert!(matches!(
+            &body[1],
+            Stmt::For {
+                pattern: BindingPattern::Tuple(leaves, _),
+                ..
+            } if leaves.len() == 2
+        ));
+        assert!(matches!(
+            &body[2],
+            Stmt::For {
+                pattern: BindingPattern::Tuple(leaves, _),
+                ..
+            } if leaves.len() == 2
+                && matches!(&leaves[1], BindingPattern::Tuple(inner, _) if inner.len() == 2)
+        ));
+        assert!(matches!(
+            &body[3],
+            Stmt::For {
+                pattern: BindingPattern::Name(name, _),
+                ..
+            } if name == "value"
+        ));
+    }
+
+    #[test]
+    fn for_tuple_pattern_requires_in_after_the_pattern() {
+        // A parenthesized binding that is not followed by `in` rewinds to
+        // today's expression grammar; the shared `in` expectation reports
+        // the first recoverable error and the parser's normal recovery
+        // cascade follows (matching how other malformed statements
+        // report).
+        let codes = parse_diagnostics("fn main():\n    for (a, b) of boxes:\n        return\n");
+        assert_eq!(codes.first().copied(), Some("GOF2002"));
+    }
+
+    #[test]
+    fn parses_tuple_patterns_in_match_payloads() {
+        let source = SourceFile::new(
+            "test.gof",
+            "enum Gesture:\n    Pan(delta: (int, int))\n    Pinch(start: (int, int), end: (int, int))\n\nfn main(gesture: Gesture) -> bool:\n    match gesture:\n        Gesture.Pan((dx, dy)):\n            return dx == 0\n        Gesture.Pinch((x0, y0), (x1, y1)):\n            return x1 > x0\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        let Stmt::Match { arms, .. } = &module.functions[0].body[0] else {
+            panic!("expected a match statement");
+        };
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[0].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(matches!(
+            &bindings[0],
+            BindingPattern::Tuple(leaves, _) if leaves.len() == 2
+        ));
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[1].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(bindings.len() == 2);
+        assert!(matches!(
+            &bindings[0],
+            BindingPattern::Tuple(leaves, _) if leaves.len() == 2
+        ));
+        assert!(matches!(
+            &bindings[1],
+            BindingPattern::Tuple(leaves, _) if leaves.len() == 2
+        ));
+    }
+
+    #[test]
+    fn match_payload_single_parenthesized_binding_reports_gof3155() {
+        assert_eq!(
+            parse_diagnostics(
+                "enum Status:\n    Ready\n    Busy\n\nfn main(status: Status) -> bool:\n    match status:\n        Status.Busy((x)):\n            return true\n        Status.Ready:\n            return false\n"
+            ),
+            vec!["GOF3155"]
+        );
     }
 }

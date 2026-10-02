@@ -1,8 +1,8 @@
 use crate::ast::{BinaryOp, FixtureScope, FunctionKind, UnaryOp};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{
-    HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule, HirSelectArm,
-    HirSelectArmKind, HirStmt, HirStruct, HirTypeRef,
+    HirBindingPattern, HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStruct, HirTypeRef,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -343,6 +343,13 @@ pub enum TypedExprKind {
         lhs: Box<TypedExpr>,
         op: BinaryOp,
         rhs: Box<TypedExpr>,
+    },
+    Tuple {
+        items: Vec<TypedExpr>,
+    },
+    TupleIndex {
+        target: Box<TypedExpr>,
+        index: usize,
     },
 }
 
@@ -1984,25 +1991,12 @@ fn lower_stmt(
             source_path,
         )),
         HirStmt::Bind {
-            name,
+            pattern,
             mutable,
             ty,
             value,
             span,
         } => {
-            if scopes.contains_in_current(name) {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "GOF3006",
-                        format!("duplicate binding `{name}`"),
-                        "gof currently does not allow duplicate bindings in the same block scope",
-                        *span,
-                    )
-                    .with_fix_it("rename this binding or reuse the existing one")
-                    .with_source_path(source_path.to_path_buf()),
-                );
-            }
-
             let value = lower_expr(
                 value,
                 scopes,
@@ -2023,11 +2017,52 @@ fn lower_stmt(
                 source_path,
                 diagnostics,
             );
+            // TUPLES-TODO(layer2): real tuple-pattern type checking
+            // (per-leaf types from the value type). Layer 1 rejects
+            // tuple destructuring with an explicit diagnostic so no
+            // untyped binding can slip through.
+            // TUPLES-TODO(layer2): real tuple-pattern type checking
+            // (per-leaf types from the value type). Layer 1 rejects
+            // tuple destructuring with an explicit diagnostic so no
+            // untyped binding can slip through.
+            let (name, name_span) = match pattern {
+                HirBindingPattern::Name(name, span) => (name.clone(), *span),
+                HirBindingPattern::Tuple(_, span) => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3155",
+                            "tuple destructuring is not lowered yet",
+                            "tuple patterns parse, but typed lowering lands with the tuples semantic slice; use single-name bindings for now",
+                            *span,
+                        )
+                        .with_fix_it("bind the tuple to one name and use `.0`/`.1` once the slice lands")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                    return TypedStmt::Bind {
+                        name: "__tuple_unsupported".to_string(),
+                        mutable: *mutable,
+                        value,
+                    };
+                }
+            };
+            if scopes.contains_in_current(&name) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3006",
+                        format!("duplicate binding `{name}`"),
+                        "gof currently does not allow duplicate bindings in the same block scope",
+                        name_span,
+                    )
+                    .with_fix_it("rename this binding or reuse the existing one")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+
             if ty.is_some() {
                 ensure_type_compatibility(
                     &declared_type,
                     &value.ty,
-                    *span,
+                    name_span,
                     diagnostics,
                     format!("binding `{name}` has incompatible annotated type"),
                     format!(
@@ -2305,7 +2340,7 @@ fn lower_stmt(
             TypedStmt::While { condition, body }
         }
         HirStmt::For {
-            binding,
+            pattern,
             iterable,
             body,
             span,
@@ -2323,8 +2358,26 @@ fn lower_stmt(
                 function_return_type,
                 source_path,
             );
+            // TUPLES-TODO(layer2): tuple loop-pattern typing (element
+            // type split per leaf). Layer 1 rejects with GOF3155.
+            let binding = match pattern {
+                HirBindingPattern::Name(name, _) => name.clone(),
+                HirBindingPattern::Tuple(_, tuple_span) => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3155",
+                            "tuple loop patterns are not lowered yet",
+                            "tuple for-bindings parse, but typed lowering lands with the tuples semantic slice; use a single loop binding for now",
+                            *tuple_span,
+                        )
+                        .with_fix_it("bind each element to one name and destructure in the body")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                    "__tuple_unsupported".to_string()
+                }
+            };
             let binding_type =
-                resolve_for_binding_type(binding, &iterable, *span, diagnostics, source_path);
+                resolve_for_binding_type(&binding, &iterable, *span, diagnostics, source_path);
             scopes.push();
             scopes.define_current(
                 binding.clone(),
@@ -2817,7 +2870,31 @@ fn lower_match_pattern(
         );
     }
 
-    if bindings.len() != variant_fields.len() {
+    // TUPLES-TODO(layer2): tuple payload patterns with real per-leaf
+    // typing. Layer 1 flattens Name leaves (today's behavior) and
+    // rejects Tuple leaves with GOF3155 so no untyped binding slips
+    // through.
+    let flat_bindings = bindings
+        .iter()
+        .map(|binding| match binding {
+            HirBindingPattern::Name(name, _) => name.clone(),
+            HirBindingPattern::Tuple(_, tuple_span) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3155",
+                        "tuple match payload patterns are not lowered yet",
+                        "tuple payload patterns parse, but typed lowering lands with the tuples semantic slice; bind the payload to one name for now",
+                        *tuple_span,
+                    )
+                    .with_fix_it("bind the payload to a single name")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                "__tuple_unsupported".to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if flat_bindings.len() != variant_fields.len() {
         diagnostics.push(
             Diagnostic::error(
                 "GOF3071",
@@ -2827,7 +2904,7 @@ fn lower_match_pattern(
                 format!(
                     "expected {} binding(s), got {}",
                     variant_fields.len(),
-                    bindings.len()
+                    flat_bindings.len()
                 ),
                 *span,
             )
@@ -2852,7 +2929,31 @@ fn lower_match_pattern(
         );
     }
 
-    let typed_bindings = bindings
+    // TUPLES-TODO(layer2): tuple payload patterns with real per-leaf
+    // typing. Layer 1 flattens Name leaves (today's behavior) and
+    // rejects Tuple leaves with GOF3155 so no untyped binding slips
+    // through.
+    let flat_bindings = bindings
+        .iter()
+        .map(|binding| match binding {
+            HirBindingPattern::Name(name, _) => name.clone(),
+            HirBindingPattern::Tuple(_, tuple_span) => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3155",
+                        "tuple match payload patterns are not lowered yet",
+                        "tuple payload patterns parse, but typed lowering lands with the tuples semantic slice; bind the payload to one name for now",
+                        *tuple_span,
+                    )
+                    .with_fix_it("bind the payload to a single name")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                "__tuple_unsupported".to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let typed_bindings = flat_bindings
         .iter()
         .zip(variant_fields.iter())
         .map(|(binding, field)| TypedMatchBinding {
@@ -2939,7 +3040,12 @@ fn fallback_match_pattern(pattern: &HirMatchPattern) -> TypedMatchPattern {
             bindings: bindings
                 .iter()
                 .map(|binding| TypedMatchBinding {
-                    name: binding.clone(),
+                    // Fallback patterns only keep Name leaves; tuple
+                    // payload leaves were already rejected upstream.
+                    name: match binding {
+                        HirBindingPattern::Name(name, _) => name.clone(),
+                        HirBindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
+                    },
                     ty: Type::Unknown,
                 })
                 .collect(),
@@ -3806,6 +3912,51 @@ fn lower_expr(
                     rhs: Box::new(rhs),
                 },
                 ty,
+                span: *span,
+            }
+        }
+        // TUPLES-TODO(layer2): real tuple typing (Type::Tuple, member
+        // inference, equality/ordering capability). Layer 1 rejects the
+        // new expression forms at the typed layer so no untyped value
+        // can flow; the parser already accepts the syntax.
+        HirExpr::Tuple { span, .. } => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3155",
+                    "tuple literals are not lowered yet",
+                    "tuple literals parse, but typed lowering lands with the tuples semantic slice; use separate values for now",
+                    *span,
+                )
+                .with_fix_it("bind tuple members to separate names until the tuples slice lands")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            TypedExpr {
+                kind: TypedExprKind::Tuple { items: Vec::new() },
+                ty: Type::Unknown,
+                span: *span,
+            }
+        }
+        HirExpr::TupleIndex { span, .. } => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3157",
+                    "tuple element access is not lowered yet",
+                    "tuple `.N` access parses, but typed lowering lands with the tuples semantic slice",
+                    *span,
+                )
+                .with_fix_it("access tuple members through single-value bindings until the tuples slice lands")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            TypedExpr {
+                kind: TypedExprKind::TupleIndex {
+                    target: Box::new(TypedExpr {
+                        kind: TypedExprKind::Int(0),
+                        ty: Type::Int,
+                        span: *span,
+                    }),
+                    index: 0,
+                },
+                ty: Type::Unknown,
                 span: *span,
             }
         }
@@ -5620,6 +5771,11 @@ fn resolve_option_variant_call(
 ) -> Type {
     let expected_payload_count = match variant {
         "Some" => 1,
+        // `Option.None` is a unit variant resolved through the bare
+        // variant-reference path; ANY arrival at this call path with
+        // "None" means parentheses were written — the call shape itself
+        // is GOF3152 per RFC 0049 ("written with a payload or empty
+        // parentheses").
         "None" => 0,
         _ => {
             diagnostics.push(
@@ -5635,6 +5791,25 @@ fn resolve_option_variant_call(
             return Type::Unknown;
         }
     };
+
+    if variant == "None" {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3152",
+                format!(
+                    "`Option.{variant}` is the unit variant and cannot be called"
+                ),
+                format!(
+                    "the unit variant is written without parentheses or payload values; got {} call arguments",
+                    args.len()
+                ),
+                span,
+            )
+            .with_fix_it("construct it as `Option.None` without parentheses")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::option(Type::Unknown);
+    }
 
     if args.len() != expected_payload_count {
         let note = if variant == "Some" {
@@ -5935,6 +6110,10 @@ fn expr_propagated_error_type(expr: &TypedExpr) -> Option<Type> {
                 expr_propagated_error_type(lhs),
                 expr_propagated_error_type(rhs),
             ),
+            TypedExprKind::Tuple { items } => items.iter().fold(None, |acc, item| {
+                merge_optional_error_type(acc, expr_propagated_error_type(item))
+            }),
+            TypedExprKind::TupleIndex { target, .. } => expr_propagated_error_type(target),
             TypedExprKind::Int(_)
             | TypedExprKind::String(_)
             | TypedExprKind::Bool(_)
@@ -6027,7 +6206,7 @@ fn ensure_type_compatibility(
                     "GOF3154",
                     message,
                     format!(
-                        "{note}; gof has no implicit coercion from `Option[T]` to `T`, so resolve the absence explicitly with `match` or `unwrap_or`"
+                        "{note}; gof has no implicit coercion from `Option[T]` to `T`, so resolve the absence explicitly with `match` or `unwrap_or`; postfix `?` does not apply to `Option`"
                     ),
                     span,
                 )

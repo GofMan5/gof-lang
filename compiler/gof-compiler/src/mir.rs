@@ -503,6 +503,16 @@ impl MirBuilder {
                 });
                 dest
             }
+            // TUPLES-TODO(layer2): real tuple MIR lowering (flat member
+            // stores and loads). Layer 1 stubs emit an unreachable
+            // constant — the typed layer already rejects these forms, so
+            // MIR only needs to stay exhaustive.
+            TypedExprKind::Tuple { .. } | TypedExprKind::TupleIndex { .. } => {
+                let dest = self.alloc();
+                self.instructions
+                    .push(MirInstruction::ConstInt { dest, value: 0 });
+                dest
+            }
         }
     }
 

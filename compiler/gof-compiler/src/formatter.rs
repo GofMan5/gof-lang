@@ -1,7 +1,7 @@
 use crate::ast::{
-    BinaryOp, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function, FunctionKind,
-    Import, MatchPattern, Module, Param, SelectArmKind, Stmt, StructDecl, StructField, TypeRef,
-    UnaryOp,
+    BinaryOp, BindingPattern, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function,
+    FunctionKind, Import, MatchPattern, Module, Param, SelectArmKind, Stmt, StructDecl,
+    StructField, TypeRef, UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -161,7 +161,7 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
     match stmt {
         Stmt::Return(expr, _) => format!("{indent}return {}", format_expr(expr)),
         Stmt::Bind {
-            name,
+            pattern,
             mutable,
             ty,
             value,
@@ -173,7 +173,8 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                 .map(|ty| format!(": {}", format_type_ref(ty)))
                 .unwrap_or_default();
             format!(
-                "{indent}{prefix}{name}{annotation} = {}",
+                "{indent}{prefix}{}{annotation} = {}",
+                format_binding_pattern(pattern),
                 format_expr(value)
             )
         }
@@ -208,12 +209,13 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             format_block(body, indent_level + 1)
         ),
         Stmt::For {
-            binding,
+            pattern,
             iterable,
             body,
             ..
         } => format!(
-            "{indent}for {binding} in {}:\n{}",
+            "{indent}for {} in {}:\n{}",
+            format_binding_pattern(pattern),
             format_expr(iterable),
             format_block(body, indent_level + 1)
         ),
@@ -257,6 +259,19 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
         Stmt::Expr(expr, _) => format!("{indent}{}", format_expr(expr)),
     }
 }
+fn format_binding_pattern(pattern: &BindingPattern) -> String {
+    match pattern {
+        BindingPattern::Name(name, _) => name.clone(),
+        BindingPattern::Tuple(leafs, _) => format!(
+            "({})",
+            leafs
+                .iter()
+                .map(format_binding_pattern)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
 
 fn format_match_pattern(pattern: &MatchPattern) -> String {
     match pattern {
@@ -269,7 +284,15 @@ fn format_match_pattern(pattern: &MatchPattern) -> String {
             if bindings.is_empty() {
                 format!("{enum_name}.{variant}")
             } else {
-                format!("{enum_name}.{variant}({})", bindings.join(", "))
+                format!(
+                    "{enum_name}.{}({})",
+                    variant,
+                    bindings
+                        .iter()
+                        .map(format_binding_pattern)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
             }
         }
     }
@@ -340,6 +363,11 @@ pub(crate) fn format_expr(expr: &Expr) -> String {
             format_op(*op),
             format_expr(rhs)
         ),
+        Expr::Tuple { items, .. } => format!(
+            "({})",
+            items.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+        ),
+        Expr::TupleIndex { target, index, .. } => format!("{}.{index}", format_expr(target)),
     }
 }
 

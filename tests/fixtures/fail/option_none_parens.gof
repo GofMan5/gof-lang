@@ -1,0 +1,7 @@
+fn main() -> int:
+    value: Option[int] = Option.None()
+    match value:
+        Option.Some(inner):
+            return inner
+        Option.None:
+            return 0

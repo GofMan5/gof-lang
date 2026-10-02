@@ -77,10 +77,16 @@ pub struct HirTypeRef {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub enum HirBindingPattern {
+    Name(String, Span),
+    Tuple(Vec<HirBindingPattern>, Span),
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub enum HirStmt {
     Return(HirExpr, Span),
     Bind {
-        name: String,
+        pattern: HirBindingPattern,
         mutable: bool,
         ty: Option<HirTypeRef>,
         value: HirExpr,
@@ -103,7 +109,7 @@ pub enum HirStmt {
         span: Span,
     },
     For {
-        binding: String,
+        pattern: HirBindingPattern,
         iterable: HirExpr,
         body: Vec<HirStmt>,
         span: Span,
@@ -135,7 +141,7 @@ pub enum HirMatchPattern {
     EnumVariant {
         enum_name: String,
         variant: String,
-        bindings: Vec<String>,
+        bindings: Vec<HirBindingPattern>,
         span: Span,
     },
 }
@@ -216,6 +222,15 @@ pub enum HirExpr {
         lhs: Box<HirExpr>,
         op: BinaryOp,
         rhs: Box<HirExpr>,
+        span: Span,
+    },
+    Tuple {
+        items: Vec<HirExpr>,
+        span: Span,
+    },
+    TupleIndex {
+        target: Box<HirExpr>,
+        index: usize,
         span: Span,
     },
 }
@@ -307,13 +322,13 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
     match stmt {
         Stmt::Return(expr, span) => HirStmt::Return(lower_expr(expr), *span),
         Stmt::Bind {
-            name,
+            pattern,
             mutable,
             ty,
             value,
             span,
         } => HirStmt::Bind {
-            name: name.clone(),
+            pattern: lower_binding_pattern(pattern),
             mutable: *mutable,
             ty: ty.as_ref().map(lower_type_ref),
             value: lower_expr(value),
@@ -345,12 +360,12 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
             span: *span,
         },
         Stmt::For {
-            binding,
+            pattern,
             iterable,
             body,
             span,
         } => HirStmt::For {
-            binding: binding.clone(),
+            pattern: lower_binding_pattern(pattern),
             iterable: lower_expr(iterable),
             body: body.iter().map(lower_stmt).collect(),
             span: *span,
@@ -389,9 +404,20 @@ fn lower_match_pattern(pattern: &MatchPattern) -> HirMatchPattern {
         } => HirMatchPattern::EnumVariant {
             enum_name: enum_name.clone(),
             variant: variant.clone(),
-            bindings: bindings.clone(),
+            bindings: bindings.iter().map(lower_binding_pattern).collect(),
             span: *span,
         },
+    }
+}
+
+fn lower_binding_pattern(pattern: &crate::ast::BindingPattern) -> HirBindingPattern {
+    match pattern {
+        crate::ast::BindingPattern::Name(name, span) => {
+            HirBindingPattern::Name(name.clone(), *span)
+        }
+        crate::ast::BindingPattern::Tuple(leafs, span) => {
+            HirBindingPattern::Tuple(leafs.iter().map(lower_binding_pattern).collect(), *span)
+        }
     }
 }
 
@@ -486,6 +512,19 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             rhs: Box::new(lower_expr(rhs)),
             span: *span,
         },
+        Expr::Tuple { items, span } => HirExpr::Tuple {
+            items: items.iter().map(lower_expr).collect(),
+            span: *span,
+        },
+        Expr::TupleIndex {
+            target,
+            index,
+            span,
+        } => HirExpr::TupleIndex {
+            target: Box::new(lower_expr(target)),
+            index: *index,
+            span: *span,
+        },
     }
 }
 
@@ -506,7 +545,9 @@ impl HirExpr {
             | HirExpr::Await { span, .. }
             | HirExpr::Propagate { span, .. }
             | HirExpr::Unary { span, .. }
-            | HirExpr::Binary { span, .. } => *span,
+            | HirExpr::Binary { span, .. }
+            | HirExpr::Tuple { span, .. }
+            | HirExpr::TupleIndex { span, .. } => *span,
         }
     }
 }

@@ -3567,13 +3567,21 @@ fn eval_stmt(
             Err(EvalSignal::Diagnostics(diagnostics)) => Err(EvalSignal::Diagnostics(diagnostics)),
         },
         Stmt::Bind {
-            name,
+            pattern,
             mutable,
             value,
             span,
             ..
         } => {
-            if scopes.contains_in_current(name) {
+            // TUPLES-TODO(layer3): tuple destructuring execution. Layer 1
+            // keeps single-name behavior; Tuple patterns were already
+            // rejected by the typed layer, so the evaluator mirrors that
+            // defensively.
+            let name = match pattern {
+                crate::ast::BindingPattern::Name(name, _) => name.clone(),
+                crate::ast::BindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
+            };
+            if scopes.contains_in_current(&name) {
                 return Err(Diagnostics(vec![Diagnostic::error(
                     "GOF3006",
                     format!("duplicate binding `{name}`"),
@@ -3888,11 +3896,18 @@ fn eval_stmt(
             Ok(EvalOutcome::Next)
         }
         Stmt::For {
-            binding,
+            pattern,
             iterable,
             body,
             span,
         } => {
+            // TUPLES-TODO(layer3): tuple loop-pattern destructuring.
+            // Layer 1 keeps single-name behavior; Tuple patterns were
+            // already rejected by the typed layer.
+            let binding = match pattern {
+                crate::ast::BindingPattern::Name(name, _) => name.clone(),
+                crate::ast::BindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
+            };
             let iterable = eval_expr(
                 iterable,
                 scopes,
@@ -5356,6 +5371,23 @@ fn eval_expr(
                                 )
                             })
                             .collect::<EvalResult<Vec<_>>>()?;
+                        // The call shape itself is the error for the unit
+                        // variant: `Option.None` resolves through the bare
+                        // Field path, so ANY "None" arrival at this call
+                        // path means parentheses were written (RFC 0049).
+                        if method == "None" {
+                            return eval_diagnostics(Diagnostics(vec![Diagnostic::error(
+                                "GOF3152",
+                                "`Option.None` is the unit variant and cannot be called",
+                                format!(
+                                    "the unit variant is written without parentheses or payload values; got {} call argument(s)",
+                                    payloads.len()
+                                ),
+                                *span,
+                            )
+                            .with_fix_it("construct it as `Option.None` without parentheses")
+                            .with_source_path(source_path.to_path_buf())]));
+                        }
                         return eval_option_variant(method, &payloads, *span, source_path);
                     }
                     if let Some(decl) = enums.get(name) {
@@ -5595,6 +5627,26 @@ fn eval_expr(
                 eval_expr(rhs, scopes, functions, methods, structs, enums, output, source_path)?;
             Ok(eval_binary(lhs, *op, rhs, *span, source_path)?)
         }
+        // TUPLES-TODO(layer3): tuple evaluation (Value::Tuple) and
+        // TupleIndex member loads. Layer 1 keeps the evaluator safe:
+        // tuple literals and `.N` access are already rejected by the
+        // typed layer, so these arms only mirror that defensively.
+        Expr::Tuple { span, .. } => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
+            "GOF3155",
+            "tuple literals are not lowered yet",
+            "tuple literals parse, but evaluation lands with the tuples semantic slice",
+            *span,
+        )
+        .with_fix_it("use separate bindings until the tuples slice lands")
+        .with_source_path(source_path.to_path_buf())])),
+        Expr::TupleIndex { span, .. } => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
+            "GOF3157",
+            "tuple element access is not lowered yet",
+            "tuple `.N` access parses, but evaluation lands with the tuples semantic slice",
+            *span,
+        )
+        .with_fix_it("access tuple members through a single binding until the tuples slice lands")
+        .with_source_path(source_path.to_path_buf())])),
     }
 }
 
@@ -5902,24 +5954,10 @@ fn eval_option_variant(
     source_path: &Path,
 ) -> EvalResult<Value> {
     match variant {
-        "None" => {
-            if !payloads.is_empty() {
-                return eval_diagnostics(Diagnostics(vec![
-                    Diagnostic::error(
-                        "GOF3152",
-                        "wrong number of payload values for `Option.None`",
-                        format!(
-                            "the unit variant takes no payload values, got {}",
-                            payloads.len()
-                        ),
-                        span,
-                    )
-                    .with_fix_it("construct it as `Option.None` without parentheses or payloads")
-                    .with_source_path(source_path.to_path_buf()),
-                ]));
-            }
-            Ok(enum_value("Option", "None", Vec::new()))
-        }
+        // The bare-reference (Field) path constructs the unit variant
+        // with no payloads; the CALL path rejects "None" before it
+        // reaches here (see the MethodCall dispatch).
+        "None" => Ok(enum_value("Option", "None", Vec::new())),
         "Some" => {
             if payloads.len() != 1 {
                 return eval_diagnostics(Diagnostics(vec![
@@ -6139,7 +6177,18 @@ fn resolve_match_pattern(
 
     let variant_fields = match_variant_field_names(enum_name, field, enums, *span, source_path)?;
 
-    if variant_fields.len() != bindings.len() {
+    // TUPLES-TODO(layer3): tuple payload-pattern destructuring at
+    // evaluation. Layer 1 flattens Name leaves (today's behavior) and
+    // defers Tuple leaves; the typed layer already rejects them.
+    let flat_bindings = bindings
+        .iter()
+        .map(|binding| match binding {
+            crate::ast::BindingPattern::Name(name, _) => name.clone(),
+            crate::ast::BindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    if variant_fields.len() != flat_bindings.len() {
         return eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3071",
@@ -6149,7 +6198,7 @@ fn resolve_match_pattern(
                 format!(
                     "expected {} binding(s), got {}",
                     variant_fields.len(),
-                    bindings.len()
+                    flat_bindings.len()
                 ),
                 *span,
             )
@@ -6170,7 +6219,7 @@ fn resolve_match_pattern(
     Ok(ResolvedMatchPattern {
         enum_name: enum_name.clone(),
         variant: field.clone(),
-        bindings: bindings.clone(),
+        bindings: flat_bindings,
     })
 }
 
