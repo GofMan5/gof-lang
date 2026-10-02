@@ -94,6 +94,47 @@ fn score(state: JobState) -> int:
             return len(message)
 ```
 
+Payload-позиции принимают refinement-подпаттерны: literal-лист сравнивается
+по значению, `_` отбрасывает, кортежные листья вкладываются:
+
+```gof
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
+
+fn score(state: JobState) -> int:
+    match state:
+        JobState.Ready:
+            return 0
+        JobState.Running(pid) if pid > 100:
+            return -1
+        JobState.Running(1):
+            return 1
+        JobState.Running(pid):
+            return pid
+        JobState.Failed(message):
+            return len(message)
+```
+
+### Guard-ы
+
+Arm может заканчиваться guard-ом до `:` — `bool`-выражением, видящим
+биндинги arm'а:
+
+- arm'ы проверяются сверху вниз; внутри arm'а: паттерн → биндинги →
+  guard → тело
+- `false` guard переходит к следующему arm'у
+- scrutinee вычисляется ровно один раз
+- guard обязан быть `bool` (без truthiness) и не может содержать `?`,
+  `await` или `go`
+
+Guard-ы никогда не считаются для exhaustiveness: вариант покрыт только
+unguarded arm'ом с irrefutable payload (только биндинги и `_`).
+Literal-arm'ы уточняют — но не покрывают. Повторные варианты легальны,
+когда arm'ы отличаются guard-ом или literal-скелетом; два arm'а с
+идентичным literal-скелетом — дубликат.
+
 <Callout type="info">
   `match` нужен не просто для красоты, а чтобы делать state handling явным и полным.
 </Callout>

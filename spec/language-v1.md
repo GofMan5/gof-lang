@@ -179,12 +179,20 @@ The bootstrap compiler in this repository currently supports:
 - `Result[T, E]` is currently a builtin parameterized sum type for explicit recoverable errors
 - `Result.Ok(value)` and `Result.Err(error)` are currently recognized as builtin result constructors
 - `RuntimeError` is currently a builtin enum for operational failures with variants `EnvMissing(name: string)`, `Io(message: string)`, `Time(message: string)`, `Utf8(message: string)`, `Yaml(message: string)`, `Base64(message: string)`, `NetDns(message: string)`, `NetConnect(message: string)`, `NetTimeout(message: string)`, `NetTls(message: string)`, `NetProxy(message: string)`, `NetProtocol(message: string)`, `NetReset(message: string)`, `NetClosed`, `ChannelClosed`, `Cancelled`, `TaskFailed(message: string)`, `TaskPanicked(task: string)`, `ParseInt(message: string)`, `EmptySequence(message: string)`, `Slice(message: string)`, `Json(message: string)`, `Csv(message: string)`, `Toml(message: string)`, `Template(message: string)`, `HttpRequest(message: string)`, and `HttpStatus(code: int, body: string)`
-- `match value:` currently requires `value` to resolve to a known enum or `Result`
-- each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(binding, ...)`
-- `Result` arms currently must use `Result.Ok(binding)` or `Result.Err(binding)`
-- each variant can appear at most once inside one `match`
-- payload `match` arms currently require the exact number of payload bindings
+- `match value:` currently requires `value` to resolve to a known enum, `Result`, or `Option`
+- each `match` arm currently must use `EnumName.Variant` or `EnumName.Variant(pattern, ...)`
+- `Result` arms currently must use `Result.Ok(pattern)` or `Result.Err(pattern)`
+- match arm payload positions currently accept identifier, wildcard `_`, literal (`int`, `string`, `bool`, incl. negative int), and tuple sub-patterns; tuple leaves nest recursively
+- a match arm may end with a guard: `EnumName.Variant(patterns) if expr:` — the guard resolves to `bool` (no truthiness), sees the arm's pattern bindings plus enclosing names, and may not contain postfix `?`, `await`, or `go`
+- arms are tested top to bottom; the scrutinee evaluates exactly once; within an arm the pattern is tested, bindings are created, then the guard runs; a `false` guard falls through to the next arm
+- two unguarded arms with the exact same arm skeleton are a duplicate: `GOF3030` when the skeleton is all binding/wildcard slots, `GOF3166` when it contains a literal; arms for the same variant differing by guard or literal skeleton are legal refinement
+- an arm after an unguarded all-irrefutable arm for the same variant is unreachable and reports `GOF3167`
+- a variant is covered only when an UNGUARDED arm for it has an irrefutable payload at every position (identifier, wildcard, or a tuple of those); literal, guarded, and partially-literal arms refine and never cover — guards are erased before the exhaustiveness check, and non-coverage reports `GOF3033`
+- payload `match` arms currently require the exact number of payload pattern leaves
 - `match` currently requires an arm for every variant declared on the enum or both `Result.Ok` and `Result.Err` for a result value
+- literal or variant pattern leaves in binding statements and `for` bindings are refutable and report `GOF3163`; identifier and wildcard leaves are allowed there
+- `_` in pattern positions is a wildcard that binds nothing; `_ = expr` evaluates the right-hand side and discards the result; `_` remains an ordinary identifier outside pattern positions
+- arm payload bindings are immutable inside the arm; binding-statement and `for`-pattern leaves follow the RFC 0050 per-leaf contract (fresh names bind, existing `mut` names reassign, existing immutable names report `GOF3003`)
 - field access currently requires a struct target and a known field name
 - methods currently require an explicit receiver declaration `fn TypeName.method(...)`
 - method declarations currently require a known struct receiver type

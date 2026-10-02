@@ -287,7 +287,7 @@ excluded:
 point = (3, 4)
 (_, y) = point
 mut (w, _) = (10, 2)
-for (i, _) in range(3):
+for (i, _) in [(0, "a"), (1, "b")]:
     print(i)
 ```
 
@@ -648,6 +648,50 @@ separators. `if` is one token, greppable, and already reserved.
 
 ## Compatibility Impact
 
+### Implementation phasing amendment (review-adjudicated)
+
+This RFC lands in two phases. The phases are a scoping decision recorded
+after implementation review, not a silent cut:
+
+- **Phase A (shipped)**: payload-position refinements — literal, wildcard,
+  and tuple sub-patterns inside `Enum.Variant(...)` payload positions
+  (including nested tuple leaves), `_` in binding statements and `for`
+  bindings, `_ = expr` discard, guards on variant-led arms with the full
+  GOF3165 contract, guard-erasure exhaustiveness, the skeleton duplicate
+  rule, and the moved GOF3163 irrefutability check (typed-layer rejection
+  of refutable bind/for leaves). The scrutinee domain stays
+  enum / `Result` / `Option`.
+- **Phase B (deferred, with re-entry criteria)**: the widened top-level
+  scrutinee domain (`int`, `string`, `bool`, tuple scrutinees with
+  literal/binding/wildcard-led arm heads and the `route(event: (Gesture,
+  string))` tuple-dispatch shape), and enum-variant sub-pattern recursion
+  inside payloads (`Result.Ok(Option.Some(value))`). Re-entry: when the
+  pattern subsystem gains a second consumer that needs primitive dispatch
+  (Phase 2 codegen lowering, or a stdlib API returning primitive-tagged
+  unions), or when a user-facing complaint demonstrates the gap. Until
+  then GOF3032's note honestly names the accepted domain
+  (enum / `Result` / `Option`).
+
+Two boundary decisions land with Phase A and are normative for it:
+
+- **GOF3166 boundary**: exact unguarded skeleton duplicates fire GOF3030
+  when the skeleton is all slots (`V(_)` and `V(x)` are equal) and GOF3166
+  when the skeleton contains at least one literal. This diverges from the
+  Diagnostics Impact table below, which assigned GOF3166 only to primitive
+  and tuple scrutinees — that assignment presupposed Phase B's domain and
+  is superseded by this amendment for the enum domain.
+- **Duplicate leaves in BIND statements** follow RFC 0050's per-leaf
+  reassign semantics (an immutable duplicate leaf is GOF3003; a `mut`
+  duplicate leaf reassigns, last write wins), not the blanket GOF3006
+  rule stated for match payloads and loop leaves. RFC 0050 owns bind
+  semantics; RFC 0052's blanket wording applied to payload/for positions
+  only.
+
+The GOF3165 fix-it ("use a comparison ...") is additive beyond the
+"no fix-it" wording in the Diagnostics Impact table and is retained.
+
+### Original compatibility analysis
+
 - **existing programs keep compiling, with one bounded exception.**
   Every new syntactic form — literal, wildcard, tuple-scrutinee, and
   guarded arm heads, `_` leaves in binding statements and `for`
@@ -681,10 +725,9 @@ separators. `if` is one token, greppable, and already reserved.
   (a full-patterns walkthrough), `roadmap.md` (Phase 1 full-patterns
   item), and `tools/vscode-gof` grammar, snippets, and docs for arm
   heads, guards, and wildcards
-- RFC 0050 is not yet implemented in the compiler; this RFC extends its
-  grammar, so the two land as one coherent pattern subsystem (shared
-  `Pattern` node, shared arity and member diagnostics) rather than as
-  two stacked parsers
+- RFC 0050 landed before this RFC (commits 55731e1..a3fa325); the two
+  share one pattern grammar (BindingPattern grown by this RFC) and the
+  shared arm-shape machinery in ast.rs, rather than two stacked parsers
 
 ## Diagnostics Impact
 

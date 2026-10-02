@@ -1,0 +1,52 @@
+# Patterns walkthrough (RFC 0052): guards refine in arm order, literal
+# payload leaves match by value, wildcards discard, and destructuring
+# composes across every binding position.
+
+enum HttpOutcome:
+    Done(status: int, body: string)
+    Failed(code: int)
+
+fn classify(outcome: HttpOutcome) -> string:
+    # Guarded arms refine; the unguarded total arm closes the variant.
+    match outcome:
+        HttpOutcome.Done(status, body) if status == 404:
+            return "missing: " + body
+        HttpOutcome.Done(status, body) if status >= 500:
+            return "server error: " + to_string(status)
+        HttpOutcome.Done(200, _):
+            # A literal payload leaf matches by value; `_` discards.
+            return "ok"
+        HttpOutcome.Done(status, body):
+            return "other: " + to_string(status)
+        HttpOutcome.Failed(code):
+            return "transport failure " + to_string(code)
+
+fn main() -> int:
+    # Guard order matters: first matching arm wins, false guards fall
+    # through to the next arm.
+    assert(classify(HttpOutcome.Done(404, "doc")) == "missing: doc", "expected the 404 guard")
+    assert(classify(HttpOutcome.Done(500, "boom")) == "server error: 500", "expected the 5xx guard")
+    assert(classify(HttpOutcome.Done(200, "anything")) == "ok", "expected the literal arm")
+    assert(classify(HttpOutcome.Done(302, "redirect")) == "other: 302", "expected the total arm")
+    assert(classify(HttpOutcome.Failed(7)) == "transport failure 7", "expected the failure arm")
+
+    # Wildcards in every binding position.
+    pair = (3, 4)
+    (_, y) = pair
+    assert(y == 4, "expected the wildcard member to be discarded")
+    mut seen = 0
+    for (i, _) in [(1, 10), (2, 20)]:
+        seen = seen + i
+    assert(seen == 3, "expected the loop wildcard to skip its member")
+    _ = len("discarded")
+
+    # Guards see the arm's bindings; repeated variants with different
+    # guards are legal refinement, not duplicates.
+    match HttpOutcome.Done(201, "created"):
+        HttpOutcome.Done(status, body) if status == 201:
+            assert(body == "created", "expected the guard to see bindings")
+        HttpOutcome.Done(status, body):
+            assert(false, "expected the guarded arm to win")
+        HttpOutcome.Failed(code):
+            assert(false, "expected the done arms")
+    return 0

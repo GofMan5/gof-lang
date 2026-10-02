@@ -69,6 +69,14 @@
     "body": ["(${1:a}, ${2:b}) = ${3:pair}"],
     "description": "Destructure a tuple into two bindings (RFC 0050)"
   },
+  "Guarded Match Arm": {
+    "prefix": "gofguard",
+    "body": [
+      "${1:Enum}.${2:Variant}(${3:value}) if ${3:value} ${4:> 10}:",
+      "    ${5:return ${3:value}}"
+    ],
+    "description": "A guarded match arm: pattern, bindings, then a bool guard (RFC 0052)"
+  },
   "Tuple Function": {
     "prefix": "goftuplefn",
     "body": [

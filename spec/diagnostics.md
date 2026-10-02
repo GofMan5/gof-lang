@@ -149,3 +149,8 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3155`: degenerate tuple shape or tuple arity mismatch (empty or single-member tuples, trailing commas, and pattern/arity mismatches)
 - `GOF3156`: tuple destructuring against a non-tuple value
 - `GOF3157`: tuple element access with an out-of-range index or a non-tuple target
+- `GOF3163`: refutable pattern (literal or variant leaf) in a binding statement or `for` binding
+- `GOF3164`: literal pattern leaf whose type does not match the corresponding payload member type
+- `GOF3165`: match guard contract violation (non-bool guard, or `?`/`await`/`go` inside a guard)
+- `GOF3166`: duplicate match arm with an identical literal-containing arm skeleton
+- `GOF3167`: unreachable match arm (an arm after an unguarded all-irrefutable arm for the same variant)

@@ -11663,6 +11663,49 @@ mod tests {
     }
 
     #[test]
+    fn bind_duplicate_leaves_follow_rfc0050_reassign_semantics() {
+        // RFC 0052 phasing amendment: duplicate leaves in BIND statements
+        // follow RFC 0050's per-leaf contract, not the blanket GOF3006
+        // rule for payloads and loop leaves. An immutable duplicate leaf
+        // is the immutable-reassignment error.
+        let diagnostics = lower_source(
+            "fn main() -> int:\n    (x, x) = (1, 2)\n    return x\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3003"]);
+
+        // A `mut` duplicate leaf reassigns, last write wins.
+        let module = lower_source(
+            "fn main() -> int:\n    mut (x, x) = (1, 2)\n    return x\n",
+        )
+        .expect("typing should succeed");
+
+        let _ = module;
+    }
+
+    #[test]
+    fn enum_literal_skeleton_duplicates_report_gof3166() {
+        // RFC 0052 phasing amendment: the GOF3166 boundary is
+        // literal-in-skeleton, superseding the original table's
+        // primitive-scrutinee-only assignment.
+        let diagnostics = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(3):\n            return 1\n        Lamp.On(3):\n            return 2\n        Lamp.On(level):\n            return 3\n        Lamp.Off:\n            return 4\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(diagnostics.codes(), vec!["GOF3166"]);
+
+        // Pure-slot duplicates keep the existing GOF3030 contract.
+        let slot_diagnostics = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(level):\n            return 1\n        Lamp.On(other):\n            return 2\n        Lamp.Off:\n            return 4\n",
+        )
+        .expect_err("typing should fail");
+
+        assert_eq!(slot_diagnostics.codes(), vec!["GOF3030"]);
+    }
+
+    #[test]
     fn tuple_equality_requires_comparable_members() {
         // Same-type tuples of ints support equality.
         lower_source("fn main() -> bool:\n    a = (1, 2)\n    b = (3, 4)\n    return a == b\n")

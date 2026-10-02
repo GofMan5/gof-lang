@@ -115,6 +115,47 @@ Additional payload rules:
 - payload arms must bind the exact number of payload values
 - payload bindings become immutable locals inside that arm body
 
+Payload positions also accept refinement sub-patterns: a literal leaf
+matches by value, `_` discards, and tuple leaves nest:
+
+```gof
+enum JobState:
+    Ready
+    Running(pid: int)
+    Failed(message: string)
+
+fn score(state: JobState) -> int:
+    match state:
+        JobState.Ready:
+            return 0
+        JobState.Running(pid) if pid > 100:
+            return -1
+        JobState.Running(1):
+            return 1
+        JobState.Running(pid):
+            return pid
+        JobState.Failed(message):
+            return len(message)
+```
+
+### Guards
+
+An arm may end with a guard before its `:` — a `bool` expression that
+sees the arm's bindings:
+
+- arms are tested top to bottom; within an arm: pattern test, bindings,
+  guard, body
+- a `false` guard falls through to the next arm
+- the scrutinee is evaluated exactly once
+- guards must resolve to `bool` (no truthiness) and may not contain
+  `?`, `await`, or `go`
+
+Guards never count toward exhaustiveness: a variant is covered only by
+an unguarded arm with an irrefutable payload (bindings and `_` only).
+Literal arms refine — they never cover. Repeated variants are legal
+when the arms differ by guard or literal skeleton; two arms with the
+exact same literal skeleton are a duplicate.
+
 <Callout type="info">
   `match` is not just prettier branching. It is the current way `gof` makes state
   handling explicit and complete.
