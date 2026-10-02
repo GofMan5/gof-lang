@@ -455,7 +455,7 @@ The bootstrap compiler in this repository currently supports:
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result
 - an explicit function return annotation acts as the function contract and must stay compatible with every return path in the body
 - every `return` inside one function must resolve to one compatible type
-- `go` currently accepts `go some_function(...)` and `go closure_value(...)` where the callee resolves to a local closure binding
+- `go` currently accepts `go some_function(...)`, `go generic_function(...)` (type arguments inferred at the spawn site with bounds checked), and `go closure_value(...)` where the callee resolves to a local closure binding
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
 - `await_result(task)` currently accepts only task values produced by `go` and returns `Result[value, RuntimeError]`
