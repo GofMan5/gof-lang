@@ -92,6 +92,13 @@ fn sample_tuples() -> Result[int, RuntimeError]:
     (lo, hi) = pair
     return Result.Ok(pair.0 + hi)
 
+fn sample_closures() -> int:
+    add = fn (x: int, y: int) -> int:
+        return x + y
+    apply: fn(int) -> int = fn (x: int) -> int:
+        return x * 2
+    return add(1, 2) + apply(10)
+
 import testing
 
 test fn smoke_test(t: TestContext):

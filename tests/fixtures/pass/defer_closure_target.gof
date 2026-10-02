@@ -1,0 +1,51 @@
+# RFC 0045 + 0047 interplay: a defer whose TARGET is a closure binding
+# captures the closure VALUE at registration. Rebinding the target after
+# the `defer` still calls the registered closure at scope exit — this
+# fixture observes the deferred call through a channel the caller reads
+# after the callee returns, so a regression back to by-name capture
+# (which would call the rebound closure and send 999) fails the assert.
+
+fn make_sender(ch: channel[int], label: int) -> fn() -> Result[unit, RuntimeError]:
+    return fn () -> Result[unit, RuntimeError]:
+        return send(ch, label)
+
+fn observed_exit(ch: channel[int]) -> int:
+    first = make_sender(ch, 111)
+    second = make_sender(ch, 999)
+    mut c = first
+    # Target capture: the defer records the closure VALUE (first) in its
+    # synthetic __defer_callee slot at registration (GOF3137).
+    defer c()
+    c = second
+    # The rebind is visible to ordinary calls...
+    status = c()
+    match status:
+        Result.Ok(unit_value):
+            assert(true, "expected the rebound call to succeed")
+        Result.Err(error):
+            assert(false, "expected the rebound call to succeed")
+    # ...while the deferred call at this scope's exit still runs the
+    # registered closure: first, not second.
+    return 0
+
+fn main() -> int:
+    ch: channel[int] = channel(8)
+    observed_exit(ch)
+    # The rebound call already sent 999; the deferred target call now
+    # sends 111 at observed_exit's exit. The first recv must see 999
+    # (the ordinary call) and the second must see 111 (the deferred
+    # registration-time target) — order is deterministic because both
+    # sends complete before observed_exit returns.
+    first_recv = recv(ch)
+    match first_recv:
+        Result.Ok(value):
+            assert(value == 999, "expected the ordinary call's value first")
+        Result.Err(error):
+            assert(false, "expected the first recv to succeed")
+    second_recv = recv(ch)
+    match second_recv:
+        Result.Ok(value):
+            assert(value == 111, "defer must call the registration-time closure target, not the rebound binding")
+        Result.Err(error):
+            assert(false, "expected the second recv to succeed")
+    return 0

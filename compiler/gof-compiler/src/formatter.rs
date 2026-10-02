@@ -159,7 +159,13 @@ fn format_block(stmts: &[Stmt], indent_level: usize) -> String {
 fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
     let indent = "    ".repeat(indent_level);
     match stmt {
-        Stmt::Return(expr, _) => format!("{indent}return {}", format_expr(expr)),
+        // RFC 0047: statement-position expressions render through the
+        // indent-aware `format_expr_at` so closure bodies (blocks nested
+        // inside the expression) land at statement-relative depth instead
+        // of collapsing to depth 1.
+        Stmt::Return(expr, _) => {
+            format!("{indent}return {}", format_expr_at(expr, indent_level))
+        }
         Stmt::Bind {
             pattern,
             mutable,
@@ -175,13 +181,17 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             format!(
                 "{indent}{prefix}{}{annotation} = {}",
                 format_binding_pattern(pattern),
-                format_expr(value)
+                format_expr_at(value, indent_level)
             )
         }
-        Stmt::Assign { name, value, .. } => format!("{indent}{name} = {}", format_expr(value)),
+        Stmt::Assign { name, value, .. } => {
+            format!("{indent}{name} = {}", format_expr_at(value, indent_level))
+        }
         Stmt::Break(_) => format!("{indent}break"),
         Stmt::Continue(_) => format!("{indent}continue"),
-        Stmt::Defer(call, _) => format!("{indent}defer {}", format_expr(call)),
+        Stmt::Defer(call, _) => {
+            format!("{indent}defer {}", format_expr_at(call, indent_level))
+        }
         Stmt::If {
             condition,
             then_body,
@@ -190,7 +200,7 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
         } => {
             let mut result = format!(
                 "{indent}if {}:\n{}",
-                format_expr(condition),
+                format_expr_at(condition, indent_level),
                 format_block(then_body, indent_level + 1)
             );
             if !else_body.is_empty() {
@@ -205,7 +215,7 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             condition, body, ..
         } => format!(
             "{indent}while {}:\n{}",
-            format_expr(condition),
+            format_expr_at(condition, indent_level),
             format_block(body, indent_level + 1)
         ),
         Stmt::For {
@@ -216,7 +226,7 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
         } => format!(
             "{indent}for {} in {}:\n{}",
             format_binding_pattern(pattern),
-            format_expr(iterable),
+            format_expr_at(iterable, indent_level),
             format_block(body, indent_level + 1)
         ),
         Stmt::Match { value, arms, .. } => {
@@ -224,9 +234,13 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                 .iter()
                 .map(|arm| {
                     // RFC 0052: `pattern if guard:` — one space around
-                    // the `if`, exactly like an `if` statement head.
+                    // the `if`, exactly like an `if` statement head. The
+                    // guard renders at the arm-header level so nested
+                    // closure blocks stay arm-relative.
                     let guard = match &arm.guard {
-                        Some(guard_expr) => format!(" if {}", format_expr(guard_expr)),
+                        Some(guard_expr) => {
+                            format!(" if {}", format_expr_at(guard_expr, indent_level + 1))
+                        }
                         None => String::new(),
                     };
                     format!(
@@ -239,7 +253,10 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            format!("{indent}match {}:\n{arms}", format_expr(value))
+            format!(
+                "{indent}match {}:\n{arms}",
+                format_expr_at(value, indent_level)
+            )
         }
         Stmt::Select { arms, .. } => {
             let arms = arms
@@ -248,9 +265,11 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                     let header = match (&arm.binding, &arm.kind) {
                         (_, SelectArmKind::Default) => "default".to_string(),
                         (Some(binding), SelectArmKind::Operation { operation }) => {
-                            format!("{binding} = {}", format_expr(operation))
+                            format!("{binding} = {}", format_expr_at(operation, indent_level + 1))
                         }
-                        (None, SelectArmKind::Operation { operation }) => format_expr(operation),
+                        (None, SelectArmKind::Operation { operation }) => {
+                            format_expr_at(operation, indent_level + 1)
+                        }
                     };
                     format!(
                         "{}{}:\n{}",
@@ -263,7 +282,9 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                 .join("\n");
             format!("{indent}select:\n{arms}")
         }
-        Stmt::Expr(expr, _) => format!("{indent}{}", format_expr(expr)),
+        Stmt::Expr(expr, _) => {
+            format!("{indent}{}", format_expr_at(expr, indent_level))
+        }
     }
 }
 fn format_binding_pattern(pattern: &BindingPattern) -> String {

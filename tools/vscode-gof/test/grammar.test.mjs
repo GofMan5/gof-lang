@@ -148,21 +148,21 @@ test("highlights core gof syntax constructs", async () => {
   expectScope(lines, tokenLines, 87, "DuplexStream", "support.type.builtin.gof");
   expectScope(lines, tokenLines, 87, "connect_tcp", "support.function.builtin.gof");
   expectScope(lines, tokenLines, 88, "bytes_len", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 95, "import", "keyword.control.import.gof");
-  expectScope(lines, tokenLines, 95, "testing", "entity.name.namespace.gof");
-  expectScope(lines, tokenLines, 97, "test", "keyword.declaration.test.gof");
-  expectScope(lines, tokenLines, 97, "fn", "keyword.declaration.function.gof");
-  expectScope(lines, tokenLines, 97, "smoke_test", "entity.name.function.gof");
-  expectScope(lines, tokenLines, 97, "TestContext", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 101, "fixture", "keyword.declaration.fixture.gof");
-  expectScope(lines, tokenLines, 101, "module", "keyword.other.fixture-scope.gof");
-  expectScope(lines, tokenLines, 101, "fn", "keyword.declaration.function.gof");
-  expectScope(lines, tokenLines, 101, "shared_total", "entity.name.function.gof");
-  expectScope(lines, tokenLines, 104, "fixture", "keyword.declaration.fixture.gof");
-  expectScope(lines, tokenLines, 104, "test", "keyword.other.fixture-scope.gof");
-  expectScope(lines, tokenLines, 104, "scratch_dir", "entity.name.function.gof");
+  expectScope(lines, tokenLines, 102, "import", "keyword.control.import.gof");
+  expectScope(lines, tokenLines, 102, "testing", "entity.name.namespace.gof");
+  expectScope(lines, tokenLines, 104, "test", "keyword.declaration.test.gof");
+  expectScope(lines, tokenLines, 104, "fn", "keyword.declaration.function.gof");
+  expectScope(lines, tokenLines, 104, "smoke_test", "entity.name.function.gof");
   expectScope(lines, tokenLines, 104, "TestContext", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 104, "TempDir", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 108, "fixture", "keyword.declaration.fixture.gof");
+  expectScope(lines, tokenLines, 108, "module", "keyword.other.fixture-scope.gof");
+  expectScope(lines, tokenLines, 108, "fn", "keyword.declaration.function.gof");
+  expectScope(lines, tokenLines, 108, "shared_total", "entity.name.function.gof");
+  expectScope(lines, tokenLines, 111, "fixture", "keyword.declaration.fixture.gof");
+  expectScope(lines, tokenLines, 111, "test", "keyword.other.fixture-scope.gof");
+  expectScope(lines, tokenLines, 111, "scratch_dir", "entity.name.function.gof");
+  expectScope(lines, tokenLines, 111, "TestContext", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 111, "TempDir", "support.type.builtin.gof");
 });
 
 test("highlights tuple syntax constructs", async () => {
@@ -174,4 +174,16 @@ test("highlights tuple syntax constructs", async () => {
   expectScope(lines, tokenLines, 90, "int", "support.type.builtin.gof", 0);
   expectScope(lines, tokenLines, 91, "3", "constant.numeric.integer.decimal.gof");
   expectScope(lines, tokenLines, 91, "4", "constant.numeric.integer.decimal.gof");
+});
+
+test("highlights closure syntax constructs", async () => {
+  const { lines, tokenLines } = await tokenizeFixture();
+
+  // RFC 0047: the anonymous `fn (` expression keyword scopes as the
+  // function declaration keyword; the `fn(int)` type annotation scopes
+  // as a builtin type.
+  expectScope(lines, tokenLines, 96, "fn", "keyword.declaration.function.gof", 0);
+  expectScope(lines, tokenLines, 96, "int", "support.type.builtin.gof", 1);
+  expectScope(lines, tokenLines, 98, "fn", "support.type.builtin.gof", 0);
+  expectScope(lines, tokenLines, 98, "fn", "keyword.declaration.function.gof", 1);
 });

@@ -61,7 +61,7 @@ The bootstrap compiler in this repository currently supports:
 - `break`
 - `continue`
 - `defer <call-expression>` for explicit scope-exit cleanup
-- `go` for spawning top-level named function calls
+- `go` for spawning top-level named function calls and closure-value calls
 - `await` for waiting on task values
 - `await_result(task)` and `await_result(task, token)` for explicit recoverable task joins
 - module-level inference of function return types when they can be derived from return expressions
@@ -446,7 +446,7 @@ The bootstrap compiler in this repository currently supports:
 - function return types are inferred across the module until the bootstrap type layer reaches a stable result
 - an explicit function return annotation acts as the function contract and must stay compatible with every return path in the body
 - every `return` inside one function must resolve to one compatible type
-- `go` currently accepts only `go some_function(...)`
+- `go` currently accepts `go some_function(...)` and `go closure_value(...)` where the callee resolves to a local closure binding
 - task values carry the inferred return type of the spawned function when known
 - `await` currently accepts only task values produced by `go`
 - `await_result(task)` currently accepts only task values produced by `go` and returns `Result[value, RuntimeError]`

@@ -164,6 +164,50 @@
     "functionDeclarations": {
       "patterns": [
         {
+          "comment": "RFC 0047 anonymous function expression: `fn (x: int) -> int:` — a space separates the keyword from the parameter list, distinguishing expressions from `fn(...)` type annotations.",
+          "name": "meta.function.closure.gof",
+          "match": "\\b(fn)\\s+(\\()",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.function.gof"
+            },
+            "2": {
+              "name": "punctuation.section.group.begin.gof"
+            }
+          }
+        },
+        {
+          "comment": "RFC 0044 protocol-constrained generic function header: `fn name[T: Proto](...)` — the bracket bounds render as generic parameters.",
+          "name": "meta.function.generic.gof",
+          "match": "\\b(?:(test)\\s+)?(?:(fixture)\\s*(\\()\\s*(test|module)\\s*(\\))\\s+)?(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(\\[)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.test.gof"
+            },
+            "2": {
+              "name": "keyword.declaration.fixture.gof"
+            },
+            "3": {
+              "name": "punctuation.section.group.begin.gof"
+            },
+            "4": {
+              "name": "keyword.other.fixture-scope.gof"
+            },
+            "5": {
+              "name": "punctuation.section.group.end.gof"
+            },
+            "6": {
+              "name": "keyword.declaration.function.gof"
+            },
+            "7": {
+              "name": "entity.name.function.gof"
+            },
+            "8": {
+              "name": "punctuation.section.brackets.begin.gof"
+            }
+          }
+        },
+        {
           "name": "meta.function.gof",
           "match": "\\b(?:(test)\\s+)?(?:(fixture)\\s*(\\()\\s*(test|module)\\s*(\\))\\s+)?(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
           "captures": {
@@ -243,6 +287,11 @@
         {
           "name": "support.type.builtin.gof",
           "match": "\\b(?:int|string|bool|unit|json|cancel_token|list|dict|channel|task|Result|RuntimeError|Bytes|ReadStream|WriteStream|DuplexStream|TcpListener|SocketAddr|NetDeadline|TestContext|TempDir|TempFile)\\b"
+        },
+        {
+          "comment": "RFC 0047 closure type annotation: `fn(params) -> ret`.",
+          "name": "support.type.builtin.gof",
+          "match": "\\bfn(?=\\()"
         }
       ]
     },
@@ -267,6 +316,11 @@
         {
           "name": "storage.modifier.gof",
           "match": "\\b(?:mut|async|defer|unsafe)\\b"
+        },
+        {
+          "comment": "RFC 0044 explicit conformance declaration keyword.",
+          "name": "storage.modifier.gof",
+          "match": "\\bimpl\\b"
         },
         {
           "name": "keyword.operator.logical.gof",
