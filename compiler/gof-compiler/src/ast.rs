@@ -11,6 +11,10 @@ pub struct Module {
     pub structs: Vec<StructDecl>,
     pub enums: Vec<EnumDecl>,
     pub functions: Vec<Function>,
+    /// RFC 0044 protocol declarations.
+    pub protocols: Vec<ProtocolDecl>,
+    /// RFC 0044 explicit conformance declarations: `impl Type: Proto`.
+    pub impls: Vec<ImplDecl>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -26,8 +30,51 @@ pub struct Function {
     pub receiver_type: Option<TypeRef>,
     pub name: String,
     pub params: Vec<Param>,
+    /// RFC 0044 protocol-constrained type parameters: the `[T: Shape]`
+    /// list before the value parameters. Empty for non-generic functions.
+    pub type_params: Vec<TypeParam>,
     pub return_type: Option<TypeRef>,
     pub body: Vec<Stmt>,
+    pub span: Span,
+    pub source_path: PathBuf,
+}
+
+/// RFC 0044 type parameter with one or more protocol bounds.
+#[derive(Debug, Clone, Serialize)]
+pub struct TypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+    pub span: Span,
+}
+
+/// RFC 0044 protocol declaration: `protocol Name:` followed by an
+/// indented block of signature-only method requirements.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtocolDecl {
+    pub name: String,
+    pub requirements: Vec<ProtocolRequirement>,
+    pub span: Span,
+    pub source_path: PathBuf,
+}
+
+/// One signature-only requirement line inside a protocol block. The
+/// receiver is the first parameter, annotated `Self`; a mutating
+/// requirement writes it as `mut receiver: Self`, so receiver
+/// mutability is `params[0].mutable`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProtocolRequirement {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: Option<TypeRef>,
+    pub span: Span,
+}
+
+/// RFC 0044 explicit conformance declaration: `impl Struct: Proto[, ...]`
+/// — block-less, newline-terminated, top level.
+#[derive(Debug, Clone, Serialize)]
+pub struct ImplDecl {
+    pub struct_name: String,
+    pub protocols: Vec<String>,
     pub span: Span,
     pub source_path: PathBuf,
 }
@@ -97,9 +144,16 @@ pub struct EnumVariantField {
     pub span: Span,
 }
 
+/// One function parameter. `mutable` is RFC 0044's `mut` parameter
+/// marker: `mut self: Counter` method receivers and `mut counter: T`
+/// protocol-constrained generic parameters. The parser accepts the
+/// marker in named-function parameter lists; the typed layer owns the
+/// mutability discipline (receiver conformance matching and
+/// mutating-requirement callability).
 #[derive(Debug, Clone, Serialize)]
 pub struct Param {
     pub name: String,
+    pub mutable: bool,
     pub ty: Option<TypeRef>,
     pub span: Span,
 }
@@ -396,6 +450,8 @@ impl<'a> Parser<'a> {
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut functions = Vec::new();
+        let mut protocols = Vec::new();
+        let mut impls = Vec::new();
         while !self.at_end() {
             self.skip_newlines();
             if self.matches(TokenDiscriminant::Eof) {
@@ -407,6 +463,10 @@ impl<'a> Parser<'a> {
                 structs.push(self.parse_struct());
             } else if self.check(TokenDiscriminant::Enum) {
                 enums.push(self.parse_enum());
+            } else if self.check(TokenDiscriminant::Protocol) {
+                protocols.push(self.parse_protocol());
+            } else if self.check(TokenDiscriminant::Impl) {
+                impls.push(self.parse_impl());
             } else {
                 functions.push(self.parse_function());
             }
@@ -416,6 +476,238 @@ impl<'a> Parser<'a> {
             structs,
             enums,
             functions,
+            protocols,
+            impls,
+        }
+    }
+
+    /// RFC 0044 protocol declaration: `protocol Name:` followed by an
+    /// indented block of signature-only requirements. Each requirement is
+    /// an `fn` line WITHOUT a body and WITHOUT a trailing colon,
+    /// newline-terminated.
+    fn parse_protocol(&mut self) -> ProtocolDecl {
+        let span = self.expect(TokenDiscriminant::Protocol, "expected `protocol`");
+        let name = self.expect_ident("expected a protocol name after `protocol`");
+        self.expect(
+            TokenDiscriminant::Colon,
+            "expected `:` after the protocol name",
+        );
+        self.skip_newlines();
+        let requirements = self.parse_protocol_requirements();
+        ProtocolDecl {
+            name,
+            requirements,
+            span,
+            source_path: PathBuf::new(),
+        }
+    }
+
+    fn parse_protocol_requirements(&mut self) -> Vec<ProtocolRequirement> {
+        let mut requirements = Vec::new();
+        if !self.check(TokenDiscriminant::Indent) {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3132",
+                    "protocol blocks require at least one requirement",
+                    "gof has no marker protocols: an empty protocol block has no use without existential values",
+                    self.previous().span,
+                )
+                .with_fix_it("add an `fn` requirement inside the protocol block"),
+            );
+            return requirements;
+        }
+        self.advance();
+        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
+            self.skip_newlines();
+            if self.check(TokenDiscriminant::Dedent) {
+                break;
+            }
+            if self.matches(TokenDiscriminant::Eof) {
+                break;
+            }
+            if !self.check(TokenDiscriminant::Fn) {
+                // Only `fn` requirement lines are legal content inside a
+                // protocol block; anything else (struct fields, nested
+                // declarations, `test`/`fixture` forms, stray
+                // expressions) is rejected here rather than parsed as a
+                // declaration.
+                let span = self.peek().span;
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        "protocol blocks contain only `fn` requirements",
+                        "a protocol block is a list of signature-only `fn` lines; no other declaration or statement is legal here",
+                        span,
+                    )
+                    .with_fix_it("remove this line or move it out of the protocol block"),
+                );
+                // Recover past the offending line so the parser can keep
+                // checking the rest of the module.
+                while !self.matches(TokenDiscriminant::Newline) && !self.at_end() {
+                    self.advance();
+                }
+                continue;
+            }
+            requirements.push(self.parse_protocol_requirement());
+        }
+        self.expect(
+            TokenDiscriminant::Dedent,
+            "expected the protocol block to end",
+        );
+        if requirements.is_empty() {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3132",
+                    "protocol blocks require at least one requirement",
+                    "gof has no marker protocols: an empty protocol block has no use without existential values",
+                    self.previous().span,
+                )
+                .with_fix_it("add an `fn` requirement inside the protocol block"),
+            );
+        }
+        requirements
+    }
+
+    fn parse_protocol_requirement(&mut self) -> ProtocolRequirement {
+        let span = self.expect(TokenDiscriminant::Fn, "expected an `fn` requirement");
+        let name = self.expect_ident("expected a requirement name");
+        // Requirements use the unqualified form: the conforming type is
+        // unknown, so `fn Shape.area(...)` falsely suggests the protocol
+        // owns or provides the method.
+        if self.check(TokenDiscriminant::Dot) {
+            let dot_span = self.advance().span;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3132",
+                    "protocol requirements are unqualified `fn` lines",
+                    "a requirement has no owner to name: the conforming type is unknown and the method bodies live in conforming structs",
+                    dot_span,
+                )
+                .with_fix_it(format!("write the requirement as `fn {name}(...)`")),
+            );
+            self.skip_to_newline();
+            return ProtocolRequirement {
+                name,
+                params: Vec::new(),
+                return_type: None,
+                span,
+            };
+        }
+        self.expect(
+            TokenDiscriminant::LParen,
+            "expected `(` after the requirement name",
+        );
+        let mut params = Vec::new();
+        while !self.check(TokenDiscriminant::RParen) {
+            params.push(self.parse_param());
+            if !self.matches(TokenDiscriminant::Comma) {
+                break;
+            }
+        }
+        self.expect(
+            TokenDiscriminant::RParen,
+            "expected `)` after the requirement parameters",
+        );
+        let return_type = if self.check(TokenDiscriminant::Arrow) {
+            self.advance();
+            Some(self.parse_type_ref("expected a return type for the requirement"))
+        } else {
+            None
+        };
+        // A requirement line is newline-terminated: a trailing colon is
+        // gof's block introducer, and a requirement has nothing to
+        // introduce. When a colon (and an indented body block) follows,
+        // report GOF3132 and recover past the block so the rest of the
+        // protocol still parses.
+        if self.check(TokenDiscriminant::Colon) {
+            let colon_span = self.advance().span;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3132",
+                    "protocol requirements carry no body",
+                    "the trailing colon is gof's block introducer; a requirement is a signature-only line and the method bodies live in conforming structs",
+                    colon_span,
+                )
+                .with_fix_it("remove the trailing colon from this requirement"),
+            );
+            if self.check(TokenDiscriminant::Newline) {
+                self.advance();
+                if self.check(TokenDiscriminant::Indent) {
+                    let mut depth = 1usize;
+                    self.advance();
+                    while depth > 0 && !self.at_end() {
+                        if self.matches(TokenDiscriminant::Indent) {
+                            depth += 1;
+                        } else if self.matches(TokenDiscriminant::Dedent) {
+                            depth -= 1;
+                        } else {
+                            self.advance();
+                        }
+                    }
+                    return ProtocolRequirement {
+                        name,
+                        params,
+                        return_type,
+                        span,
+                    };
+                }
+            }
+            return ProtocolRequirement {
+                name,
+                params,
+                return_type,
+                span,
+            };
+        }
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline after the requirement",
+        );
+        ProtocolRequirement {
+            name,
+            params,
+            return_type,
+            span,
+        }
+    }
+
+    /// Consume tokens through the end of the current physical line —
+    /// parser recovery for malformed lines whose shape cannot be
+    /// interpreted at all.
+    fn skip_to_newline(&mut self) {
+        while !self.check(TokenDiscriminant::Newline) && !self.at_end() {
+            self.advance();
+        }
+        if self.check(TokenDiscriminant::Newline) {
+            self.advance();
+        }
+    }
+
+    /// RFC 0044 explicit conformance: `impl Struct: Proto[, Proto2]` —
+    /// block-less, newline-terminated.
+    fn parse_impl(&mut self) -> ImplDecl {
+        let span = self.expect(TokenDiscriminant::Impl, "expected `impl`");
+        let struct_name = self.expect_ident("expected a struct name after `impl`");
+        self.expect(
+            TokenDiscriminant::Colon,
+            "expected `:` between the struct name and the protocol list",
+        );
+        let mut protocols = Vec::new();
+        loop {
+            protocols.push(self.expect_ident("expected a protocol name in the impl list"));
+            if !self.matches(TokenDiscriminant::Comma) {
+                break;
+            }
+        }
+        self.expect(
+            TokenDiscriminant::Newline,
+            "expected a newline after the impl declaration",
+        );
+        ImplDecl {
+            struct_name,
+            protocols,
+            span,
+            source_path: PathBuf::new(),
         }
     }
 
@@ -478,6 +770,13 @@ impl<'a> Parser<'a> {
         } else {
             (None, head)
         };
+        // RFC 0044 protocol-constrained type parameters: `[T: Shape]`
+        // before the value parameter list.
+        let type_params = if self.check(TokenDiscriminant::LBracket) {
+            self.parse_type_params()
+        } else {
+            Vec::new()
+        };
         self.expect(
             TokenDiscriminant::LParen,
             "expected `(` after function name",
@@ -500,11 +799,100 @@ impl<'a> Parser<'a> {
             receiver_type,
             name,
             params,
+            type_params,
             return_type,
             body,
             span: Span::new(start.line, start.column, start.end_column),
             source_path: PathBuf::new(),
         }
+    }
+
+    /// RFC 0044: `[T: Shape, U: Serializable]` and `[T: Shape, Drawable]`
+    /// — one or more type parameters, each with one or more protocol
+    /// bounds. Every type parameter MUST carry a colon and at least one
+    /// bound at parse time, which makes the comma list unambiguous
+    /// without lookahead: a comma-separated identifier followed by `:`
+    /// opens a new type parameter (bounds are bare names and never carry
+    /// a colon), and any other identifier is another bound of the
+    /// current one. `[T]` and `[T, U]` are rejected here with GOF3132.
+    fn parse_type_params(&mut self) -> Vec<TypeParam> {
+        self.expect(
+            TokenDiscriminant::LBracket,
+            "expected `[` to start the type parameter list",
+        );
+        let mut params: Vec<TypeParam> = Vec::new();
+        let mut current: Option<TypeParam> = None;
+        while !self.check(TokenDiscriminant::RBracket) && !self.at_end() {
+            let name = self.expect_ident("expected a type parameter name or protocol bound");
+            let span = self.previous().span;
+            if self.matches(TokenDiscriminant::Colon) {
+                // `Name:` opens a new type parameter; its first bound is
+                // mandatory right after the colon.
+                if let Some(param) = current.take() {
+                    params.push(param);
+                }
+                let first_bound = self.expect_ident("expected a protocol name in the bounds list");
+                current = Some(TypeParam {
+                    name,
+                    bounds: vec![first_bound],
+                    span,
+                });
+            } else {
+                // A bare identifier after a comma is another bound of the
+                // current type parameter — unless there is no current
+                // parameter, or the current one is itself an unbounded
+                // error recovery, in which case this name is another
+                // unbounded type parameter.
+                let has_bounded_current = current
+                    .as_ref()
+                    .map(|param| !param.bounds.is_empty())
+                    .unwrap_or(false);
+                if has_bounded_current {
+                    current.as_mut().expect("checked above").bounds.push(name);
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3132",
+                            format!("type parameter `{name}` requires protocol bounds"),
+                            "every type parameter in a generic function must carry a colon and at least one protocol bound, as in `[T: Shape]`",
+                            span,
+                        )
+                        .with_fix_it(format!("write the parameter as `[{name}: Protocol]`")),
+                    );
+                    if let Some(param) = current.take() {
+                        params.push(param);
+                    }
+                    current = Some(TypeParam {
+                        name,
+                        bounds: Vec::new(),
+                        span,
+                    });
+                }
+            }
+            if !self.matches(TokenDiscriminant::Comma) {
+                break;
+            }
+        }
+        if let Some(param) = current.take() {
+            params.push(param);
+        }
+        if params.is_empty() {
+            let span = self.previous().span;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3132",
+                    "type parameter lists cannot be empty",
+                    "a generic function declares one or more type parameters, each with protocol bounds",
+                    span,
+                )
+                .with_fix_it("add a type parameter such as `[T: Protocol]`"),
+            );
+        }
+        self.expect(
+            TokenDiscriminant::RBracket,
+            "expected `]` to close the type parameter list",
+        );
+        params
     }
 
     fn parse_fixture_scope_name(&mut self) -> (String, Span) {
@@ -573,16 +961,34 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_param(&mut self) -> Param {
+        // RFC 0044: a `mut` marker opens an inout-view parameter —
+        // `mut self: Counter` method receivers and `mut counter: T`
+        // generic parameters. The typed layer owns the discipline; the
+        // parser only records the marker, extending the span over the
+        // whole `mut name` pair.
+        let mut_span = self.check(TokenDiscriminant::Mut).then(|| self.peek().span);
+        let mutable = self.matches(TokenDiscriminant::Mut);
         let name = self.expect_ident("expected parameter name");
-        let span = self.previous().span;
+        let span = match mut_span {
+            Some(start) => Span::new(start.line, start.column, self.previous().span.end_column),
+            None => self.previous().span,
+        };
         let ty = self.parse_optional_type_ref();
-        Param { name, ty, span }
+        Param {
+            name,
+            mutable,
+            ty,
+            span,
+        }
     }
 
     /// RFC 0047 closure parameters: same shape as named-function
     /// parameters, but every parameter requires an explicit type
     /// annotation (GOF3142), duplicate names are rejected (GOF3142), and
     /// `self` is rejected as a receiver-style parameter (GOF3142).
+    /// RFC 0044 `mut` parameters are named-function surface only:
+    /// closures have no receiver conformance story, so the marker is
+    /// rejected here (GOF3142) instead of gaining meaning.
     fn parse_closure_params(&mut self) -> Vec<Param> {
         let mut params = Vec::new();
         if self.check(TokenDiscriminant::RParen) {
@@ -591,6 +997,18 @@ impl<'a> Parser<'a> {
 
         let mut seen = std::collections::HashSet::new();
         loop {
+            if self.check(TokenDiscriminant::Mut) {
+                let span = self.advance().span;
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3142",
+                        "closure parameters cannot use `mut`",
+                        "the `mut` parameter marker applies to named method receivers and protocol-constrained generic parameters; anonymous functions have neither",
+                        span,
+                    )
+                    .with_fix_it("remove the `mut` marker or use a named function"),
+                );
+            }
             let name = self.expect_ident("expected a closure parameter name");
             let span = self.previous().span;
             if !seen.insert(name.clone()) {
@@ -629,7 +1047,12 @@ impl<'a> Parser<'a> {
                 );
                 None
             };
-            params.push(Param { name, ty, span });
+            params.push(Param {
+                name,
+                mutable: false,
+                ty,
+                span,
+            });
             if !self.matches(TokenDiscriminant::Comma) {
                 break;
             }
@@ -2405,6 +2828,8 @@ enum TokenDiscriminant {
     Import,
     Struct,
     Enum,
+    Protocol,
+    Impl,
     Test,
     Fixture,
     Fn,
@@ -2462,6 +2887,8 @@ impl TokenDiscriminant {
                 | (Self::Import, TokenKind::Import)
                 | (Self::Struct, TokenKind::Struct)
                 | (Self::Enum, TokenKind::Enum)
+                | (Self::Protocol, TokenKind::Protocol)
+                | (Self::Impl, TokenKind::Impl)
                 | (Self::Test, TokenKind::Test)
                 | (Self::Fixture, TokenKind::Fixture)
                 | (Self::Fn, TokenKind::Fn)
@@ -2518,6 +2945,8 @@ impl TokenDiscriminant {
             Self::Import => "`import`",
             Self::Struct => "`struct`",
             Self::Enum => "`enum`",
+            Self::Protocol => "`protocol`",
+            Self::Impl => "`impl`",
             Self::Fixture => "`fixture`",
             Self::Fn => "`fn`",
             Self::If => "`if`",

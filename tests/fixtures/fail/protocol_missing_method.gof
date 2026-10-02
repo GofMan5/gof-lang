@@ -1,0 +1,13 @@
+protocol Shape:
+    fn area(self: Self) -> int
+
+struct Circle:
+    radius: int
+
+fn Circle.name(self: Circle) -> string:
+    return "circle"
+
+impl Circle: Shape
+
+fn main() -> int:
+    return 0

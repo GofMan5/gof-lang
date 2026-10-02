@@ -369,6 +369,7 @@ fn lex_line(
                     "struct" => TokenKind::Struct,
                     "enum" => TokenKind::Enum,
                     "protocol" => TokenKind::Protocol,
+                    "impl" => TokenKind::Impl,
                     "match" => TokenKind::Match,
                     "async" => TokenKind::Async,
                     "await" => TokenKind::Await,

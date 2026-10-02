@@ -1,7 +1,7 @@
 use crate::ast::{
     BinaryOp, EnumDecl, EnumVariant, EnumVariantField, Expr, FixtureScopeRef, FunctionKind,
-    MatchPattern, Module, Param, SelectArm, SelectArmKind, Stmt, StructDecl, StructField, TypeRef,
-    UnaryOp,
+    ImplDecl, MatchPattern, Module, Param, ProtocolDecl, ProtocolRequirement, SelectArm,
+    SelectArmKind, Stmt, StructDecl, StructField, TypeParam, TypeRef, UnaryOp,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -12,6 +12,11 @@ pub struct HirModule {
     pub structs: Vec<HirStruct>,
     pub enums: Vec<HirEnum>,
     pub functions: Vec<HirFunction>,
+    /// RFC 0044 protocol declarations, mirroring `ast::ProtocolDecl`.
+    pub protocols: Vec<HirProtocolDecl>,
+    /// RFC 0044 explicit conformance declarations, mirroring
+    /// `ast::ImplDecl`.
+    pub impls: Vec<HirImplDecl>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,8 +27,48 @@ pub struct HirFunction {
     pub receiver_type: Option<HirTypeRef>,
     pub name: String,
     pub params: Vec<HirParam>,
+    /// RFC 0044 protocol-constrained type parameters: `[T: Shape]`.
+    pub type_params: Vec<HirTypeParam>,
     pub return_type: Option<HirTypeRef>,
     pub body: Vec<HirStmt>,
+    pub source_path: PathBuf,
+}
+
+/// RFC 0044 type parameter with its protocol bounds, mirroring
+/// `ast::TypeParam`.
+#[derive(Debug, Clone, Serialize)]
+pub struct HirTypeParam {
+    pub name: String,
+    pub bounds: Vec<String>,
+    pub span: Span,
+}
+
+/// RFC 0044 protocol declaration, mirroring `ast::ProtocolDecl`.
+#[derive(Debug, Clone, Serialize)]
+pub struct HirProtocolDecl {
+    pub name: String,
+    pub requirements: Vec<HirProtocolRequirement>,
+    pub span: Span,
+    pub source_path: PathBuf,
+}
+
+/// One signature-only requirement. The receiver is the first parameter;
+/// a mutating requirement carries `mut` on it (`params[0].mutable`).
+#[derive(Debug, Clone, Serialize)]
+pub struct HirProtocolRequirement {
+    pub name: String,
+    pub params: Vec<HirParam>,
+    pub return_type: Option<HirTypeRef>,
+    pub span: Span,
+}
+
+/// RFC 0044 explicit conformance declaration, mirroring
+/// `ast::ImplDecl`.
+#[derive(Debug, Clone, Serialize)]
+pub struct HirImplDecl {
+    pub struct_name: String,
+    pub protocols: Vec<String>,
+    pub span: Span,
     pub source_path: PathBuf,
 }
 
@@ -88,6 +133,9 @@ impl HirBindingPattern {
 #[derive(Debug, Clone, Serialize)]
 pub struct HirParam {
     pub name: String,
+    /// RFC 0044 `mut` marker: `mut self: Counter` receivers and
+    /// `mut counter: T` generic parameters.
+    pub mutable: bool,
     pub ty: Option<HirTypeRef>,
     pub span: Span,
 }
@@ -298,11 +346,53 @@ pub fn lower(module: &Module) -> HirModule {
                 receiver_type: function.receiver_type.as_ref().map(lower_type_ref),
                 name: function.name.clone(),
                 params: function.params.iter().map(lower_param).collect(),
+                type_params: function.type_params.iter().map(lower_type_param).collect(),
                 return_type: function.return_type.as_ref().map(lower_type_ref),
                 body: function.body.iter().map(lower_stmt).collect(),
                 source_path: function.source_path.clone(),
             })
             .collect(),
+        protocols: module.protocols.iter().map(lower_protocol).collect(),
+        impls: module.impls.iter().map(lower_impl).collect(),
+    }
+}
+
+fn lower_protocol(decl: &ProtocolDecl) -> HirProtocolDecl {
+    HirProtocolDecl {
+        name: decl.name.clone(),
+        requirements: decl
+            .requirements
+            .iter()
+            .map(lower_protocol_requirement)
+            .collect(),
+        span: decl.span,
+        source_path: decl.source_path.clone(),
+    }
+}
+
+fn lower_protocol_requirement(requirement: &ProtocolRequirement) -> HirProtocolRequirement {
+    HirProtocolRequirement {
+        name: requirement.name.clone(),
+        params: requirement.params.iter().map(lower_param).collect(),
+        return_type: requirement.return_type.as_ref().map(lower_type_ref),
+        span: requirement.span,
+    }
+}
+
+fn lower_impl(decl: &ImplDecl) -> HirImplDecl {
+    HirImplDecl {
+        struct_name: decl.struct_name.clone(),
+        protocols: decl.protocols.clone(),
+        span: decl.span,
+        source_path: decl.source_path.clone(),
+    }
+}
+
+fn lower_type_param(param: &TypeParam) -> HirTypeParam {
+    HirTypeParam {
+        name: param.name.clone(),
+        bounds: param.bounds.clone(),
+        span: param.span,
     }
 }
 
@@ -353,6 +443,7 @@ fn lower_enum_variant_field(field: &EnumVariantField) -> HirEnumVariantField {
 fn lower_param(param: &Param) -> HirParam {
     HirParam {
         name: param.name.clone(),
+        mutable: param.mutable,
         ty: param.ty.as_ref().map(lower_type_ref),
         span: param.span,
     }

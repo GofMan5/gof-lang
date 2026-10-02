@@ -73,7 +73,7 @@ where
         .get(&root_path)
         .map(|module| module.imports.clone())
         .unwrap_or_default();
-    let (structs, enums, functions) = resolver.collect_items(&mut diagnostics);
+    let (structs, enums, functions, protocols, impls) = resolver.collect_items(&mut diagnostics);
 
     if diagnostics.is_empty() {
         let sources = resolver
@@ -87,6 +87,8 @@ where
                 structs,
                 enums,
                 functions,
+                protocols,
+                impls,
             },
             sources,
         })
@@ -237,6 +239,8 @@ where
         Vec<crate::ast::StructDecl>,
         Vec<crate::ast::EnumDecl>,
         Vec<crate::ast::Function>,
+        Vec<crate::ast::ProtocolDecl>,
+        Vec<crate::ast::ImplDecl>,
     ) {
         let mut seen_structs = HashMap::<String, (PathBuf, crate::source::Span)>::new();
         let mut seen_enums = HashMap::<String, (PathBuf, crate::source::Span)>::new();
@@ -245,6 +249,12 @@ where
         let mut structs = Vec::new();
         let mut enums = Vec::new();
         let mut functions = Vec::new();
+        // RFC 0044: protocol and impl declarations cross the module graph
+        // like other top-level names.
+        let mut seen_protocols = HashMap::<String, (PathBuf, crate::source::Span)>::new();
+        let mut seen_impls = HashMap::<(String, String), (PathBuf, crate::source::Span)>::new();
+        let mut protocols = Vec::new();
+        let mut impls = Vec::new();
 
         for path in &self.load_order {
             let module = self
@@ -474,9 +484,122 @@ where
                 seen.insert(function.name.clone(), (path.clone(), function.span));
                 functions.push(function.clone());
             }
+
+            // RFC 0044: protocol declarations join the top-level
+            // namespace under the existing conflict rules.
+            for decl in &module.protocols {
+                if let Some((original_path, original_span)) =
+                    seen_protocols.get(&decl.name).cloned()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3132",
+                            format!("duplicate protocol `{}` in module graph", decl.name),
+                            format!(
+                                "first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it("rename one of the protocols or remove the conflicting import")
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                if let Some((original_path, original_span)) = seen_structs.get(&decl.name).cloned()
+                {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between a protocol and a struct",
+                                decl.name
+                            ),
+                            format!(
+                                "the struct was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it(
+                            "rename either the protocol or the struct so type names stay unambiguous",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                if let Some((original_path, original_span)) = seen.get(&decl.name).cloned() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3021",
+                            format!(
+                                "top-level name `{}` conflicts between a protocol and a function",
+                                decl.name
+                            ),
+                            format!(
+                                "the function was first declared at {}:{}:{}",
+                                original_path.display(),
+                                original_span.line,
+                                original_span.column
+                            ),
+                            decl.span,
+                        )
+                        .with_fix_it(
+                            "rename either the protocol or the function so top-level names stay unambiguous",
+                        )
+                        .with_source_path(path.clone()),
+                    );
+                    continue;
+                }
+
+                seen_protocols.insert(decl.name.clone(), (path.clone(), decl.span));
+                let mut decl = decl.clone();
+                decl.source_path = path.clone();
+                protocols.push(decl);
+            }
+
+            // RFC 0044: impl declarations — (struct, protocol) pairs are
+            // unique across the module graph.
+            for decl in &module.impls {
+                for protocol in &decl.protocols {
+                    let impl_key = (decl.struct_name.clone(), protocol.clone());
+                    if let Some((original_path, original_span)) = seen_impls.get(&impl_key).cloned()
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3133",
+                                format!(
+                                    "duplicate conformance `{}: {}` in module graph",
+                                    decl.struct_name, protocol
+                                ),
+                                format!(
+                                    "first declared at {}:{}:{}; the struct's own module is the single conformance authority",
+                                    original_path.display(),
+                                    original_span.line,
+                                    original_span.column
+                                ),
+                                decl.span,
+                            )
+                            .with_fix_it("remove one of the duplicate impl declarations")
+                            .with_source_path(path.clone()),
+                        );
+                    } else {
+                        seen_impls.insert(impl_key, (path.clone(), decl.span));
+                    }
+                }
+                let mut decl = decl.clone();
+                decl.source_path = path.clone();
+                impls.push(decl);
+            }
         }
 
-        (structs, enums, functions)
+        (structs, enums, functions, protocols, impls)
     }
 
     fn package_context_for_source(

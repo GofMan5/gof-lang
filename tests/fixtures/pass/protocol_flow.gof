@@ -1,0 +1,44 @@
+# Protocols (RFC 0044): contracts, explicit conformance, generic
+# functions with bounds, and go spawn of instantiated generic calls.
+# Struct mutation is whole-receiver construction (value semantics);
+# mut-receiver discipline is the move-checker's scope (GOF3131).
+
+protocol Counter:
+    fn value(self: Self) -> int
+    fn bumped(self: Self) -> Self
+
+struct Tally:
+    count: int
+
+fn Tally.value(self: Tally) -> int:
+    return self.count
+
+fn Tally.bumped(self: Tally) -> Tally:
+    return Tally(self.count + 1)
+
+impl Tally: Counter
+
+fn grow[T: Counter](counter: T) -> int:
+    return counter.bumped().value()
+
+fn main() -> int:
+    tally = Tally(5)
+    assert(grow(tally) == 6, "expected the bounded call chain to run")
+    assert(tally.count == 5, "value semantics: the caller binding is untouched")
+    results: channel[int] = channel(4)
+    send_value = fn (counter: Tally) -> Result[unit, RuntimeError]:
+        return send(results, counter.value())
+    task = go send_value(tally)
+    status = await task
+    match status:
+        Result.Ok(unit_value):
+            assert(true, "expected the spawn to succeed")
+        Result.Err(error):
+            assert(false, "expected the spawn to succeed")
+    outcome = recv(results)
+    match outcome:
+        Result.Ok(value):
+            assert(value == 5, "expected the value through the shared channel")
+        Result.Err(error):
+            assert(false, "expected the recv to succeed")
+    return 0

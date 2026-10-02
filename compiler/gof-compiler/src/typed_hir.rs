@@ -33,6 +33,22 @@ pub enum Type {
     /// Compatibility is exact structural match — no variance, no implicit
     /// coercion with any other type.
     Function(Vec<Type>, Box<Type>),
+    /// RFC 0044: a protocol name used as a value type annotation. Every
+    /// value position rejects it (GOF3135) at resolution time; the
+    /// variant exists so downstream layers can recognize the rejected
+    /// shape, and compatibility treats it like `Unknown` for error
+    /// recovery after the primary diagnostic fired.
+    Protocol(String),
+    /// RFC 0044: a generic type parameter used inside a signature or
+    /// body (`shape: T`). Compatible only with the same parameter — a
+    /// `T`-typed value is not an `int` until call-site substitution
+    /// replaces it.
+    TypeParam(String),
+    /// RFC 0044: the `Self` placeholder inside a protocol requirement
+    /// signature. Produced only by requirement resolution and substituted
+    /// away by the conformance pass (with the conforming struct) or the
+    /// generic body checker (with the type parameter).
+    SelfType,
     Unknown,
     Unit,
 }
@@ -105,6 +121,9 @@ impl Type {
                     .join(", "),
                 return_type.display_name()
             ),
+            Self::Protocol(name) => name.clone(),
+            Self::TypeParam(name) => name.clone(),
+            Self::SelfType => "Self".to_string(),
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
         }
@@ -410,6 +429,10 @@ struct FunctionSignature {
     declared_return_type: Option<Type>,
     fixture_value_type: Option<Type>,
     return_type: Type,
+    /// RFC 0044: the function's protocol-constrained type parameters
+    /// (name → bounds). Empty for non-generic functions; call sites infer
+    /// and bound-check them.
+    type_params: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -839,13 +862,27 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         .map(|decl| decl.name.clone())
         .collect::<HashSet<_>>();
     known_enums.extend(builtin_enums.keys().cloned());
+    // RFC 0044: protocol names resolve through the same module graph and
+    // feed the GOF3135 value-position rejection in the annotation
+    // resolver.
+    let known_protocols: HashSet<String> = module
+        .protocols
+        .iter()
+        .map(|decl| decl.name.clone())
+        .collect();
     let struct_signatures = module
         .structs
         .iter()
         .map(|decl| {
             (
                 decl.name.clone(),
-                lower_struct_signature(decl, &known_structs, &known_enums, &mut diagnostics),
+                lower_struct_signature(
+                    decl,
+                    &known_structs,
+                    &known_enums,
+                    &known_protocols,
+                    &mut diagnostics,
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
@@ -855,11 +892,31 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         .map(|decl| {
             (
                 decl.name.clone(),
-                lower_enum_signature(decl, &known_structs, &known_enums, &mut diagnostics),
+                lower_enum_signature(
+                    decl,
+                    &known_structs,
+                    &known_enums,
+                    &known_protocols,
+                    &mut diagnostics,
+                ),
             )
         })
         .collect::<HashMap<_, _>>();
     enum_signatures.extend(builtin_enums);
+    // RFC 0044: resolve the protocol requirements (Self intact) BEFORE any
+    // signature or body lowering — generic signatures and bodies read the
+    // requirement set through their GenericContext. The declared
+    // conformance table (impl pairs, no validation) is built here too;
+    // the impl conformance CHECK (which compares against stabilized
+    // method signatures) runs after the fixpoint loop below.
+    let protocol_requirements = resolve_protocol_requirements(
+        module,
+        &known_structs,
+        &known_enums,
+        &known_protocols,
+        &mut diagnostics,
+    );
+    let declared_conformances = build_declared_conformances(module, &protocol_requirements);
     let mut signatures = HashMap::new();
     let mut method_signatures = HashMap::new();
     for function in &module.functions {
@@ -868,10 +925,17 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         } else {
             None
         };
+        // RFC 0044: the function's own type parameters are in scope for
+        // its param and return annotations; every other position lowers
+        // with an empty context (non-generic contexts).
+        let signature_generics =
+            GenericContext::for_function(function, &protocol_requirements, &declared_conformances);
         let declared_return_type = resolve_type_annotation(
             function.return_type.as_ref(),
             &known_structs,
             &known_enums,
+            &known_protocols,
+            &signature_generics,
             &function.source_path,
             &mut diagnostics,
         );
@@ -888,6 +952,8 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                     param.ty.as_ref(),
                     &known_structs,
                     &known_enums,
+                    &known_protocols,
+                    &signature_generics,
                     &function.source_path,
                     &mut diagnostics,
                 )
@@ -931,6 +997,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                     declared_return_type: declared_return_type.clone(),
                     fixture_value_type: None,
                     return_type: declared_return_type.unwrap_or(Type::Unknown),
+                    type_params: signature_type_params(function),
                 },
             );
         } else {
@@ -945,6 +1012,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                     declared_return_type: declared_return_type.clone(),
                     fixture_value_type: declared_return_type.as_ref().and_then(fixture_value_type),
                     return_type: declared_return_type.unwrap_or(Type::Unknown),
+                    type_params: signature_type_params(function),
                 },
             );
         }
@@ -963,6 +1031,9 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                     &method_signatures,
                     &known_structs,
                     &known_enums,
+                    &known_protocols,
+                    &protocol_requirements,
+                    &declared_conformances,
                     &struct_signatures,
                     &enum_signatures,
                     &mut Diagnostics::default(),
@@ -1016,6 +1087,9 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                 &method_signatures,
                 &known_structs,
                 &known_enums,
+                &known_protocols,
+                &protocol_requirements,
+                &declared_conformances,
                 &struct_signatures,
                 &enum_signatures,
                 &mut diagnostics,
@@ -1024,6 +1098,19 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
         .collect::<Vec<_>>();
 
     validate_fixture_cleanup_hooks(module, &signatures, &method_signatures, &mut diagnostics);
+
+    // RFC 0044: the impl conformance check (GOF3133/3134) runs after
+    // signatures stabilize; the requirements map itself was resolved
+    // BEFORE signature building (generic signatures read it). GOF3135
+    // fires inside the annotation resolver (single source of truth for
+    // every value position).
+    let _conformance_table = check_impl_conformances(
+        module,
+        &protocol_requirements,
+        &method_signatures,
+        &known_structs,
+        &mut diagnostics,
+    );
 
     if diagnostics.is_empty() {
         Ok(TypedModule {
@@ -1036,11 +1123,192 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
     }
 }
 
+/// The declared-conformance view: every `impl` pair mapped to its
+/// requirements with `Self` substituted by the struct. No validation
+/// here — the conformance check (`check_impl_conformances`) owns the
+/// diagnostics; this view is the call-site bound oracle.
+fn build_declared_conformances(
+    module: &HirModule,
+    requirements: &ProtocolRequirements,
+) -> HashMap<(String, String), Vec<ResolvedRequirement>> {
+    let mut table = HashMap::new();
+    for impl_decl in &module.impls {
+        let struct_type = Type::Struct(impl_decl.struct_name.clone());
+        for protocol in &impl_decl.protocols {
+            if let Some(requirements) = requirements.get(protocol) {
+                table.insert(
+                    (protocol.clone(), impl_decl.struct_name.clone()),
+                    requirements
+                        .iter()
+                        .map(|requirement| ResolvedRequirement {
+                            name: requirement.name.clone(),
+                            receiver_mut: requirement.receiver_mut,
+                            param_types: requirement
+                                .param_types
+                                .iter()
+                                .map(|ty| substitute_self(ty, &struct_type))
+                                .collect(),
+                            return_type: substitute_self(&requirement.return_type, &struct_type),
+                            span: requirement.span,
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    table
+}
+
+/// RFC 0044 call-site type inference: bind each type parameter from the
+/// argument types (whole match, or one level of nesting inside
+/// `list`/`dict`/`channel`/`task`/`Result`/`Option`), unify repeated
+/// bindings, check every bound against the declared conformances
+/// (GOF3134), and substitute into the declared return type.
+fn infer_generic_call(
+    callee: &str,
+    signature: &FunctionSignature,
+    typed_args: &[TypedExpr],
+    generics: &GenericContext,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Type {
+    let mut inferred: HashMap<String, Type> = HashMap::new();
+    let mut conflicting = false;
+
+    for (param_ty, arg) in signature.param_types.iter().zip(typed_args.iter()) {
+        extract_type_bindings(param_ty, &arg.ty, &mut inferred, &mut conflicting);
+    }
+    if conflicting {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3132",
+                format!("conflicting type inference for `{callee}`"),
+                "one type parameter binds different types through different arguments",
+                span,
+            )
+            .with_fix_it("pass arguments that agree on the type parameter")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+
+    // Bounds: every inferred type must have declared conformance for
+    // every bound of its type parameter.
+    for (type_param, bounds) in &signature.type_params {
+        let Some(bound_type) = inferred.get(type_param) else {
+            continue;
+        };
+        let Type::Struct(struct_name) = bound_type else {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3134",
+                    format!("argument for `{callee}` does not satisfy the bounds of `{type_param}`"),
+                    format!(
+                        "`{}` is not a struct, and v1 conformance covers user-declared structs only",
+                        bound_type.display_name()
+                    ),
+                    span,
+                )
+                .with_fix_it("pass a struct value whose impl declares the bound")
+                .with_source_path(source_path.to_path_buf()),
+            );
+            continue;
+        };
+        for protocol in bounds {
+            if !generics.conforms(protocol, struct_name) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3134",
+                        format!("`{struct_name}` has no declared conformance to `{protocol}`"),
+                        format!(
+                            "the bound `[T: {protocol}]` of `{callee}` requires an `impl {struct_name}: {protocol}` declaration"
+                        ),
+                        span,
+                    )
+                    .with_fix_it(format!("declare `impl {struct_name}: {protocol}` next to the struct"))
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+        }
+    }
+
+    substitute_type_params(&signature.return_type, &inferred)
+}
+
+/// Bind type parameters by matching a parameter type against an argument
+/// type. `T` matches any argument (binding T); one level of nesting
+/// (`list[T]` vs `list[int]`) binds T from the member. Conflicting
+/// bindings set the flag — the caller reports one diagnostic.
+fn extract_type_bindings(
+    param_ty: &Type,
+    arg_ty: &Type,
+    inferred: &mut HashMap<String, Type>,
+    conflicting: &mut bool,
+) {
+    match (param_ty, arg_ty) {
+        (Type::TypeParam(name), arg) => {
+            if let Some(existing) = inferred.get(name) {
+                if existing != arg {
+                    *conflicting = true;
+                }
+            } else {
+                inferred.insert(name.clone(), arg.clone());
+            }
+        }
+        (Type::List(param_inner), Type::List(arg_inner))
+        | (Type::Dict(param_inner), Type::Dict(arg_inner))
+        | (Type::Channel(param_inner), Type::Channel(arg_inner))
+        | (Type::Task(param_inner), Type::Task(arg_inner)) => {
+            extract_type_bindings(param_inner, arg_inner, inferred, conflicting);
+        }
+        (Type::Option(param_inner), Type::Option(arg_inner)) => {
+            extract_type_bindings(param_inner, arg_inner, inferred, conflicting);
+        }
+        (Type::Result(param_ok, param_err), Type::Result(arg_ok, arg_err)) => {
+            extract_type_bindings(param_ok, arg_ok, inferred, conflicting);
+            extract_type_bindings(param_err, arg_err, inferred, conflicting);
+        }
+        _ => {}
+    }
+}
+
+/// Replace every type parameter in a type with its inferred binding.
+fn substitute_type_params(ty: &Type, inferred: &HashMap<String, Type>) -> Type {
+    match ty {
+        Type::TypeParam(name) => inferred.get(name).cloned().unwrap_or(Type::Unknown),
+        Type::List(inner) => Type::List(Box::new(substitute_type_params(inner, inferred))),
+        Type::Dict(inner) => Type::Dict(Box::new(substitute_type_params(inner, inferred))),
+        Type::Channel(inner) => Type::Channel(Box::new(substitute_type_params(inner, inferred))),
+        Type::Task(inner) => Type::Task(Box::new(substitute_type_params(inner, inferred))),
+        Type::Option(inner) => Type::Option(Box::new(substitute_type_params(inner, inferred))),
+        Type::Result(ok, err) => Type::Result(
+            Box::new(substitute_type_params(ok, inferred)),
+            Box::new(substitute_type_params(err, inferred)),
+        ),
+        Type::Tuple(members) => Type::Tuple(
+            members
+                .iter()
+                .map(|member| substitute_type_params(member, inferred))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
 fn function_symbol_from_hir(function: &HirFunction) -> String {
     match &function.receiver_type {
         Some(receiver_type) => format!("{}.{}", receiver_type.name, function.name),
         None => function.name.clone(),
     }
+}
+
+/// RFC 0044: the signature view of a function's type parameters.
+fn signature_type_params(function: &HirFunction) -> Vec<(String, Vec<String>)> {
+    function
+        .type_params
+        .iter()
+        .map(|type_param| (type_param.name.clone(), type_param.bounds.clone()))
+        .collect()
 }
 
 fn validate_method_contract(
@@ -1740,6 +2008,9 @@ fn lower_function(
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    protocol_requirements: &HashMap<String, Vec<ResolvedRequirement>>,
+    declared_conformances: &HashMap<(String, String), Vec<ResolvedRequirement>>,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
@@ -1763,6 +2034,13 @@ fn lower_function(
         })
         .collect::<Vec<_>>();
     let mut scopes = ScopeStack::new(&params);
+    // RFC 0044: the function's own type parameters are in scope for
+    // annotation resolution throughout its body lowering (binds and
+    // nested closure signatures included); the generic context carries
+    // the bounds and the protocol requirements for body checking.
+    // Non-generic functions lower with an empty context.
+    let generics =
+        GenericContext::for_function(function, protocol_requirements, declared_conformances);
     let body = lower_block(
         &function.body,
         &mut scopes,
@@ -1770,6 +2048,8 @@ fn lower_function(
         method_signatures,
         known_structs,
         known_enums,
+        known_protocols,
+        &generics,
         struct_signatures,
         enum_signatures,
         diagnostics,
@@ -1836,6 +2116,7 @@ fn lower_struct_signature(
     decl: &HirStruct,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
     diagnostics: &mut Diagnostics,
 ) -> StructSignature {
     let mut seen_fields = HashSet::new();
@@ -1863,6 +2144,8 @@ fn lower_struct_signature(
                         Some(&field.ty),
                         known_structs,
                         known_enums,
+                        &known_protocols,
+                        &GenericContext::default(),
                         &decl.source_path,
                         diagnostics,
                     ),
@@ -1876,6 +2159,7 @@ fn lower_enum_signature(
     decl: &HirEnum,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
     diagnostics: &mut Diagnostics,
 ) -> EnumSignature {
     let mut seen_variants = HashSet::new();
@@ -1908,6 +2192,8 @@ fn lower_enum_signature(
                                 Some(&field.ty),
                                 known_structs,
                                 known_enums,
+                                &known_protocols,
+                                &GenericContext::default(),
                                 &decl.source_path,
                                 diagnostics,
                             ),
@@ -1970,6 +2256,8 @@ fn lower_block(
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
@@ -1992,6 +2280,8 @@ fn lower_block(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2016,6 +2306,8 @@ fn lower_stmt(
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
@@ -2031,6 +2323,8 @@ fn lower_stmt(
             method_signatures,
             known_structs,
             known_enums,
+            known_protocols,
+            generics,
             struct_signatures,
             enum_signatures,
             diagnostics,
@@ -2051,6 +2345,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2061,6 +2357,8 @@ fn lower_stmt(
                 ty.as_ref(),
                 known_structs,
                 known_enums,
+                &known_protocols,
+                generics,
                 source_path,
                 diagnostics,
             );
@@ -2219,6 +2517,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2330,6 +2630,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2383,6 +2685,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2397,6 +2701,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2412,6 +2718,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2438,6 +2746,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2452,6 +2762,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2475,6 +2787,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2659,6 +2973,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2682,6 +2998,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2695,6 +3013,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2714,6 +3034,8 @@ fn lower_stmt(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2731,6 +3053,8 @@ fn lower_stmt(
             method_signatures,
             known_structs,
             known_enums,
+            known_protocols,
+            generics,
             struct_signatures,
             enum_signatures,
             diagnostics,
@@ -2747,6 +3071,8 @@ fn lower_match_arms(
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
@@ -2849,6 +3175,8 @@ fn lower_match_arms(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -2865,6 +3193,8 @@ fn lower_match_arms(
             method_signatures,
             known_structs,
             known_enums,
+            known_protocols,
+            generics,
             struct_signatures,
             enum_signatures,
             diagnostics,
@@ -2902,6 +3232,8 @@ fn lower_select_arms(
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
@@ -2936,6 +3268,8 @@ fn lower_select_arms(
                     method_signatures,
                     known_structs,
                     known_enums,
+                    known_protocols,
+                    generics,
                     struct_signatures,
                     enum_signatures,
                     diagnostics,
@@ -3000,6 +3334,8 @@ fn lower_select_arms(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -3916,6 +4252,8 @@ fn lower_expr(
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
@@ -3949,6 +4287,8 @@ fn lower_expr(
                         method_signatures,
                         known_structs,
                         known_enums,
+                        known_protocols,
+                        generics,
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
@@ -3975,6 +4315,8 @@ fn lower_expr(
                         method_signatures,
                         known_structs,
                         known_enums,
+                        known_protocols,
+                        generics,
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
@@ -3988,6 +4330,8 @@ fn lower_expr(
                         method_signatures,
                         known_structs,
                         known_enums,
+                        known_protocols,
+                        generics,
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
@@ -4042,6 +4386,8 @@ fn lower_expr(
                         method_signatures,
                         known_structs,
                         known_enums,
+                        known_protocols,
+                        generics,
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
@@ -4076,6 +4422,35 @@ fn lower_expr(
             }
             let call_kind =
                 resolve_call_kind(callee, signatures, struct_signatures, enum_signatures);
+            // RFC 0044 generic call-site inference: a generic callee's
+            // type parameters bind from the argument types (whole or one
+            // level of nesting), every bound is checked against the
+            // declared conformances, and the result substitutes the
+            // inferred types. The evaluator executes the call
+            // dynamically on the runtime receiver values.
+            if let CallKind::Function = call_kind {
+                if let Some(signature) = signatures.get(callee) {
+                    if !signature.type_params.is_empty() {
+                        let return_type = infer_generic_call(
+                            callee,
+                            signature,
+                            &typed_args,
+                            generics,
+                            *span,
+                            diagnostics,
+                            source_path,
+                        );
+                        return TypedExpr {
+                            kind: TypedExprKind::Call {
+                                callee: callee.clone(),
+                                args: typed_args,
+                            },
+                            ty: return_type,
+                            span: *span,
+                        };
+                    }
+                }
+            }
             validate_call(
                 callee,
                 &typed_args,
@@ -4271,6 +4646,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4312,6 +4689,8 @@ fn lower_expr(
                                 method_signatures,
                                 known_structs,
                                 known_enums,
+                                known_protocols,
+                                generics,
                                 struct_signatures,
                                 enum_signatures,
                                 diagnostics,
@@ -4348,6 +4727,8 @@ fn lower_expr(
                                 method_signatures,
                                 known_structs,
                                 known_enums,
+                                known_protocols,
+                                generics,
                                 struct_signatures,
                                 enum_signatures,
                                 diagnostics,
@@ -4384,6 +4765,8 @@ fn lower_expr(
                                 method_signatures,
                                 known_structs,
                                 known_enums,
+                                known_protocols,
+                                generics,
                                 struct_signatures,
                                 enum_signatures,
                                 diagnostics,
@@ -4420,6 +4803,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4436,6 +4821,8 @@ fn lower_expr(
                         method_signatures,
                         known_structs,
                         known_enums,
+                        known_protocols,
+                        generics,
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
@@ -4450,6 +4837,7 @@ fn lower_expr(
                 &typed_args,
                 *span,
                 method_signatures,
+                generics,
                 diagnostics,
                 source_path,
             );
@@ -4476,6 +4864,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4489,6 +4879,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4522,6 +4914,8 @@ fn lower_expr(
                             method_signatures,
                             known_structs,
                             known_enums,
+                            known_protocols,
+                            generics,
                             struct_signatures,
                             enum_signatures,
                             diagnostics,
@@ -4602,6 +4996,8 @@ fn lower_expr(
                     method_signatures,
                     known_structs,
                     known_enums,
+                    known_protocols,
+                    generics,
                     struct_signatures,
                     enum_signatures,
                     diagnostics,
@@ -4637,6 +5033,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4677,6 +5075,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4706,6 +5106,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4731,6 +5133,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4744,6 +5148,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4783,6 +5189,8 @@ fn lower_expr(
                         method_signatures,
                         known_structs,
                         known_enums,
+                        known_protocols,
+                        generics,
                         struct_signatures,
                         enum_signatures,
                         diagnostics,
@@ -4813,6 +5221,8 @@ fn lower_expr(
                 method_signatures,
                 known_structs,
                 known_enums,
+                known_protocols,
+                generics,
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
@@ -4888,6 +5298,8 @@ fn lower_expr(
             method_signatures,
             known_structs,
             known_enums,
+            known_protocols,
+            generics,
             struct_signatures,
             enum_signatures,
             diagnostics,
@@ -5185,6 +5597,8 @@ fn lower_closure_expr(
     method_signatures: &HashMap<(String, String), FunctionSignature>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
@@ -5197,6 +5611,8 @@ fn lower_closure_expr(
                 Some(annotation),
                 known_structs,
                 known_enums,
+                &known_protocols,
+                generics,
                 source_path,
                 diagnostics,
             ),
@@ -5233,6 +5649,8 @@ fn lower_closure_expr(
             Some(annotation),
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
         )
@@ -5296,6 +5714,8 @@ fn lower_closure_expr(
         method_signatures,
         known_structs,
         known_enums,
+        known_protocols,
+        generics,
         struct_signatures,
         enum_signatures,
         diagnostics,
@@ -5780,9 +6200,79 @@ fn resolve_method_call(
     args: &[TypedExpr],
     span: Span,
     method_signatures: &HashMap<(String, String), FunctionSignature>,
+    generics: &GenericContext,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> (String, Type) {
+    // RFC 0044: a method call on a type-parameter value dispatches to the
+    // requirement its bounds guarantee. The requirement signature stands
+    // in for the method: `Self` means the type parameter itself.
+    if let Type::TypeParam(type_param) = &target.ty {
+        return match generics.requirement_for(type_param, method) {
+            Some(requirement) => {
+                let param_arity = requirement.param_types.len().saturating_sub(1);
+                if args.len() != param_arity {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3143",
+                            format!("wrong number of arguments for `{method}`"),
+                            format!(
+                                "the `{type_param}`-bound requirement expects {param_arity} argument(s), got {}",
+                                args.len()
+                            ),
+                            span,
+                        )
+                        .with_fix_it("call the bounded method with the requirement's parameter count")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
+                let type_param_type = Type::TypeParam(type_param.clone());
+                for (index, (arg, requirement_param)) in args
+                    .iter()
+                    .zip(requirement.param_types.iter().skip(1))
+                    .enumerate()
+                {
+                    let expected = substitute_self(requirement_param, &type_param_type);
+                    if !types_compatible(&expected, &arg.ty) {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3013",
+                                format!("argument {index} for `{method}` has incompatible type"),
+                                format!(
+                                    "the requirement expects `{}`, but the argument resolves to `{}`",
+                                    expected.display_name(),
+                                    arg.ty.display_name()
+                                ),
+                                arg.span,
+                            )
+                            .with_fix_it("align the argument with the bounded requirement")
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    }
+                }
+                let return_type = substitute_self(&requirement.return_type, &type_param_type);
+                (format!("_generic.{method}"), return_type)
+            }
+            None => {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        format!(
+                            "type parameter `{type_param}` has no bound guaranteeing method `{method}`"
+                        ),
+                        "generic bodies may call on type-parameter values exactly the methods their bounds require",
+                        span,
+                    )
+                    .with_fix_it(format!(
+                        "add a requirement `{method}` to one of `{type_param}`'s bounds, or take a concrete struct parameter"
+                    ))
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                (format!("_generic.{method}"), Type::Unknown)
+            }
+        };
+    }
+
     if let Type::Option(value) = &target.ty {
         return resolve_option_helper_call(value, method, args, span, diagnostics, source_path);
     }
@@ -5978,6 +6468,8 @@ fn resolve_type_annotation(
     ty: Option<&HirTypeRef>,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
 ) -> Type {
@@ -5986,6 +6478,31 @@ fn resolve_type_annotation(
     };
 
     match ty.name.as_str() {
+        // RFC 0044 GOF3135: protocol names are not value types. The arm
+        // sits ahead of the unknown-name fallback so the primary
+        // diagnostic names the actual rule instead of cascading GOF3012.
+        name if known_protocols.contains(name) => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3135",
+                    format!("protocol `{name}` cannot be the type of a value"),
+                    "v1 protocol conformance is generics-only: a protocol names a method contract, not a value shape",
+                    ty.span,
+                )
+                .with_fix_it(format!(
+                    "use a generic function with a bound: fn f[T: {name}](value: T)"
+                ))
+                .with_source_path(source_path.to_path_buf()),
+            );
+            Type::Protocol(name.to_string())
+        }
+        // RFC 0044: a generic function's type parameter resolves to the
+        // `TypeParam` type inside that function's own signature and body.
+        // No diagnostic — the body checker validates usage against the
+        // declared bounds; a name that is neither builtin, struct, enum,
+        // protocol, nor in-scope type parameter still falls through to
+        // the unknown-annotation arm below.
+        name if generics.is_type_param(name) => Type::TypeParam(name.to_string()),
         "int" => resolve_non_parameterized_builtin(
             "int",
             &ty.args,
@@ -6040,6 +6557,8 @@ fn resolve_type_annotation(
             Type::list,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6050,6 +6569,8 @@ fn resolve_type_annotation(
             Type::dict,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6060,6 +6581,8 @@ fn resolve_type_annotation(
             Type::channel,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6070,6 +6593,8 @@ fn resolve_type_annotation(
             Type::task,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6078,6 +6603,8 @@ fn resolve_type_annotation(
             &ty.args,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6086,6 +6613,8 @@ fn resolve_type_annotation(
             &ty.args,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6098,6 +6627,8 @@ fn resolve_type_annotation(
             &ty.args,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6109,6 +6640,8 @@ fn resolve_type_annotation(
             &ty.args,
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
             ty.span,
@@ -6209,6 +6742,8 @@ fn resolve_single_argument_type(
     constructor: fn(Type) -> Type,
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
     span: Span,
@@ -6235,6 +6770,8 @@ fn resolve_single_argument_type(
         Some(&args[0]),
         known_structs,
         known_enums,
+        &known_protocols,
+        generics,
         source_path,
         diagnostics,
     ))
@@ -6244,6 +6781,8 @@ fn resolve_result_type(
     args: &[HirTypeRef],
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
     span: Span,
@@ -6267,6 +6806,8 @@ fn resolve_result_type(
             Some(&args[0]),
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
         ),
@@ -6274,6 +6815,8 @@ fn resolve_result_type(
             Some(&args[1]),
             known_structs,
             known_enums,
+            &known_protocols,
+            generics,
             source_path,
             diagnostics,
         ),
@@ -6284,6 +6827,8 @@ fn resolve_option_type(
     args: &[HirTypeRef],
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
     span: Span,
@@ -6306,6 +6851,8 @@ fn resolve_option_type(
         Some(&args[0]),
         known_structs,
         known_enums,
+        &known_protocols,
+        generics,
         source_path,
         diagnostics,
     ))
@@ -6315,6 +6862,8 @@ fn resolve_tuple_type(
     args: &[HirTypeRef],
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
     span: Span,
@@ -6342,6 +6891,8 @@ fn resolve_tuple_type(
                 Some(member),
                 known_structs,
                 known_enums,
+                &known_protocols,
+                generics,
                 source_path,
                 diagnostics,
             )
@@ -6358,6 +6909,8 @@ fn resolve_function_type(
     args: &[HirTypeRef],
     known_structs: &HashSet<String>,
     known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    generics: &GenericContext,
     source_path: &Path,
     diagnostics: &mut Diagnostics,
     span: Span,
@@ -6384,6 +6937,8 @@ fn resolve_function_type(
                 Some(param),
                 known_structs,
                 known_enums,
+                &known_protocols,
+                generics,
                 source_path,
                 diagnostics,
             )
@@ -6393,6 +6948,8 @@ fn resolve_function_type(
         Some(return_type),
         known_structs,
         known_enums,
+        &known_protocols,
+        generics,
         source_path,
         diagnostics,
     );
@@ -7023,6 +7580,11 @@ fn type_supports_self_equality_inner(
         // RFC 0047: closures do not participate in equality — the same
         // posture as channel and task values.
         Type::Function(_, _) => false,
+        // RFC 0044: protocols are not value types (GOF3135 rejects the
+        // annotation before a value can exist); type parameters carry
+        // only their bounds' method surface — no equality semantics; and
+        // Self is substituted away before equality checking ever runs.
+        Type::Protocol(_) | Type::TypeParam(_) | Type::SelfType => false,
         Type::Opaque(name) => matches!(name.as_str(), "Bytes" | "SocketAddr" | "NetDeadline"),
         Type::Struct(name) => {
             if !active_structs.insert(name.clone()) {
@@ -7897,6 +8459,17 @@ fn implicit_option_coercion(expected: &Type, actual: &Type) -> Option<OptionCoer
 fn types_compatible(expected: &Type, actual: &Type) -> bool {
     match (expected, actual) {
         (Type::Unknown, _) | (_, Type::Unknown) => true,
+        // RFC 0044: a rejected protocol-typed annotation (GOF3135 fired
+        // at resolution) recovers like `Unknown` so one primary error
+        // does not cascade.
+        (Type::Protocol(_), _) | (_, Type::Protocol(_)) => true,
+        // RFC 0044: type parameters are compatible only with themselves —
+        // a `T`-typed value is not any concrete type until the call site
+        // substitutes it. A leaked `Self` (substitution should have
+        // replaced it) recovers permissively; it can only originate from
+        // an already-reported requirement resolution error.
+        (Type::TypeParam(expected), Type::TypeParam(actual)) => expected == actual,
+        (Type::SelfType, _) | (_, Type::SelfType) => true,
         (Type::List(expected), Type::List(actual)) => types_compatible(expected, actual),
         (Type::Dict(expected), Type::Dict(actual)) => types_compatible(expected, actual),
         (Type::Channel(expected), Type::Channel(actual)) => types_compatible(expected, actual),
@@ -11723,7 +12296,515 @@ fn is_printable_type(ty: &Type) -> bool {
         Type::Tuple(members) => members.iter().all(is_printable_type),
         // RFC 0047: closures are not printable — the channel/task posture.
         Type::Function(_, _) => false,
+        // RFC 0044: protocols are not value types (GOF3135), type
+        // parameters carry no printable surface, and Self never reaches
+        // printing (substituted away in the conformance pass).
+        Type::Protocol(_) | Type::TypeParam(_) | Type::SelfType => false,
         Type::Channel(_) | Type::Task(_) | Type::CancelToken | Type::Unit => false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RFC 0044 protocols: value-annotation rejection (GOF3135), protocol
+// declaration validation and requirement resolution (GOF3132), generic
+// contract validation (GOF3132), impl validation (GOF3133), and the
+// conformance check building the (protocol, struct) → requirement →
+// method-symbol table (GOF3134).
+// ---------------------------------------------------------------------------
+
+/// A protocol requirement with its annotation positions resolved. In the
+/// requirements map `Self` stays intact: the generic body checker
+/// substitutes it with the type parameter, the impl conformance check
+/// with the conforming struct.
+#[derive(Debug, Clone)]
+pub struct ResolvedRequirement {
+    pub name: String,
+    pub receiver_mut: bool,
+    pub param_types: Vec<Type>,
+    pub return_type: Type,
+    pub span: Span,
+}
+
+/// The protocol requirements map: protocol name → resolved requirements
+/// with `Self` intact. Generic body checking reads this map through the
+/// bounds of each type parameter; it is computed before any body lowering
+/// so both fixpoint and final passes typecheck generic bodies identically.
+pub type ProtocolRequirements = HashMap<String, Vec<ResolvedRequirement>>;
+
+/// RFC 0044 generic body-checking context: the enclosing function's type
+/// parameters with their bounds, plus the protocol requirement signatures
+/// (with `Self` intact — substituted by the type parameter at use sites)
+/// and the declared conformance table for call-site bound checks.
+#[derive(Debug, Clone, Default)]
+pub struct GenericContext {
+    /// Type parameter name → protocol bounds.
+    bounds: HashMap<String, Vec<String>>,
+    /// Protocol name → requirements (SelfType kept in param/return types).
+    requirements: HashMap<String, Vec<ResolvedRequirement>>,
+    /// Declared conformances: (protocol, struct) → requirements with
+    /// `Self` substituted by the struct — the call-site bound oracle.
+    conformances: HashMap<(String, String), Vec<ResolvedRequirement>>,
+}
+
+impl GenericContext {
+    fn for_function(
+        function: &HirFunction,
+        protocol_requirements: &HashMap<String, Vec<ResolvedRequirement>>,
+        conformances: &HashMap<(String, String), Vec<ResolvedRequirement>>,
+    ) -> Self {
+        let bounds = function
+            .type_params
+            .iter()
+            .map(|type_param| (type_param.name.clone(), type_param.bounds.clone()))
+            .collect();
+        Self {
+            bounds,
+            requirements: protocol_requirements.clone(),
+            conformances: conformances.clone(),
+        }
+    }
+
+    fn is_type_param(&self, name: &str) -> bool {
+        self.bounds.contains_key(name)
+    }
+
+    /// The declared-conformance oracle: does a struct conform to a
+    /// protocol? Call-site bound checks read this.
+    fn conforms(&self, protocol: &str, struct_name: &str) -> bool {
+        self.conformances
+            .contains_key(&(protocol.to_string(), struct_name.to_string()))
+    }
+
+    /// Does any bound of the type parameter require a method with this
+    /// name? Returns the requirement signature (with `Self` standing for
+    /// the type parameter) when some bound guarantees the method.
+    fn requirement_for(&self, type_param: &str, method: &str) -> Option<ResolvedRequirement> {
+        let bounds = self.bounds.get(type_param)?;
+        for protocol in bounds {
+            if let Some(requirements) = self.requirements.get(protocol) {
+                if let Some(requirement) = requirements.iter().find(|req| req.name == method) {
+                    return Some(requirement.clone());
+                }
+            }
+        }
+        None
+    }
+}
+
+/// The conformance table: for every `(protocol, struct)` pair declared by
+/// an `impl`, the resolved requirement signatures with `Self` substituted
+/// by the conforming struct. Call-site bound checks read this table;
+/// witness-table emission (Phase 2 native lowering) derives from it.
+pub type ConformanceTable = HashMap<(String, String), Vec<ResolvedRequirement>>;
+
+fn resolve_requirement_annotation(
+    ty: &HirTypeRef,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    source_path: &Path,
+    diagnostics: &mut Diagnostics,
+) -> Type {
+    if ty.name == "Self" && ty.args.is_empty() {
+        return Type::SelfType;
+    }
+    // `Self` may not nest inside parameterized annotations.
+    if type_ref_contains_self(ty) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3132",
+                "`Self` may only appear as a receiver annotation or a return type",
+                "the Self placeholder stands for the conforming type; nesting it inside list[Self] and friends has no meaning",
+                ty.span,
+            )
+            .with_fix_it("spell the concrete parameter or return type, or use Self at the top level")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+    resolve_type_annotation(
+        Some(ty),
+        known_structs,
+        known_enums,
+        &known_protocols,
+        &GenericContext::default(),
+        source_path,
+        diagnostics,
+    )
+}
+
+fn type_ref_contains_self(ty: &HirTypeRef) -> bool {
+    ty.name == "Self" || ty.args.iter().any(type_ref_contains_self)
+}
+
+/// Validate protocol declarations (GOF3132) and resolve their
+/// requirements into the protocol requirements map. Runs before any body
+/// lowering so generic bodies typecheck against the same requirement set
+/// in the fixpoint and final passes.
+fn resolve_protocol_requirements(
+    module: &HirModule,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    diagnostics: &mut Diagnostics,
+) -> ProtocolRequirements {
+    let mut requirements: ProtocolRequirements = HashMap::new();
+    // --- Protocol declaration validation (GOF3132) ---
+    for decl in &module.protocols {
+        let mut seen_requirement_names: HashMap<String, Span> = HashMap::new();
+        let mut resolved = Vec::new();
+        for requirement in &decl.requirements {
+            if let Some(first) = seen_requirement_names.get(&requirement.name) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        format!(
+                            "duplicate requirement `{}` in protocol `{}`",
+                            requirement.name, decl.name
+                        ),
+                        format!("the requirement was first declared at line {}", first.line),
+                        requirement.span,
+                    )
+                    .with_fix_it("rename one of the requirements")
+                    .with_source_path(decl.source_path.clone()),
+                );
+                continue;
+            }
+            seen_requirement_names.insert(requirement.name.clone(), requirement.span);
+            let Some(first_param) = requirement.params.first() else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        format!("requirement `{}` needs a `Self`-annotated receiver parameter", requirement.name),
+                        "a protocol requirement is the method form with the owner elided: the first parameter is the receiver, annotated Self",
+                        requirement.span,
+                    )
+                    .with_fix_it(format!("write `fn {}(self: Self...)`", requirement.name))
+                    .with_source_path(decl.source_path.clone()),
+                );
+                continue;
+            };
+            let receiver_type = first_param
+                .ty
+                .as_ref()
+                .map(|ty| {
+                    resolve_requirement_annotation(
+                        ty,
+                        known_structs,
+                        known_enums,
+                        known_protocols,
+                        &decl.source_path,
+                        diagnostics,
+                    )
+                })
+                .unwrap_or(Type::Unknown);
+            if receiver_type != Type::SelfType {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        format!("requirement `{}` receiver must be annotated `Self`", requirement.name),
+                        "the first parameter of a requirement is the receiver; gof spells it, not implies it",
+                        requirement.span,
+                    )
+                    .with_fix_it("annotate the receiver as `self: Self`")
+                    .with_source_path(decl.source_path.clone()),
+                );
+            }
+            let Some(return_annotation) = &requirement.return_type else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3132",
+                        format!("requirement `{}` is missing its return type", requirement.name),
+                        "a requirement has no body to infer from; the return contract must be spelled",
+                        requirement.span,
+                    )
+                    .with_fix_it(format!("annotate the return, e.g. `fn {}(...) -> unit`", requirement.name))
+                    .with_source_path(decl.source_path.clone()),
+                );
+                continue;
+            };
+            let return_type = resolve_requirement_annotation(
+                return_annotation,
+                known_structs,
+                known_enums,
+                known_protocols,
+                &decl.source_path,
+                diagnostics,
+            );
+            let mut param_types = vec![receiver_type];
+            for param in requirement.params.iter().skip(1) {
+                param_types.push(
+                    param
+                        .ty
+                        .as_ref()
+                        .map(|ty| {
+                            resolve_requirement_annotation(
+                                ty,
+                                known_structs,
+                                known_enums,
+                                known_protocols,
+                                &decl.source_path,
+                                diagnostics,
+                            )
+                        })
+                        .unwrap_or(Type::Unknown),
+                );
+            }
+            resolved.push(ResolvedRequirement {
+                name: requirement.name.clone(),
+                receiver_mut: first_param.mutable,
+                param_types,
+                return_type,
+                span: requirement.span,
+            });
+        }
+        requirements.insert(decl.name.clone(), resolved);
+    }
+
+    requirements
+}
+
+/// Validate `impl` declarations (GOF3133) and check conformance
+/// (GOF3134), building the conformance table. Runs after method
+/// signatures stabilize so inferred-return methods compare against their
+/// final types.
+fn check_impl_conformances(
+    module: &HirModule,
+    protocol_requirements: &ProtocolRequirements,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
+    known_structs: &HashSet<String>,
+    diagnostics: &mut Diagnostics,
+) -> ConformanceTable {
+    let mut table: ConformanceTable = HashMap::new();
+
+    // --- Impl validation (GOF3133) + conformance check (GOF3134) ---
+    for impl_decl in &module.impls {
+        if !known_structs.contains(&impl_decl.struct_name) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3133",
+                    format!("`impl` targets unknown type `{}`", impl_decl.struct_name),
+                    "conformance targets must be user-declared structs; the struct's own module is the single conformance authority",
+                    impl_decl.span,
+                )
+                .with_fix_it(format!("declare `struct {}:` in this module first", impl_decl.struct_name))
+                .with_source_path(impl_decl.source_path.clone()),
+            );
+            continue;
+        }
+        let mut seen_protocols: HashSet<String> = HashSet::new();
+        for protocol_name in &impl_decl.protocols {
+            if !seen_protocols.insert(protocol_name.clone()) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3133",
+                        format!("duplicate protocol `{}` in the impl list", protocol_name),
+                        "one impl line may declare each protocol at most once",
+                        impl_decl.span,
+                    )
+                    .with_fix_it(format!("remove the duplicate `{}` entry", protocol_name))
+                    .with_source_path(impl_decl.source_path.clone()),
+                );
+                continue;
+            }
+            let Some(requirements) = protocol_requirements.get(protocol_name) else {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3133",
+                        format!("`impl` references unknown protocol `{}`", protocol_name),
+                        "protocol names resolve through the loaded module graph like other top-level names",
+                        impl_decl.span,
+                    )
+                    .with_fix_it(format!("declare `protocol {}:` first", protocol_name))
+                    .with_source_path(impl_decl.source_path.clone()),
+                );
+                continue;
+            };
+
+            let struct_type = Type::Struct(impl_decl.struct_name.clone());
+            let mut conformance: Vec<ResolvedRequirement> = Vec::new();
+            for requirement in requirements {
+                let method_key = (impl_decl.struct_name.clone(), requirement.name.clone());
+                let Some(method) = method_signatures.get(&method_key) else {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3134",
+                            format!(
+                                "`{}` does not satisfy `{}`: missing method `{}`",
+                                impl_decl.struct_name, protocol_name, requirement.name
+                            ),
+                            format!(
+                                "protocol `{}` requires `fn {}.{}(...)`",
+                                protocol_name, impl_decl.struct_name, requirement.name
+                            ),
+                            impl_decl.span,
+                        )
+                        .with_fix_it(format!(
+                            "fn {}.{}(self: {}) ...",
+                            impl_decl.struct_name, requirement.name, impl_decl.struct_name
+                        ))
+                        .with_source_path(impl_decl.source_path.clone()),
+                    );
+                    continue;
+                };
+
+                // Substitute Self → the conforming struct, then require
+                // the exact match on parameter types, return type, and
+                // receiver mutability.
+                let substituted: Vec<Type> = requirement
+                    .param_types
+                    .iter()
+                    .map(|ty| substitute_self(ty, &struct_type))
+                    .collect();
+                let param_mismatch: Option<usize> = substituted
+                    .iter()
+                    .zip(method.param_types.iter())
+                    .position(|(requirement_ty, method_ty)| requirement_ty != method_ty);
+                if let Some(index) = param_mismatch {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3134",
+                            format!(
+                                "`{}` does not satisfy `{}`: parameter {index} of `{}` mismatches",
+                                impl_decl.struct_name, protocol_name, requirement.name
+                            ),
+                            format!(
+                                "the requirement expects {}; the method declares {}",
+                                substituted
+                                    .get(index)
+                                    .map(|ty| ty.display_name())
+                                    .unwrap_or_else(|| "<missing>".to_string()),
+                                method
+                                    .param_types
+                                    .get(index)
+                                    .map(|ty| ty.display_name())
+                                    .unwrap_or_else(|| "<missing>".to_string()),
+                            ),
+                            requirement.span,
+                        )
+                        .with_fix_it(format!(
+                            "align parameter {index} of `fn {}.{}(...)` with the requirement",
+                            impl_decl.struct_name, requirement.name
+                        ))
+                        .with_source_path(impl_decl.source_path.clone()),
+                    );
+                }
+                if method.param_types.len() != requirement.param_types.len() {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3134",
+                            format!(
+                                "`{}` does not satisfy `{}`: `{}` expects {} parameter(s), the method declares {}",
+                                impl_decl.struct_name,
+                                protocol_name,
+                                requirement.name,
+                                requirement.param_types.len(),
+                                method.param_types.len()
+                            ),
+                            "the requirement and the method must agree on parameter count",
+                            requirement.span,
+                        )
+                        .with_fix_it(format!(
+                            "align the parameter list of `fn {}.{}(...)` with the requirement",
+                            impl_decl.struct_name, requirement.name
+                        ))
+                        .with_source_path(impl_decl.source_path.clone()),
+                    );
+                }
+                let required_return = substitute_self(&requirement.return_type, &struct_type);
+                if method.return_type != required_return {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3134",
+                            format!(
+                                "`{}` does not satisfy `{}`: `{}` must return {}",
+                                impl_decl.struct_name,
+                                protocol_name,
+                                requirement.name,
+                                required_return.display_name()
+                            ),
+                            format!(
+                                "the method currently returns {}",
+                                method.return_type.display_name()
+                            ),
+                            requirement.span,
+                        )
+                        .with_fix_it(format!(
+                            "align the return type of `fn {}.{}(...)` with the requirement",
+                            impl_decl.struct_name, requirement.name
+                        ))
+                        .with_source_path(impl_decl.source_path.clone()),
+                    );
+                }
+                // Receiver mutability: exact match, no widening either way.
+                let method_receiver_mut = module
+                    .functions
+                    .iter()
+                    .find(|function| {
+                        function
+                            .receiver_type
+                            .as_ref()
+                            .map(|ty| ty.name == impl_decl.struct_name)
+                            .unwrap_or(false)
+                            && function.name == requirement.name
+                            && function
+                                .params
+                                .first()
+                                .map(|param| param.mutable)
+                                .unwrap_or(false)
+                    })
+                    .is_some();
+                if method_receiver_mut != requirement.receiver_mut {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3134",
+                            format!(
+                                "`{}` does not satisfy `{}`: receiver mutability of `{}` mismatches",
+                                impl_decl.struct_name, protocol_name, requirement.name
+                            ),
+                            format!(
+                                "the requirement {} a `mut` receiver and the method {} one",
+                                if requirement.receiver_mut { "declares" } else { "does not declare" },
+                                if method_receiver_mut { "declares" } else { "does not declare" },
+                            ),
+                            requirement.span,
+                        )
+                        .with_fix_it(format!(
+                            "align the receiver mutability of `fn {}.{}(...)` with the requirement",
+                            impl_decl.struct_name, requirement.name
+                        ))
+                        .with_source_path(impl_decl.source_path.clone()),
+                    );
+                }
+
+                conformance.push(ResolvedRequirement {
+                    name: requirement.name.clone(),
+                    receiver_mut: requirement.receiver_mut,
+                    param_types: requirement
+                        .param_types
+                        .iter()
+                        .map(|ty| substitute_self(ty, &struct_type))
+                        .collect(),
+                    return_type: substitute_self(&requirement.return_type, &struct_type),
+                    span: requirement.span,
+                });
+            }
+            table.insert(
+                (protocol_name.clone(), impl_decl.struct_name.clone()),
+                conformance,
+            );
+        }
+    }
+
+    table
+}
+
+/// `Self` appears only in direct positions (nesting is rejected earlier),
+/// so substitution is a shallow replacement.
+fn substitute_self(ty: &Type, struct_type: &Type) -> Type {
+    match ty {
+        Type::SelfType => struct_type.clone(),
+        other => other.clone(),
     }
 }
 

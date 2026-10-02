@@ -20,6 +20,7 @@ pub enum TokenKind {
     Struct,
     Enum,
     Protocol,
+    Impl,
     Match,
     Async,
     Await,

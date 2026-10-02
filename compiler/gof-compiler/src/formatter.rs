@@ -1,7 +1,7 @@
 use crate::ast::{
     BinaryOp, BindingPattern, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function,
-    FunctionKind, Import, MatchPattern, Module, Param, PatternLiteral, SelectArmKind, Stmt,
-    StructDecl, StructField, TypeRef, UnaryOp,
+    FunctionKind, ImplDecl, Import, MatchPattern, Module, Param, PatternLiteral, ProtocolDecl,
+    SelectArmKind, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -40,6 +40,28 @@ pub fn format_module(module: &Module) -> String {
         );
     }
 
+    if !module.protocols.is_empty() {
+        sections.push(
+            module
+                .protocols
+                .iter()
+                .map(format_protocol)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    if !module.impls.is_empty() {
+        sections.push(
+            module
+                .impls
+                .iter()
+                .map(format_impl)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
     if !module.functions.is_empty() {
         sections.push(
             module
@@ -56,6 +78,47 @@ pub fn format_module(module: &Module) -> String {
 
 fn format_import(import: &Import) -> String {
     format!("import {}", import.module)
+}
+
+/// RFC 0044 protocol declaration: requirements are signature-only lines
+/// (no trailing colon) one per line inside the indented block.
+fn format_protocol(decl: &ProtocolDecl) -> String {
+    let requirements = decl
+        .requirements
+        .iter()
+        .map(|requirement| {
+            let mut params = requirement
+                .params
+                .iter()
+                .map(|param| {
+                    let prefix = if param.mutable { "mut " } else { "" };
+                    match &param.ty {
+                        Some(ty) => format!("{prefix}{}: {}", param.name, format_type_ref(ty)),
+                        None => format!("{prefix}{}", param.name),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            // A requirement's receiver is conventionally `self: Self`,
+            // but the parameter list carries whatever the source spelled.
+            if params.is_empty() {
+                params = "self: Self".to_string();
+            }
+            let return_annotation = requirement
+                .return_type
+                .as_ref()
+                .map(|ty| format!(" -> {}", format_type_ref(ty)))
+                .unwrap_or_default();
+            format!("    fn {}({}){return_annotation}", requirement.name, params)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("protocol {}:\n{requirements}\n", decl.name)
+}
+
+/// RFC 0044 explicit conformance: block-less, newline-terminated.
+fn format_impl(decl: &ImplDecl) -> String {
+    format!("impl {}: {}", decl.struct_name, decl.protocols.join(", "))
 }
 
 fn format_struct(decl: &StructDecl) -> String {
@@ -126,6 +189,25 @@ fn format_function_with_keyword(function: &Function, keyword: &str) -> String {
         Some(receiver_type) => format!("{}.{}", format_type_ref(receiver_type), function.name),
         None => function.name.clone(),
     };
+    // RFC 0044 protocol-constrained type parameters: `[T: Shape]` between
+    // the name and the value parameter list.
+    let type_params = if function.type_params.is_empty() {
+        String::new()
+    } else {
+        let list = function
+            .type_params
+            .iter()
+            .map(|param| {
+                if param.bounds.is_empty() {
+                    param.name.clone()
+                } else {
+                    format!("{}: {}", param.name, param.bounds.join(", "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("[{list}]")
+    };
     let params = function
         .params
         .iter()
@@ -138,7 +220,7 @@ fn format_function_with_keyword(function: &Function, keyword: &str) -> String {
         .map(|ty| format!(" -> {}", format_type_ref(ty)))
         .unwrap_or_default();
     let body = format_block(&function.body, 1);
-    format!("{keyword} {head}({params}){return_annotation}:\n{body}\n",)
+    format!("{keyword} {head}{type_params}({params}){return_annotation}:\n{body}\n",)
 }
 
 fn format_param(param: &Param) -> String {
@@ -265,7 +347,10 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
                     let header = match (&arm.binding, &arm.kind) {
                         (_, SelectArmKind::Default) => "default".to_string(),
                         (Some(binding), SelectArmKind::Operation { operation }) => {
-                            format!("{binding} = {}", format_expr_at(operation, indent_level + 1))
+                            format!(
+                                "{binding} = {}",
+                                format_expr_at(operation, indent_level + 1)
+                            )
                         }
                         (None, SelectArmKind::Operation { operation }) => {
                             format_expr_at(operation, indent_level + 1)
