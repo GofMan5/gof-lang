@@ -1,0 +1,71 @@
+# Closures walkthrough (RFC 0047): anonymous functions are expressions,
+# capture only immutable enclosing bindings (snapshot at creation), and
+# cross task boundaries through their value.
+
+fn make_adder(n: int) -> fn(int) -> int:
+    # The closure type annotates parameters and return: fn(int) -> int.
+    return fn (x: int) -> int:
+        return x + n
+
+fn apply_twice(op: fn(int) -> int, value: int) -> int:
+    # Closures are first-class: parameters, returns, containers.
+    return op(op(value))
+
+fn main() -> int:
+    # Return type inference and the maker idiom.
+    add5 = make_adder(5)
+    assert(apply_twice(add5, 2) == 12, "expected 7 then 12")
+
+    square = fn (n: int) -> int:
+        return n * n
+    assert(square(9) == 81, "expected 81")
+
+    # Capture is a snapshot at creation: rebinding the source never
+    # reaches an already-created closure.
+    base = 10
+    snapshot_add = fn (x: int) -> int:
+        return x + base
+    assert(snapshot_add(5) == 15, "expected the snapshot capture")
+
+    # Handle captures share the resource: the channel crosses into the
+    # spawned closure calls.
+    results: channel[int] = channel(8)
+    emit = fn (n: int) -> Result[unit, RuntimeError]:
+        return send(results, n * n)
+    task = go emit(3)
+    status = await task
+    match status:
+        Result.Ok(value):
+            assert(true, "expected the spawn to succeed")
+        Result.Err(error):
+            assert(false, "expected the spawn to succeed")
+    outcome = recv(results)
+    match outcome:
+        Result.Ok(value):
+            assert(value == 9, "expected 9 through the shared channel")
+        Result.Err(error):
+            assert(false, "expected the recv to succeed")
+
+    # Per-iteration captures: a fn expression inside a loop creates one
+    # closure per iteration, each snapshotting that iteration's binding.
+    mut makers: list[fn() -> int] = []
+    for i in range(3):
+        maker = fn () -> int:
+            return i * 10
+        makers = append(makers, maker)
+    first = makers[0]
+    second = makers[1]
+    assert(first() == 0, "expected the first iteration snapshot")
+    assert(second() == 10, "expected the second iteration snapshot")
+
+    # Defer captures the closure VALUE at registration (RFC 0045+0047):
+    # rebinding after the defer still calls the registered closure.
+    one = fn () -> int:
+        return 111
+    two = fn () -> int:
+        return 999
+    mut c = one
+    defer print(c())
+    c = two
+    assert(c() == 999, "expected the rebound closure")
+    return 0

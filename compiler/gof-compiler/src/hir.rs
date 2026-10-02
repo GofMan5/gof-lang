@@ -62,6 +62,29 @@ pub struct HirEnumVariantField {
     pub span: Span,
 }
 
+impl HirBindingPattern {
+    /// Every leaf binding name in this pattern, left to right. Mirrors
+    /// `ast::BindingPattern::binding_names`; used by the closure capture
+    /// analysis to classify pattern-declared locals.
+    pub fn binding_names(&self) -> Vec<(String, Span)> {
+        let mut names = Vec::new();
+        self.collect_names(&mut names);
+        names
+    }
+
+    fn collect_names(&self, names: &mut Vec<(String, Span)>) {
+        match self {
+            HirBindingPattern::Name(name, span) => names.push((name.clone(), *span)),
+            HirBindingPattern::Tuple(leafs, _) => {
+                for leaf in leafs {
+                    leaf.collect_names(names);
+                }
+            }
+            HirBindingPattern::Wildcard(_) | HirBindingPattern::Literal(_, _) => {}
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct HirParam {
     pub name: String,
@@ -248,6 +271,14 @@ pub enum HirExpr {
     TupleIndex {
         target: Box<HirExpr>,
         index: usize,
+        span: Span,
+    },
+    /// RFC 0047 anonymous function expression, mirroring
+    /// `ast::Expr::Closure`.
+    Closure {
+        params: Vec<HirParam>,
+        return_type: Option<HirTypeRef>,
+        body: Vec<HirStmt>,
         span: Span,
     },
 }
@@ -554,6 +585,17 @@ fn lower_expr(expr: &Expr) -> HirExpr {
             index: *index,
             span: *span,
         },
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+            span,
+        } => HirExpr::Closure {
+            params: params.iter().map(lower_param).collect(),
+            return_type: return_type.as_ref().map(lower_type_ref),
+            body: body.iter().map(lower_stmt).collect(),
+            span: *span,
+        },
     }
 }
 
@@ -576,7 +618,8 @@ impl HirExpr {
             | HirExpr::Unary { span, .. }
             | HirExpr::Binary { span, .. }
             | HirExpr::Tuple { span, .. }
-            | HirExpr::TupleIndex { span, .. } => *span,
+            | HirExpr::TupleIndex { span, .. }
+            | HirExpr::Closure { span, .. } => *span,
         }
     }
 }

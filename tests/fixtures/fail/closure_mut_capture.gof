@@ -1,0 +1,5 @@
+fn main() -> int:
+    mut base = 10
+    add = fn (x: int) -> int:
+        return x + base
+    return add(5)

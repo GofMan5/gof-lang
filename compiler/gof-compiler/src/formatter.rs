@@ -333,6 +333,22 @@ fn format_type_ref(ty: &TypeRef) -> String {
                 .join(", ")
         );
     }
+    // RFC 0047 closure types: `TypeRef { name: "fn" }` holds the parameter
+    // types followed by the return type as its last argument; render the
+    // source spelling `fn(params) -> ret` back.
+    if ty.name == "fn" && !ty.args.is_empty() {
+        let params = &ty.args[..ty.args.len() - 1];
+        let return_type = ty.args.last().expect("fn type carries a return type");
+        return format!(
+            "fn({}) -> {}",
+            params
+                .iter()
+                .map(format_type_ref)
+                .collect::<Vec<_>>()
+                .join(", "),
+            format_type_ref(return_type)
+        );
+    }
     if ty.args.is_empty() {
         ty.name.clone()
     } else {
@@ -349,6 +365,13 @@ fn format_type_ref(ty: &TypeRef) -> String {
 }
 
 pub(crate) fn format_expr(expr: &Expr) -> String {
+    format_expr_at(expr, 0)
+}
+
+/// Indent-aware expression rendering: closure bodies are indented blocks
+/// nested inside the expression (RFC 0047), so every recursive render
+/// carries the enclosing indent level.
+fn format_expr_at(expr: &Expr, indent_level: usize) -> String {
     match expr {
         Expr::Int(value, _) => value.to_string(),
         Expr::String(value, _) => format!("{value:?}"),
@@ -356,21 +379,30 @@ pub(crate) fn format_expr(expr: &Expr) -> String {
         Expr::Ident(value, _) => value.clone(),
         Expr::List { items, .. } => format!(
             "[{}]",
-            items.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+            items
+                .iter()
+                .map(|item| format_expr_at(item, indent_level))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         Expr::Dict { entries, .. } => format!(
             "{{{}}}",
             entries
                 .iter()
-                .map(format_dict_entry)
+                .map(|entry| format_dict_entry(entry, indent_level))
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
         Expr::Call { callee, args, .. } => format!(
             "{callee}({})",
-            args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+            args.iter()
+                .map(|arg| format_expr_at(arg, indent_level))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
-        Expr::Field { target, field, .. } => format!("{}.{}", format_expr(target), field),
+        Expr::Field { target, field, .. } => {
+            format!("{}.{}", format_expr_at(target, indent_level), field)
+        }
         Expr::MethodCall {
             target,
             method,
@@ -378,35 +410,75 @@ pub(crate) fn format_expr(expr: &Expr) -> String {
             ..
         } => format!(
             "{}.{method}({})",
-            format_expr(target),
-            args.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+            format_expr_at(target, indent_level),
+            args.iter()
+                .map(|arg| format_expr_at(arg, indent_level))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
         Expr::Index { target, index, .. } => {
-            format!("{}[{}]", format_expr(target), format_expr(index))
+            format!(
+                "{}[{}]",
+                format_expr_at(target, indent_level),
+                format_expr_at(index, indent_level)
+            )
         }
-        Expr::Go { value, .. } => format!("go {}", format_expr(value)),
-        Expr::Await { value, .. } => format!("await {}", format_expr(value)),
-        Expr::Propagate { value, .. } => format!("{}?", format_expr(value)),
+        Expr::Go { value, .. } => format!("go {}", format_expr_at(value, indent_level)),
+        Expr::Await { value, .. } => format!("await {}", format_expr_at(value, indent_level)),
+        Expr::Propagate { value, .. } => format!("{}?", format_expr_at(value, indent_level)),
         Expr::Unary { op, value, .. } => match op {
-            UnaryOp::Not => format!("not {}", format_expr(value)),
-            UnaryOp::Neg => format!("-{}", format_expr(value)),
+            UnaryOp::Not => format!("not {}", format_expr_at(value, indent_level)),
+            UnaryOp::Neg => format!("-{}", format_expr_at(value, indent_level)),
         },
         Expr::Binary { lhs, op, rhs, .. } => format!(
             "{} {} {}",
-            format_expr(lhs),
+            format_expr_at(lhs, indent_level),
             format_op(*op),
-            format_expr(rhs)
+            format_expr_at(rhs, indent_level)
         ),
         Expr::Tuple { items, .. } => format!(
             "({})",
-            items.iter().map(format_expr).collect::<Vec<_>>().join(", ")
+            items
+                .iter()
+                .map(|item| format_expr_at(item, indent_level))
+                .collect::<Vec<_>>()
+                .join(", ")
         ),
-        Expr::TupleIndex { target, index, .. } => format!("{}.{index}", format_expr(target)),
+        Expr::TupleIndex { target, index, .. } => {
+            format!("{}.{index}", format_expr_at(target, indent_level))
+        }
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+            ..
+        } => {
+            let params = params
+                .iter()
+                .map(|param| match &param.ty {
+                    Some(ty) => format!("{}: {}", param.name, format_type_ref(ty)),
+                    None => param.name.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let return_annotation = return_type
+                .as_ref()
+                .map(|ty| format!(" -> {}", format_type_ref(ty)))
+                .unwrap_or_default();
+            format!(
+                "fn ({params}){return_annotation}:\n{}",
+                format_block(body, indent_level + 1)
+            )
+        }
     }
 }
 
-fn format_dict_entry(entry: &DictEntry) -> String {
-    format!("{}: {}", format_expr(&entry.key), format_expr(&entry.value))
+fn format_dict_entry(entry: &DictEntry, indent_level: usize) -> String {
+    format!(
+        "{}: {}",
+        format_expr_at(&entry.key, indent_level),
+        format_expr_at(&entry.value, indent_level)
+    )
 }
 
 fn format_op(op: BinaryOp) -> &'static str {

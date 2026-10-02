@@ -1,0 +1,4 @@
+fn main() -> int:
+    add = fn (x: int) -> int:
+        return x + 1
+    return add("one")

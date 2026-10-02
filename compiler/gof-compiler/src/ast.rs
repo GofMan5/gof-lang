@@ -322,6 +322,18 @@ pub enum Expr {
         index: usize,
         span: Span,
     },
+    /// RFC 0047 anonymous function expression: `fn (x: int) -> int: <block>`.
+    /// Parameters carry mandatory type annotations (the parser enforces
+    /// GOF3142 for a missing annotation); `-> Ret` is optional and infers
+    /// from the body's return paths in the typed layer. The block
+    /// (Indent..Dedent) is part of the expression: parsing continues on
+    /// the line hosting the Dedent.
+    Closure {
+        params: Vec<Param>,
+        return_type: Option<TypeRef>,
+        body: Vec<Stmt>,
+        span: Span,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -361,6 +373,12 @@ struct Parser<'a> {
     tokens: &'a [Token],
     current: usize,
     diagnostics: Diagnostics,
+    /// RFC 0047: set when the expression just parsed ended with a closure
+    /// block (its Indent..Dedent consumed as part of the expression). The
+    /// physical line break before that block was already consumed, so a
+    /// statement ending in such an expression terminates at the Dedent
+    /// instead of expecting a trailing newline (see `finish_stmt_line`).
+    expr_ended_with_block: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -369,6 +387,7 @@ impl<'a> Parser<'a> {
             tokens,
             current: 0,
             diagnostics: Diagnostics::default(),
+            expr_ended_with_block: false,
         }
     }
 
@@ -560,6 +579,64 @@ impl<'a> Parser<'a> {
         Param { name, ty, span }
     }
 
+    /// RFC 0047 closure parameters: same shape as named-function
+    /// parameters, but every parameter requires an explicit type
+    /// annotation (GOF3142), duplicate names are rejected (GOF3142), and
+    /// `self` is rejected as a receiver-style parameter (GOF3142).
+    fn parse_closure_params(&mut self) -> Vec<Param> {
+        let mut params = Vec::new();
+        if self.check(TokenDiscriminant::RParen) {
+            return params;
+        }
+
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            let name = self.expect_ident("expected a closure parameter name");
+            let span = self.previous().span;
+            if !seen.insert(name.clone()) {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3142",
+                        format!("duplicate closure parameter `{name}`"),
+                        "anonymous function parameters must use unique names within the signature",
+                        span,
+                    )
+                    .with_fix_it("rename or remove the duplicate parameter"),
+                );
+            }
+            if name == "self" {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3142",
+                        "closure parameters cannot use the receiver name `self`",
+                        "anonymous functions have no receiver; `self` is reserved for named method declarations",
+                        span,
+                    )
+                    .with_fix_it("rename the parameter to describe its value")
+                );
+            }
+            let ty = if self.matches(TokenDiscriminant::Colon) {
+                Some(self.parse_type_ref("expected a type after `:` in a closure parameter"))
+            } else {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3142",
+                        format!("closure parameter `{name}` requires a type annotation"),
+                        "closure parameters require explicit type annotations",
+                        span,
+                    )
+                    .with_fix_it(format!("annotate the parameter as `{name}: <type>`")),
+                );
+                None
+            };
+            params.push(Param { name, ty, span });
+            if !self.matches(TokenDiscriminant::Comma) {
+                break;
+            }
+        }
+        params
+    }
+
     fn parse_struct_fields(&mut self, message: &'static str) -> Vec<StructField> {
         self.expect(
             TokenDiscriminant::Newline,
@@ -644,13 +721,11 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_stmt(&mut self) -> Stmt {
+        self.expr_ended_with_block = false;
         if self.matches(TokenDiscriminant::Return) {
             let span = self.previous().span;
             let expr = self.parse_expr();
-            self.expect(
-                TokenDiscriminant::Newline,
-                "expected a newline after `return`",
-            );
+            self.finish_stmt_line("expected a newline after `return`");
             return Stmt::Return(expr, span);
         }
 
@@ -770,10 +845,7 @@ impl<'a> Parser<'a> {
         if self.matches(TokenDiscriminant::Defer) {
             let span = self.previous().span;
             let call = self.parse_expr();
-            self.expect(
-                TokenDiscriminant::Newline,
-                "expected a newline after `defer`",
-            );
+            self.finish_stmt_line("expected a newline after `defer`");
             return Stmt::Defer(call, span);
         }
 
@@ -805,10 +877,7 @@ impl<'a> Parser<'a> {
                 self.expect(TokenDiscriminant::Equal, "expected `=` in a binding");
                 let pattern = self.binding_pattern_from_expr(expr);
                 let value = self.parse_expr();
-                self.expect(
-                    TokenDiscriminant::Newline,
-                    "expected a newline after binding",
-                );
+                self.finish_stmt_line("expected a newline after binding");
                 return Stmt::Bind {
                     pattern,
                     mutable: true,
@@ -822,10 +891,7 @@ impl<'a> Parser<'a> {
             let ty = self.parse_optional_type_ref();
             self.expect(TokenDiscriminant::Equal, "expected `=` in a binding");
             let value = self.parse_expr();
-            self.expect(
-                TokenDiscriminant::Newline,
-                "expected a newline after binding",
-            );
+            self.finish_stmt_line("expected a newline after binding");
             return Stmt::Bind {
                 pattern: binding_leaf_from_name(name, span),
                 mutable: true,
@@ -845,10 +911,7 @@ impl<'a> Parser<'a> {
                 "expected `=` in an assignment or binding",
             );
             let value = self.parse_expr();
-            self.expect(
-                TokenDiscriminant::Newline,
-                "expected a newline after assignment",
-            );
+            self.finish_stmt_line("expected a newline after assignment");
             return if ty.is_some() || name == "_" {
                 // RFC 0052: `_ = expr` evaluates the right-hand side for
                 // its effects and discards the value — the wildcard binds
@@ -881,10 +944,7 @@ impl<'a> Parser<'a> {
                 self.advance();
                 let pattern = self.binding_pattern_from_expr(expr);
                 let value = self.parse_expr();
-                self.expect(
-                    TokenDiscriminant::Newline,
-                    "expected a newline after binding",
-                );
+                self.finish_stmt_line("expected a newline after binding");
                 return Stmt::Bind {
                     pattern,
                     mutable: false,
@@ -894,19 +954,13 @@ impl<'a> Parser<'a> {
                 };
             }
             let span = expr.span();
-            self.expect(
-                TokenDiscriminant::Newline,
-                "expected a newline after expression",
-            );
+            self.finish_stmt_line("expected a newline after expression");
             return Stmt::Expr(expr, span);
         }
 
         let expr = self.parse_expr();
         let span = expr.span();
-        self.expect(
-            TokenDiscriminant::Newline,
-            "expected a newline after expression",
-        );
+        self.finish_stmt_line("expected a newline after expression");
         Stmt::Expr(expr, span)
     }
 
@@ -1468,6 +1522,35 @@ impl<'a> Parser<'a> {
                     span: Span::new(token.span.line, token.span.column, end.end_column),
                 }
             }
+            // RFC 0047 anonymous function expression: `fn` followed by `(`.
+            // `fn` followed by an identifier is the named-declaration form,
+            // which is module-top-level only — it falls through to the
+            // unexpected-token error below exactly as before.
+            TokenKind::Fn if self.check(TokenDiscriminant::LParen) => {
+                self.advance();
+                let params = self.parse_closure_params();
+                self.expect(
+                    TokenDiscriminant::RParen,
+                    "expected `)` after closure parameters",
+                );
+                let return_type = self.parse_optional_return_type_ref();
+                self.expect(
+                    TokenDiscriminant::Colon,
+                    "expected `:` before the closure body",
+                );
+                let body =
+                    self.parse_block("expected an indented block after the closure signature");
+                // The block's Dedent ends the expression; the line hosting
+                // the Dedent continues the enclosing expression or statement.
+                self.expr_ended_with_block = true;
+                let end = self.previous().span;
+                Expr::Closure {
+                    params,
+                    return_type,
+                    body,
+                    span: Span::new(token.span.line, token.span.column, end.end_column),
+                }
+            }
             _ => {
                 self.diagnostics.push(
                     Diagnostic::error(
@@ -1500,6 +1583,12 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_ref(&mut self, message: &'static str) -> TypeRef {
+        // RFC 0047 closure types: `fn(ParamType, ...) -> RetType`. The
+        // return type is mandatory — `fn` is a keyword, so it can never
+        // collide with a user type name, and the form is purely additive.
+        if self.check(TokenDiscriminant::Fn) {
+            return self.parse_function_type_ref();
+        }
         // RFC 0050: `(T1, T2, ...)` with two or more members is a tuple type.
         // The type grammar has no grouping, so a single item in parentheses
         // is the attempted 1-tuple shape and gets GOF3155.
@@ -1540,6 +1629,43 @@ impl<'a> Parser<'a> {
 
         TypeRef {
             name,
+            args,
+            span: Span::new(start.line, start.column, end.end_column),
+        }
+    }
+
+    /// RFC 0047 function type: `fn(ParamType, ...) -> RetType`. Stored as
+    /// `TypeRef { name: "fn", args: [param types..., return type] }` — the
+    /// last argument is the return type; the parser guarantees at least
+    /// one argument (the mandatory return annotation).
+    fn parse_function_type_ref(&mut self) -> TypeRef {
+        let start = self.advance().span;
+        self.expect(
+            TokenDiscriminant::LParen,
+            "expected `(` after `fn` in a function type",
+        );
+        let mut args = Vec::new();
+        if !self.check(TokenDiscriminant::RParen) {
+            loop {
+                args.push(self.parse_type_ref("expected a parameter type"));
+                if !self.matches(TokenDiscriminant::Comma) {
+                    break;
+                }
+            }
+        }
+        self.expect(
+            TokenDiscriminant::RParen,
+            "expected `)` after function type parameters",
+        );
+        self.expect(
+            TokenDiscriminant::Arrow,
+            "expected `->` and a return type to complete the function type",
+        );
+        let return_type = self.parse_type_ref("expected a return type after `->`");
+        let end = return_type.span;
+        args.push(return_type);
+        TypeRef {
+            name: "fn".to_string(),
             args,
             span: Span::new(start.line, start.column, end.end_column),
         }
@@ -1659,6 +1785,20 @@ impl<'a> Parser<'a> {
             .with_fix_it(format!("insert or replace with {}", expected.as_hint())),
         );
         token_span
+    }
+
+    /// Terminate a statement whose value is an expression. Normally the
+    /// statement ends at its trailing newline; when the expression ended
+    /// with a closure block (RFC 0047), the newline was already consumed
+    /// before the block's Indent, so the statement ends at the Dedent and
+    /// the next line's content continues directly at statement level.
+    fn finish_stmt_line(&mut self, message: &'static str) -> Span {
+        if self.expr_ended_with_block && !self.check(TokenDiscriminant::Newline) {
+            self.expr_ended_with_block = false;
+            return self.previous().span;
+        }
+        self.expr_ended_with_block = false;
+        self.expect(TokenDiscriminant::Newline, message)
     }
 
     fn expect_ident(&mut self, message: &'static str) -> String {
@@ -2069,7 +2209,8 @@ impl Expr {
             | Expr::Unary { span, .. }
             | Expr::Binary { span, .. }
             | Expr::Tuple { span, .. }
-            | Expr::TupleIndex { span, .. } => *span,
+            | Expr::TupleIndex { span, .. }
+            | Expr::Closure { span, .. } => *span,
         }
     }
 }

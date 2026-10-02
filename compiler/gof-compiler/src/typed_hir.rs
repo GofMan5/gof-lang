@@ -5,7 +5,7 @@ use crate::ast::{
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{
     HirBindingPattern, HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule,
-    HirPatternLiteral, HirSelectArm, HirSelectArmKind, HirStmt, HirStruct, HirTypeRef,
+    HirParam, HirPatternLiteral, HirSelectArm, HirSelectArmKind, HirStmt, HirStruct, HirTypeRef,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -29,6 +29,10 @@ pub enum Type {
     Result(Box<Type>, Box<Type>),
     Option(Box<Type>),
     Tuple(Vec<Type>),
+    /// RFC 0047 closure type: parameter types plus the return type.
+    /// Compatibility is exact structural match — no variance, no implicit
+    /// coercion with any other type.
+    Function(Vec<Type>, Box<Type>),
     Unknown,
     Unit,
 }
@@ -91,6 +95,15 @@ impl Type {
                     .map(|member| member.display_name())
                     .collect::<Vec<_>>()
                     .join(", ")
+            ),
+            Self::Function(params, return_type) => format!(
+                "fn({}) -> {}",
+                params
+                    .iter()
+                    .map(|param| param.display_name())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                return_type.display_name()
             ),
             Self::Unknown => "unknown".to_string(),
             Self::Unit => "unit".to_string(),
@@ -346,6 +359,12 @@ pub enum TypedExprKind {
         callee: String,
         args: Vec<TypedExpr>,
     },
+    /// RFC 0047 `go closure(args)`: the callee is a local binding holding
+    /// a closure value. The task type carries the closure's return type.
+    SpawnClosure {
+        callee: String,
+        args: Vec<TypedExpr>,
+    },
     Await {
         value: Box<TypedExpr>,
     },
@@ -367,6 +386,17 @@ pub enum TypedExprKind {
     TupleIndex {
         target: Box<TypedExpr>,
         index: usize,
+    },
+    /// RFC 0047 anonymous function: parameters with resolved types, the
+    /// declared return type (inferred from the body when absent), the
+    /// typed body, and the explicit capture list in source order of first
+    /// free reference. The capture list is the typed-HIR contract shared
+    /// with the evaluator: `[(name, type)]`.
+    Closure {
+        params: Vec<TypedParam>,
+        return_type: Type,
+        body: Vec<TypedStmt>,
+        captures: Vec<(String, Type)>,
     },
 }
 
@@ -3588,6 +3618,12 @@ fn guard_contains_control_flow(expr: &TypedExpr) -> bool {
         TypedExprKind::Propagate { .. }
         | TypedExprKind::Await { .. }
         | TypedExprKind::Spawn { .. } => true,
+        // RFC 0047: a closure expression is a value; its body is a
+        // separate function context whose control flow stays inside the
+        // closure call, so it never makes the GUARD itself control flow.
+        // Spawning a closure is SpawnClosure — control flow, handled below.
+        TypedExprKind::SpawnClosure { .. } => true,
+        TypedExprKind::Closure { .. } => false,
         TypedExprKind::List { items } => items.iter().any(guard_contains_control_flow),
         TypedExprKind::Dict { entries } => entries.iter().any(|entry| {
             guard_contains_control_flow(&entry.key) || guard_contains_control_flow(&entry.value)
@@ -4014,6 +4050,30 @@ fn lower_expr(
                     )
                 })
                 .collect::<Vec<_>>();
+            // RFC 0047 closure calls: a callee name that resolves to a
+            // local binding dispatches as a closure call with the
+            // GOF3143 arity and argument checks. Locals could never hold
+            // function values before this RFC, so today's name-first
+            // resolution is unchanged for every existing program.
+            if let Some(binding) = scopes.get(callee) {
+                let return_type = validate_closure_call(
+                    callee,
+                    &binding.ty,
+                    &typed_args,
+                    *span,
+                    diagnostics,
+                    source_path,
+                )
+                .unwrap_or(Type::Unknown);
+                return TypedExpr {
+                    kind: TypedExprKind::Call {
+                        callee: callee.clone(),
+                        args: typed_args,
+                    },
+                    ty: return_type,
+                    span: *span,
+                };
+            }
             let call_kind =
                 resolve_call_kind(callee, signatures, struct_signatures, enum_signatures);
             validate_call(
@@ -4470,6 +4530,29 @@ fn lower_expr(
                         )
                     })
                     .collect::<Vec<_>>();
+                // RFC 0047: `go closure(args)` spawns a closure call. The
+                // task type carries the closure's return type, and the
+                // GOF3008 named-function rule keeps applying to every
+                // other callee kind.
+                if let Some(binding) = scopes.get(callee) {
+                    let return_type = validate_closure_call(
+                        callee,
+                        &binding.ty,
+                        &typed_args,
+                        *call_span,
+                        diagnostics,
+                        source_path,
+                    )
+                    .unwrap_or(Type::Unknown);
+                    return TypedExpr {
+                        kind: TypedExprKind::SpawnClosure {
+                            callee: callee.clone(),
+                            args: typed_args,
+                        },
+                        ty: Type::task(return_type),
+                        span: *span,
+                    };
+                }
                 let call_kind =
                     resolve_call_kind(callee, signatures, struct_signatures, enum_signatures);
                 if !matches!(call_kind, CallKind::Function | CallKind::Unknown) {
@@ -4787,7 +4870,564 @@ fn lower_expr(
                 span: *span,
             }
         }
+        // RFC 0047 anonymous function expression: capture analysis runs
+        // against the enclosing scope stack here, then the body lowers
+        // against a fresh stack seeded with the captures and parameters.
+        HirExpr::Closure {
+            params,
+            return_type,
+            body,
+            span,
+        } => lower_closure_expr(
+            params,
+            return_type.as_ref(),
+            body,
+            *span,
+            scopes,
+            signatures,
+            method_signatures,
+            known_structs,
+            known_enums,
+            struct_signatures,
+            enum_signatures,
+            diagnostics,
+            source_path,
+        ),
     }
+}
+
+/// RFC 0047 capture analysis: walks a closure body tracking the bindings
+/// the closure itself creates (parameters, locals, loop bindings, match
+/// bindings, nested closure parameters) and records, in source order of
+/// first free reference:
+///
+/// - every free local reference that resolves to an enclosing
+///   function-local binding — a capture candidate
+/// - every assignment or binding target (`name = expr`, `mut name = expr`,
+///   `name: T = expr`) that resolves to an enclosing binding — a GOF3144
+///   site; closures never implicitly shadow enclosing bindings
+///
+/// Top-level names (functions, constructors, enum variants) never resolve
+/// through the enclosing local scope stack, so they are never captures.
+struct ClosureCaptureWalker<'a, 'd> {
+    enclosing: &'a ScopeStack,
+    scopes: Vec<HashSet<String>>,
+    /// Capture candidates in source order of first free reference.
+    captures: Vec<(String, Span)>,
+    seen: HashSet<String>,
+    diagnostics: &'d mut Diagnostics,
+    source_path: &'a Path,
+}
+
+impl<'a, 'd> ClosureCaptureWalker<'a, 'd> {
+    fn new(
+        enclosing: &'a ScopeStack,
+        params: &[HirParam],
+        diagnostics: &'d mut Diagnostics,
+        source_path: &'a Path,
+    ) -> Self {
+        let mut root = HashSet::new();
+        for param in params {
+            root.insert(param.name.clone());
+        }
+        Self {
+            enclosing,
+            scopes: vec![root],
+            captures: Vec::new(),
+            seen: HashSet::new(),
+            diagnostics,
+            source_path,
+        }
+    }
+
+    fn is_locally_bound(&self, name: &str) -> bool {
+        self.scopes.iter().any(|scope| scope.contains(name))
+    }
+
+    fn declare_local(&mut self, name: &str) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name.to_string());
+        }
+    }
+
+    /// A free local reference: resolves lexically through the enclosing
+    /// function scopes, or not at all (top-level names stay untouched).
+    fn record_reference(&mut self, name: &str, span: Span) {
+        if self.is_locally_bound(name) || self.seen.contains(name) {
+            return;
+        }
+        self.seen.insert(name.to_string());
+        if self.enclosing.get(name).is_some() {
+            self.captures.push((name.to_string(), span));
+        }
+    }
+
+    /// An assignment or explicit binding target: when the name resolves to
+    /// an enclosing binding this is a GOF3144 site (closures never
+    /// implicitly shadow); otherwise the statement creates a closure-local
+    /// binding going forward.
+    fn record_target(&mut self, name: &str, span: Span) {
+        if self.is_locally_bound(name) {
+            return;
+        }
+        if self.enclosing.get(name).is_some() {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3144",
+                    format!("mutable capture of `{name}` is not supported"),
+                    "closures capture only immutable enclosing bindings; snapshot the value before creating the closure, or route updates through a channel",
+                    span,
+                )
+                .with_fix_it(format!(
+                    "bind a local copy before the closure (for example `snapshot = {name}`) or share updates through a channel or handle"
+                ))
+                .with_source_path(self.source_path.to_path_buf()),
+            );
+            // Recovery: treat the target as a closure-local binding so the
+            // rest of the body lowers without cascading unknown-local
+            // diagnostics; the GOF3144 report already failed the compile.
+            self.declare_local(name);
+            return;
+        }
+        self.declare_local(name);
+    }
+
+    fn walk_stmts(&mut self, stmts: &[HirStmt]) {
+        for stmt in stmts {
+            self.walk_stmt(stmt);
+        }
+    }
+
+    fn walk_stmt(&mut self, stmt: &HirStmt) {
+        match stmt {
+            HirStmt::Return(expr, _) | HirStmt::Expr(expr, _) | HirStmt::Defer(expr, _) => {
+                self.walk_expr(expr);
+            }
+            HirStmt::Bind { pattern, value, .. } => {
+                self.walk_expr(value);
+                for (name, target_span) in pattern.binding_names() {
+                    self.record_target(&name, target_span);
+                }
+            }
+            HirStmt::Assign { name, value, span } => {
+                self.walk_expr(value);
+                self.record_target(name, *span);
+            }
+            HirStmt::If {
+                condition,
+                then_body,
+                else_body,
+                ..
+            } => {
+                self.walk_expr(condition);
+                self.scopes.push(HashSet::new());
+                self.walk_stmts(then_body);
+                self.scopes.pop();
+                self.scopes.push(HashSet::new());
+                self.walk_stmts(else_body);
+                self.scopes.pop();
+            }
+            HirStmt::While {
+                condition, body, ..
+            } => {
+                self.walk_expr(condition);
+                self.scopes.push(HashSet::new());
+                self.walk_stmts(body);
+                self.scopes.pop();
+            }
+            HirStmt::For {
+                pattern,
+                iterable,
+                body,
+                ..
+            } => {
+                self.walk_expr(iterable);
+                self.scopes.push(HashSet::new());
+                // Loop bindings are fresh per iteration and never resolve
+                // outward, so they only ever create locals.
+                for (name, _) in pattern.binding_names() {
+                    self.declare_local(&name);
+                }
+                self.walk_stmts(body);
+                self.scopes.pop();
+            }
+            HirStmt::Match { value, arms, .. } => {
+                self.walk_expr(value);
+                for arm in arms {
+                    self.scopes.push(HashSet::new());
+                    for (name, _) in match_arm_binding_names(&arm.pattern) {
+                        self.declare_local(&name);
+                    }
+                    if let Some(guard) = &arm.guard {
+                        self.walk_expr(guard);
+                    }
+                    self.walk_stmts(&arm.body);
+                    self.scopes.pop();
+                }
+            }
+            HirStmt::Select { arms, .. } => {
+                for arm in arms {
+                    match &arm.kind {
+                        HirSelectArmKind::Operation { operation } => {
+                            self.walk_expr(operation);
+                            if let Some(binding) = &arm.binding {
+                                self.declare_local(binding);
+                            }
+                        }
+                        HirSelectArmKind::Default => {}
+                    }
+                    self.scopes.push(HashSet::new());
+                    self.walk_stmts(&arm.body);
+                    self.scopes.pop();
+                }
+            }
+            HirStmt::Break(_) | HirStmt::Continue(_) => {}
+        }
+    }
+
+    fn walk_expr(&mut self, expr: &HirExpr) {
+        match expr {
+            HirExpr::Local(name, span) => self.record_reference(name, *span),
+            // The callee is a plain name: a closure-typed local is called
+            // by name, so the callee participates in capture analysis just
+            // like a bare local reference.
+            HirExpr::Call { callee, args, span } => {
+                self.record_reference(callee, *span);
+                self.walk_exprs(args);
+            }
+            HirExpr::List { items, .. } | HirExpr::Tuple { items, .. } => {
+                self.walk_exprs(items);
+            }
+            HirExpr::Dict { entries, .. } => {
+                for entry in entries {
+                    self.walk_expr(&entry.key);
+                    self.walk_expr(&entry.value);
+                }
+            }
+            HirExpr::Field { target, .. } | HirExpr::Await { value: target, .. } => {
+                self.walk_expr(target);
+            }
+            HirExpr::MethodCall {
+                target,
+                args,
+                span: _,
+                ..
+            } => {
+                self.walk_expr(target);
+                self.walk_exprs(args);
+            }
+            HirExpr::Index { target, index, .. } => {
+                self.walk_expr(target);
+                self.walk_expr(index);
+            }
+            HirExpr::Go { value, .. }
+            | HirExpr::Propagate { value, .. }
+            | HirExpr::Unary { value, .. } => {
+                self.walk_expr(value);
+            }
+            HirExpr::Binary { lhs, rhs, .. } => {
+                self.walk_expr(lhs);
+                self.walk_expr(rhs);
+            }
+            HirExpr::TupleIndex { target, .. } => {
+                self.walk_expr(target);
+            }
+            HirExpr::Int(_, _) | HirExpr::String(_, _) | HirExpr::Bool(_, _) => {}
+            // Nested closures: their own parameters and locals stay inside
+            // the nested scope, while their free references resolve through
+            // this closure's chain and count as this closure's captures
+            // (RFC 0047 "Nested closures").
+            HirExpr::Closure { params, body, .. } => {
+                let mut nested = HashSet::new();
+                for param in params {
+                    nested.insert(param.name.clone());
+                }
+                self.scopes.push(nested);
+                self.walk_stmts(body);
+                self.scopes.pop();
+            }
+        }
+    }
+
+    fn walk_exprs(&mut self, exprs: &[HirExpr]) {
+        for expr in exprs {
+            self.walk_expr(expr);
+        }
+    }
+}
+
+/// Match-arm payload binding names for capture walking.
+fn match_arm_binding_names(pattern: &HirMatchPattern) -> Vec<(String, Span)> {
+    match pattern {
+        HirMatchPattern::EnumVariant { bindings, .. } => bindings
+            .iter()
+            .flat_map(|binding| binding.binding_names())
+            .collect(),
+    }
+}
+
+/// RFC 0047 anonymous function lowering: resolve the contract (parameters
+/// must be annotated — the parser enforces GOF3142 for a missing
+/// annotation), run capture analysis against the enclosing scope stack,
+/// then lower the body against a fresh stack seeded with captures and
+/// parameters. `return` binds to the closure (the body's return contract
+/// is the closure's own), `break`/`continue` start at loop depth 0 (an
+/// enclosing loop is not reachable), and the resulting type is
+/// `fn(params) -> ret`.
+#[allow(clippy::too_many_arguments)]
+fn lower_closure_expr(
+    params: &[HirParam],
+    declared_return_type: Option<&HirTypeRef>,
+    body: &[HirStmt],
+    span: Span,
+    scopes: &ScopeStack,
+    signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> TypedExpr {
+    let mut typed_params = Vec::with_capacity(params.len());
+    for param in params {
+        let ty = match &param.ty {
+            Some(annotation) => resolve_type_annotation(
+                Some(annotation),
+                known_structs,
+                known_enums,
+                source_path,
+                diagnostics,
+            ),
+            None => {
+                // The parser already reported GOF3142 for a missing
+                // annotation; this is the defensive typed-layer backstop.
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3142",
+                        format!(
+                            "closure parameter `{}` requires a type annotation",
+                            param.name
+                        ),
+                        "closure parameters require explicit type annotations",
+                        param.span,
+                    )
+                    .with_fix_it(format!(
+                        "annotate the parameter as `{}: <type>`",
+                        param.name
+                    ))
+                    .with_source_path(source_path.to_path_buf()),
+                );
+                Type::Unknown
+            }
+        };
+        typed_params.push(TypedParam {
+            name: param.name.clone(),
+            ty,
+        });
+    }
+
+    let declared_return_type = declared_return_type.map(|annotation| {
+        resolve_type_annotation(
+            Some(annotation),
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+        )
+    });
+
+    // Capture analysis: free identifiers resolving to enclosing
+    // function-local bindings, in source order of first free reference.
+    let capture_candidates = {
+        let mut walker = ClosureCaptureWalker::new(scopes, params, diagnostics, source_path);
+        walker.walk_stmts(body);
+        walker.captures
+    };
+    let mut captures = Vec::with_capacity(capture_candidates.len());
+    for (name, capture_span) in capture_candidates {
+        let binding = scopes
+            .get(&name)
+            .expect("capture candidates resolve through the enclosing scope stack");
+        if binding.mutable {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3144",
+                    format!("mutable capture of `{name}` is not supported"),
+                    "closures capture only immutable enclosing bindings; snapshot the value before creating the closure, or route updates through a channel",
+                    capture_span,
+                )
+                .with_fix_it(format!(
+                    "bind a snapshot before the closure (for example `snapshot = {name}`) or share updates through a channel or handle"
+                ))
+                .with_source_path(source_path.to_path_buf()),
+            );
+        }
+        // RFC 0047 GOF3145 (owned captures require an explicit clone) is
+        // vacuous today: no owned taxa exist in the type system yet, so
+        // every capture is a value duplicate or a handle share. When the
+        // first owned type lands, the taxon check belongs here, keyed on
+        // the captured binding's taxon classification.
+        captures.push((name.clone(), binding.ty.clone()));
+    }
+
+    // The body lowers against a fresh stack: captures plus parameters in
+    // the root scope. Enclosing locals are invisible by construction —
+    // every legal free reference was captured above, and everything else
+    // resolves as a top-level name (or reports GOF3002, which also covers
+    // the no-self-recursion rule: the binding being initialized is not in
+    // scope inside its own initializer).
+    let mut closure_scopes = ScopeStack::new(&typed_params);
+    for (name, ty) in &captures {
+        closure_scopes.define_current(
+            name.clone(),
+            LocalBinding {
+                mutable: false,
+                ty: ty.clone(),
+            },
+        );
+    }
+    let contract_return_type = declared_return_type.clone().unwrap_or(Type::Unknown);
+    let typed_body = lower_block(
+        body,
+        &mut closure_scopes,
+        signatures,
+        method_signatures,
+        known_structs,
+        known_enums,
+        struct_signatures,
+        enum_signatures,
+        diagnostics,
+        0,
+        false,
+        &contract_return_type,
+        source_path,
+    );
+
+    // Return inference over the typed body: a body with no `return`
+    // infers `unit`; incompatible return paths are part of the anonymous
+    // function contract (GOF3142), as is a declared annotation the body
+    // cannot satisfy.
+    let mut returns = ReturnAccumulator {
+        ty: None,
+        span: None,
+        incompatible: false,
+    };
+    collect_return_types(
+        "GOF3142",
+        "anonymous function",
+        &typed_body,
+        &mut returns,
+        diagnostics,
+        source_path,
+    );
+    let inferred_return_type = returns.ty.unwrap_or(Type::Unit);
+    let return_type = match &declared_return_type {
+        Some(declared) => {
+            if !types_compatible(declared, &inferred_return_type) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3142",
+                        "closure return annotation is incompatible with its body",
+                        format!(
+                            "the closure is annotated as `{}`, but its return paths resolve to `{}`",
+                            declared.display_name(),
+                            inferred_return_type.display_name()
+                        ),
+                        span,
+                    )
+                    .with_fix_it("align the annotation with the body's return paths")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            declared.clone()
+        }
+        None => inferred_return_type,
+    };
+
+    let param_types = typed_params.iter().map(|param| param.ty.clone()).collect();
+    TypedExpr {
+        kind: TypedExprKind::Closure {
+            params: typed_params,
+            return_type: return_type.clone(),
+            body: typed_body,
+            captures,
+        },
+        ty: Type::Function(param_types, Box::new(return_type)),
+        span,
+    }
+}
+
+/// RFC 0047 closure call validation: the callee is a local binding whose
+/// type decides the call. A `fn(params) -> ret` type carries the GOF3143
+/// arity and argument checks and returns the closure's return type; any
+/// other type is an invalid closure call (GOF3143) and returns `None`.
+fn validate_closure_call(
+    callee: &str,
+    binding_ty: &Type,
+    args: &[TypedExpr],
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) -> Option<Type> {
+    let Type::Function(param_types, return_type) = binding_ty else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3143",
+                format!("`{callee}` is not a closure and cannot be called"),
+                format!(
+                    "this binding resolves to `{}`, and only closure-typed values are callable",
+                    binding_ty.display_name()
+                ),
+                span,
+            )
+            .with_fix_it("call a `fn(...) -> ...` value, or a top-level function by name")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return None;
+    };
+
+    if param_types.len() != args.len() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3143",
+                format!("wrong number of arguments for `{callee}`"),
+                format!(
+                    "the closure expects {} argument(s), got {}",
+                    param_types.len(),
+                    args.len()
+                ),
+                span,
+            )
+            .with_fix_it("pass the exact number of parameters the closure declares")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    } else {
+        for (index, (expected, actual)) in param_types.iter().zip(args.iter()).enumerate() {
+            if !types_compatible(expected, &actual.ty) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3143",
+                        format!(
+                            "argument {} for `{callee}` has incompatible type",
+                            index + 1
+                        ),
+                        format!(
+                            "the closure parameter expects `{}`, but the argument resolves to `{}`",
+                            expected.display_name(),
+                            actual.ty.display_name()
+                        ),
+                        actual.span,
+                    )
+                    .with_fix_it("pass an argument matching the closure's parameter type")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+        }
+    }
+
+    Some(return_type.as_ref().clone())
 }
 
 fn validate_call(
@@ -5462,6 +6102,17 @@ fn resolve_type_annotation(
             diagnostics,
             ty.span,
         ),
+        // RFC 0047 closure types: the parser builds
+        // TypeRef { name: "fn", args: [param types..., return type] } with
+        // a mandatory return annotation (the last argument).
+        "fn" => resolve_function_type(
+            &ty.args,
+            known_structs,
+            known_enums,
+            source_path,
+            diagnostics,
+            ty.span,
+        ),
         name if is_builtin_opaque_type_name(name) => resolve_named_type_without_args(
             name,
             &ty.args,
@@ -5697,6 +6348,55 @@ fn resolve_tuple_type(
         })
         .collect::<Vec<_>>();
     Type::Tuple(members)
+}
+
+/// RFC 0047 closure type resolution: `args` holds the parameter types
+/// followed by the return type as its last element. The parser enforces
+/// the mandatory `-> Ret` part, so an empty argument list here is a
+/// defensive GOF3142 report, not a reachable user path.
+fn resolve_function_type(
+    args: &[HirTypeRef],
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    source_path: &Path,
+    diagnostics: &mut Diagnostics,
+    span: Span,
+) -> Type {
+    if args.is_empty() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3142",
+                "invalid anonymous function contract",
+                "a function type needs a return annotation: write `fn(params) -> ret`",
+                span,
+            )
+            .with_fix_it("add `-> <return type>` after the parameter list")
+            .with_source_path(source_path.to_path_buf()),
+        );
+        return Type::Unknown;
+    }
+
+    let (return_type, params) = args.split_last().expect("non-empty args have a last");
+    let params = params
+        .iter()
+        .map(|param| {
+            resolve_type_annotation(
+                Some(param),
+                known_structs,
+                known_enums,
+                source_path,
+                diagnostics,
+            )
+        })
+        .collect::<Vec<_>>();
+    let return_type = resolve_type_annotation(
+        Some(return_type),
+        known_structs,
+        known_enums,
+        source_path,
+        diagnostics,
+    );
+    Type::Function(params, Box::new(return_type))
 }
 
 fn resolve_call_kind(
@@ -6320,6 +7020,9 @@ fn type_supports_self_equality_inner(
             )
         }),
         Type::CancelToken => false,
+        // RFC 0047: closures do not participate in equality — the same
+        // posture as channel and task values.
+        Type::Function(_, _) => false,
         Type::Opaque(name) => matches!(name.as_str(), "Bytes" | "SocketAddr" | "NetDeadline"),
         Type::Struct(name) => {
             if !active_structs.insert(name.clone()) {
@@ -6846,12 +7549,20 @@ fn infer_return_type(
         span: None,
         incompatible: false,
     };
-    collect_return_types(function_name, stmts, &mut returns, diagnostics, source_path);
+    collect_return_types(
+        "GOF3011",
+        function_name,
+        stmts,
+        &mut returns,
+        diagnostics,
+        source_path,
+    );
     returns.ty.unwrap_or(Type::Unit)
 }
 
 fn collect_return_types(
-    function_name: &str,
+    code: &'static str,
+    label: &str,
     stmts: &[TypedStmt],
     returns: &mut ReturnAccumulator,
     diagnostics: &mut Diagnostics,
@@ -6863,7 +7574,8 @@ fn collect_return_types(
                 let candidate =
                     wrap_type_with_propagation(&expr.ty, expr_propagated_error_type(expr));
                 merge_return_candidate(
-                    function_name,
+                    code,
+                    label,
                     returns,
                     &candidate,
                     expr.span,
@@ -6876,35 +7588,23 @@ fn collect_return_types(
                 else_body,
                 ..
             } => {
-                collect_return_types(function_name, then_body, returns, diagnostics, source_path);
-                collect_return_types(function_name, else_body, returns, diagnostics, source_path);
+                collect_return_types(code, label, then_body, returns, diagnostics, source_path);
+                collect_return_types(code, label, else_body, returns, diagnostics, source_path);
             }
             TypedStmt::While { body, .. } => {
-                collect_return_types(function_name, body, returns, diagnostics, source_path);
+                collect_return_types(code, label, body, returns, diagnostics, source_path);
             }
             TypedStmt::For { body, .. } => {
-                collect_return_types(function_name, body, returns, diagnostics, source_path);
+                collect_return_types(code, label, body, returns, diagnostics, source_path);
             }
             TypedStmt::Match { arms, .. } => {
                 for arm in arms {
-                    collect_return_types(
-                        function_name,
-                        &arm.body,
-                        returns,
-                        diagnostics,
-                        source_path,
-                    );
+                    collect_return_types(code, label, &arm.body, returns, diagnostics, source_path);
                 }
             }
             TypedStmt::Select { arms } => {
                 for arm in arms {
-                    collect_return_types(
-                        function_name,
-                        &arm.body,
-                        returns,
-                        diagnostics,
-                        source_path,
-                    );
+                    collect_return_types(code, label, &arm.body, returns, diagnostics, source_path);
                 }
             }
             TypedStmt::Bind { .. }
@@ -6918,7 +7618,8 @@ fn collect_return_types(
 }
 
 fn merge_return_candidate(
-    function_name: &str,
+    code: &'static str,
+    label: &str,
     returns: &mut ReturnAccumulator,
     candidate: &Type,
     span: Span,
@@ -6947,8 +7648,8 @@ fn merge_return_candidate(
             let anchor_span = returns.span.unwrap_or(span);
             diagnostics.push(
                 Diagnostic::error(
-                    "GOF3011",
-                    format!("incompatible return types in `{function_name}`"),
+                    code,
+                    format!("incompatible return types in `{label}`"),
                     format!(
                         "first return path resolves to `{}`, but this path resolves to `{}`",
                         current.display_name(),
@@ -6957,7 +7658,7 @@ fn merge_return_candidate(
                     span,
                 )
                 .with_fix_it(format!(
-                    "make every `return` in `{function_name}` produce the same type (first return at {}:{})",
+                    "make every `return` in `{label}` produce the same type (first return at {}:{})",
                     anchor_span.line, anchor_span.column
                 ))
                 .with_source_path(source_path.to_path_buf()),
@@ -7029,6 +7730,11 @@ fn expr_propagated_error_type(expr: &TypedExpr) -> Option<Type> {
                 merge_optional_error_type(acc, expr_propagated_error_type(item))
             }),
             TypedExprKind::TupleIndex { target, .. } => expr_propagated_error_type(target),
+            // RFC 0047: a closure body's propagations belong to the
+            // closure's own return contract, not the enclosing function;
+            // spawning evaluates arguments eagerly with no propagation of
+            // its own.
+            TypedExprKind::Closure { .. } | TypedExprKind::SpawnClosure { .. } => None,
             TypedExprKind::Int(_)
             | TypedExprKind::String(_)
             | TypedExprKind::Bool(_)
@@ -7091,6 +7797,25 @@ fn merge_return_types(current: &Type, candidate: &Type) -> Option<Type> {
                 merged.push(merge_return_types(current_member, candidate_member)?);
             }
             Some(Type::Tuple(merged))
+        }
+        // RFC 0047: two closure types merge only when structurally
+        // compatible; incompatible closure return paths surface through
+        // the GOF3142 contract checks.
+        (
+            Type::Function(current_params, current_return),
+            Type::Function(candidate_params, candidate_return),
+        ) => {
+            if current_params.len() != candidate_params.len() {
+                return None;
+            }
+            let mut merged_params = Vec::with_capacity(current_params.len());
+            for (current_param, candidate_param) in
+                current_params.iter().zip(candidate_params.iter())
+            {
+                merged_params.push(merge_return_types(current_param, candidate_param)?);
+            }
+            let merged_return = merge_return_types(current_return, candidate_return)?;
+            Some(Type::Function(merged_params, Box::new(merged_return)))
         }
         _ => None,
     }
@@ -7186,6 +7911,20 @@ fn types_compatible(expected: &Type, actual: &Type) -> bool {
                     .iter()
                     .zip(actual.iter())
                     .all(|(expected, actual)| types_compatible(expected, actual))
+        }
+        // RFC 0047: closure types are compatible only on exact structural
+        // match of parameter types and return type — no variance and no
+        // implicit coercion with any other type.
+        (
+            Type::Function(expected_params, expected_return),
+            Type::Function(actual_params, actual_return),
+        ) => {
+            expected_params.len() == actual_params.len()
+                && expected_params
+                    .iter()
+                    .zip(actual_params.iter())
+                    .all(|(expected, actual)| types_compatible(expected, actual))
+                && types_compatible(expected_return, actual_return)
         }
         (expected, actual) => expected == actual,
     }
@@ -10982,6 +11721,8 @@ fn is_printable_type(ty: &Type) -> bool {
         Type::Result(ok, err) => is_printable_type(ok) && is_printable_type(err),
         Type::Option(value) => is_printable_type(value),
         Type::Tuple(members) => members.iter().all(is_printable_type),
+        // RFC 0047: closures are not printable — the channel/task posture.
+        Type::Function(_, _) => false,
         Type::Channel(_) | Type::Task(_) | Type::CancelToken | Type::Unit => false,
     }
 }
@@ -11668,18 +12409,14 @@ mod tests {
         // follow RFC 0050's per-leaf contract, not the blanket GOF3006
         // rule for payloads and loop leaves. An immutable duplicate leaf
         // is the immutable-reassignment error.
-        let diagnostics = lower_source(
-            "fn main() -> int:\n    (x, x) = (1, 2)\n    return x\n",
-        )
-        .expect_err("typing should fail");
+        let diagnostics = lower_source("fn main() -> int:\n    (x, x) = (1, 2)\n    return x\n")
+            .expect_err("typing should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3003"]);
 
         // A `mut` duplicate leaf reassigns, last write wins.
-        let module = lower_source(
-            "fn main() -> int:\n    mut (x, x) = (1, 2)\n    return x\n",
-        )
-        .expect("typing should succeed");
+        let module = lower_source("fn main() -> int:\n    mut (x, x) = (1, 2)\n    return x\n")
+            .expect("typing should succeed");
 
         let _ = module;
     }

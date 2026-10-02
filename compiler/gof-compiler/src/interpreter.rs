@@ -133,7 +133,25 @@ pub enum Value {
     CancelToken(CancelTokenValue),
     Task(TaskValue),
     Tuple(Vec<Value>),
+    /// RFC 0047 closure value: the parameter list, the optional declared
+    /// return type (spawn boundary classification), the body, and the
+    /// captured bindings snapshotted at creation. Value-taxon captures
+    /// duplicated at creation; handle captures share the underlying
+    /// resource through `Value`'s reference-backed variants.
+    Closure(ClosureValue),
     Unit,
+}
+
+/// RFC 0047 runtime closure: holds the AST-level function shape plus the
+/// capture snapshot. The evaluator executes the body directly against a
+/// fresh scope seeded with captures and parameters; it does not
+/// materialize capture structs (that is the native lowering's business).
+#[derive(Clone)]
+pub struct ClosureValue {
+    pub(crate) params: Vec<Param>,
+    return_type: Option<crate::ast::TypeRef>,
+    body: Vec<Stmt>,
+    captures: HashMap<String, Value>,
 }
 
 impl Debug for Value {
@@ -152,6 +170,7 @@ impl Debug for Value {
             Self::CancelToken(_) => f.write_str("CancelToken(<active-or-cancelled>)"),
             Self::Task(_) => f.write_str("Task(<pending-or-completed>)"),
             Self::Tuple(values) => f.debug_tuple("Tuple").field(values).finish(),
+            Self::Closure(_) => f.write_str("Closure(<fn>)"),
             Self::Unit => f.write_str("Unit"),
         }
     }
@@ -174,6 +193,9 @@ impl PartialEq for Value {
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
             // RFC 0050: tuple equality is pairwise and recursive.
             (Self::Tuple(lhs), Self::Tuple(rhs)) => lhs == rhs,
+            // RFC 0047: closures do not participate in equality — the
+            // same posture as channel and task values.
+            (Self::Closure(_), Self::Closure(_)) => false,
             (Self::Unit, Self::Unit) => true,
             _ => false,
         }
@@ -204,6 +226,7 @@ impl Value {
             Self::Channel(_) => Some("<channel>".to_string()),
             Self::CancelToken(_) => Some("<cancel_token>".to_string()),
             Self::Task(_) => Some("<task>".to_string()),
+            Self::Closure(_) => Some("<closure>".to_string()),
             // RFC 0050 rendering: `(member, member, ...)` recursively.
             Self::Tuple(values) => Some(format!(
                 "({})",
@@ -223,6 +246,7 @@ impl Value {
             | Self::Channel(_)
             | Self::CancelToken(_)
             | Self::Task(_)
+            | Self::Closure(_)
             | Self::Unit => None,
             _ => self.cli_text(),
         }
@@ -2486,6 +2510,13 @@ fn function_returns_runtime_result(return_type: Option<&crate::ast::TypeRef>) ->
         && return_type.args[1].args.is_empty()
 }
 
+/// Whether a closure's declared return type is `Result[_, RuntimeError]`,
+/// deciding the task boundary for `go closure(...)` (mirrors
+/// `function_returns_runtime_result` for the TypeRef-shaped annotation).
+fn closure_returns_runtime_result(return_type: &Option<crate::ast::TypeRef>) -> bool {
+    function_returns_runtime_result(return_type.as_ref())
+}
+
 fn host_program_args() -> Vec<String> {
     let args = std::env::args().collect::<Vec<_>>();
     if args.len() <= 1 {
@@ -3169,6 +3200,85 @@ fn run_with_output_with_args_and_optional_stdin(
     })
 }
 
+/// RFC 0047 closure call: seed a fresh scope stack with the captured
+/// bindings and the parameters, then execute the body with the closure's
+/// own return contract. Arity mismatches are a typed-layer GOF3143 site;
+/// this defensive runtime check keeps the evaluator total.
+fn call_closure_value(
+    closure: &ClosureValue,
+    args: &[Value],
+    span: Span,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    if closure.params.len() != args.len() {
+        return Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3143",
+                "wrong number of arguments for this closure",
+                format!(
+                    "the closure expects {} argument(s), got {}",
+                    closure.params.len(),
+                    args.len()
+                ),
+                span,
+            )
+            .with_fix_it("call the closure with exactly its declared parameters")
+            .with_source_path(source_path.to_path_buf()),
+        ])
+        .into());
+    }
+
+    let mut scopes = ScopeStack::new(&closure.params, args);
+    for (name, value) in &closure.captures {
+        scopes.define_current(
+            name.clone(),
+            Binding {
+                mutable: false,
+                value: value.clone(),
+            },
+        );
+    }
+    let outcome = match eval_block(
+        &closure.body,
+        &mut scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        0,
+        false,
+        source_path,
+    ) {
+        Ok(outcome) => outcome,
+        Err(EvalSignal::Diagnostics(diagnostics)) => {
+            return Err(EvalSignal::Diagnostics(diagnostics));
+        }
+        Err(EvalSignal::Propagate(value)) => return Ok(value),
+    };
+
+    match outcome {
+        EvalOutcome::Next => Ok(Value::Unit),
+        EvalOutcome::Return(value) => Ok(value),
+        EvalOutcome::Break | EvalOutcome::Continue => Err(Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3053",
+                "`break` and `continue` are only valid inside a loop",
+                "closure bodies start at loop depth zero; an enclosing loop is not reachable",
+                span,
+            )
+            .with_fix_it("move the loop control statement into a loop inside the closure body")
+            .with_source_path(source_path.to_path_buf()),
+        ])
+        .into()),
+    }
+}
+
 fn eval_function(
     function: &Function,
     args: &[Value],
@@ -3780,9 +3890,23 @@ fn eval_stmt(
                         values.push((slot.clone(), value));
                         ident_args.push(crate::ast::Expr::Ident(slot, *span));
                     }
+                    // RFC 0047 defer target capture: when the callee
+                    // resolves to a local closure binding, the defer
+                    // record captures the closure VALUE at registration —
+                    // `mut c = f; defer c(); c = g` must call f at exit.
+                    // Plain function names stay by-name (the function
+                    // tables are immutable, so name resolution at flush
+                    // is identical to registration).
+                    let mut callee_name = callee.clone();
+                    if let Some(binding) = scopes.get(callee) {
+                        if matches!(binding.value, Value::Closure(_)) {
+                            values.push(("__defer_callee".to_string(), binding.value.clone()));
+                            callee_name = "__defer_callee".to_string();
+                        }
+                    }
                     DeferRecord {
                         call: crate::ast::Expr::Call {
-                            callee: callee.clone(),
+                            callee: callee_name,
                             args: ident_args,
                             span: *call_span,
                         },
@@ -4518,6 +4642,31 @@ fn eval_expr(
         Expr::Int(value, _) => Ok(Value::Int(*value)),
         Expr::String(value, _) => Ok(Value::String(value.clone())),
         Expr::Bool(value, _) => Ok(Value::Bool(*value)),
+        // RFC 0047 closure creation: snapshot every binding visible in the
+        // enclosing function's scope stack into the capture map. The typed
+        // layer already rejected every `mut` reference (GOF3144) and owns
+        // the precise per-capture contract; the evaluator's snapshot is
+        // the runtime image of that contract (value taxa duplicate via
+        // clone, handle taxa share the resource through the value).
+        Expr::Closure {
+            params,
+            return_type,
+            body,
+            span: _,
+        } => {
+            let mut captures = HashMap::new();
+            for scope in &scopes.scopes {
+                for (name, binding) in scope {
+                    captures.insert(name.clone(), binding.value.clone());
+                }
+            }
+            Ok(Value::Closure(ClosureValue {
+                params: params.clone(),
+                return_type: return_type.clone(),
+                body: body.clone(),
+                captures,
+            }))
+        }
         Expr::List { items, .. } => {
             let values = items
                 .iter()
@@ -4591,6 +4740,30 @@ fn eval_expr(
                 ])
             })?),
         Expr::Call { callee, args, span } => {
+            // RFC 0047 closure calls: a local binding holding a closure
+            // shadows the function tables (the typed layer resolves
+            // local-first too). Locals could never hold callable values
+            // before closures, so existing programs are unchanged.
+            if let Some(binding) = scopes.get(callee) {
+                if let Value::Closure(closure) = &binding.value {
+                    let values = args
+                        .iter()
+                        .map(|arg| {
+                            eval_expr(
+                                arg,
+                                scopes,
+                                functions,
+                                methods,
+                                structs,
+                                enums,
+                                output,
+                                source_path,
+                            )
+                        })
+                        .collect::<EvalResult<Vec<_>>>()?;
+                    return call_closure_value(closure, &values, *span, functions, methods, structs, enums, output, source_path);
+                }
+            }
             if let Some(function) = functions.get(callee).cloned() {
                 let values = args
                     .iter()
@@ -5761,6 +5934,40 @@ fn eval_expr(
         }
         Expr::Go { value, span } => match value.as_ref() {
             Expr::Call { callee, args, span } => {
+                // RFC 0047 `go closure(args)`: a local closure binding
+                // spawns like a named function; the closure value crosses
+                // the task boundary (its captures were snapshotted at
+                // creation, so the task sees the same image).
+                if let Some(binding) = scopes.get(callee) {
+                    if let Value::Closure(closure) = &binding.value {
+                        let values = args
+                            .iter()
+                            .map(|arg| {
+                                eval_expr(
+                                    arg,
+                                    scopes,
+                                    functions,
+                                    methods,
+                                    structs,
+                                    enums,
+                                    output,
+                                    source_path,
+                                )
+                            })
+                            .collect::<EvalResult<Vec<_>>>()?;
+                        return spawn_closure_task(
+                            closure,
+                            values,
+                            *span,
+                            functions,
+                            methods,
+                            structs,
+                            enums,
+                            output,
+                            source_path,
+                        );
+                    }
+                }
                 if structs.contains_key(callee) {
                     return Err(Diagnostics(vec![
                         Diagnostic::error(
@@ -6320,6 +6527,70 @@ fn spawn_task(
             Err(_) => task_handle.store_panic(TaskPanic {
                 function_name,
                 source_path: function.source_path.clone(),
+                span,
+            }),
+        }
+    });
+
+    Ok(Value::Task(TaskValue(task)))
+}
+
+/// RFC 0047 `go closure(args)`: spawn a closure call on a task. The
+/// closure value and its capture snapshot cross the boundary by value
+/// (handle captures share their resources through the value's own
+/// reference-backed variants).
+fn spawn_closure_task(
+    closure: &ClosureValue,
+    args: Vec<Value>,
+    span: Span,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> EvalResult<Value> {
+    let boundary = if closure_returns_runtime_result(&closure.return_type) {
+        TaskBoundary::RuntimeResult
+    } else {
+        TaskBoundary::Direct
+    };
+    let task = Arc::new(TaskHandle::new(boundary));
+    let task_handle = Arc::clone(&task);
+    let function_name = "closure".to_string();
+    let closure = closure.clone();
+    let functions = Arc::clone(functions);
+    let methods = Arc::clone(methods);
+    let structs = Arc::clone(structs);
+    let enums = Arc::clone(enums);
+    let output = output.clone();
+    let source_path = source_path.to_path_buf();
+
+    std::thread::spawn(move || {
+        match std::panic::catch_unwind(AssertUnwindSafe(|| {
+            call_closure_value(
+                &closure,
+                &args,
+                Span::new(1, 1, 1),
+                &functions,
+                &methods,
+                &structs,
+                &enums,
+                &output,
+                &source_path,
+            )
+        })) {
+            Ok(Ok(value)) => task_handle.store_value(value),
+            Ok(Err(EvalSignal::Diagnostics(diagnostics))) => {
+                task_handle.store_diagnostics(diagnostics)
+            }
+            // A `?` inside the closure body propagated to the closure's
+            // own boundary: it is the closure's Err payload, i.e. the
+            // task's value under the RuntimeResult boundary contract.
+            Ok(Err(EvalSignal::Propagate(value))) => task_handle.store_value(value),
+            Err(_) => task_handle.store_panic(TaskPanic {
+                function_name,
+                source_path,
                 span,
             }),
         }
@@ -14432,6 +14703,7 @@ fn render_template_value(value: &Value, key: &str) -> Result<String, String> {
         | Value::Channel(_)
         | Value::CancelToken(_)
         | Value::Task(_)
+        | Value::Closure(_)
         | Value::Unit => Err(format!(
             "template key `{key}` resolves to non-printable `{}`",
             value_name(value)
@@ -14963,6 +15235,7 @@ fn value_name(value: &Value) -> &'static str {
         Value::CancelToken(_) => "cancel_token",
         Value::Task(_) => "task",
         Value::Tuple(_) => "tuple",
+        Value::Closure(_) => "closure",
         Value::Unit => "unit",
     }
 }

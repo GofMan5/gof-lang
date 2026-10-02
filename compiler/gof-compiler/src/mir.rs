@@ -526,6 +526,27 @@ impl MirBuilder {
                     .push(MirInstruction::ConstInt { dest, value: 0 });
                 dest
             }
+            // CLOSURES-TODO(mir-lowering): real closure lowering —
+            // MakeClosure(fn_ref, capture inits) with synthetic function
+            // extraction, and CallClosure(closure, args) per RFC 0047's
+            // typed-HIR lowering plan. The typed layer fully types
+            // closures and runs the capture checks; the evaluator is the
+            // current execution surface, so MIR artifacts carry a
+            // placeholder constant (Phase 2 owns the native lowering).
+            TypedExprKind::Closure { .. } => {
+                let dest = self.alloc();
+                self.instructions
+                    .push(MirInstruction::ConstInt { dest, value: 0 });
+                dest
+            }
+            // CLOSURES-TODO(mir-lowering): closure spawns lower like
+            // closure calls in Phase 2; placeholder today (see above).
+            TypedExprKind::SpawnClosure { .. } => {
+                let dest = self.alloc();
+                self.instructions
+                    .push(MirInstruction::ConstInt { dest, value: 0 });
+                dest
+            }
         }
     }
 
