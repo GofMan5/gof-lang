@@ -460,7 +460,10 @@ All three follow the diagnostics contract (code / severity / span / message
   that `defer` requires a call. Fix-it: best-effort `(...)` append when the
   target is a bare method or function reference.
 - `GOF3137` (error): postfix `?` applied to the deferred call —
-  `defer send(ch, value)?`. Span: the `?` postfix. Note: a deferred call
+  `defer send(ch, value)?`. Span: the `?` postfix (implementation note:
+  the shipped diagnostic highlights the whole deferred call expression,
+  which contains the `?` — a deliberate wider-span decision for better
+  context; the contract span is contained within it). Note: a deferred call
   runs at scope exit where there is no propagation destination; its result
   is discarded and failures surface as `GOF3138`. Fix-it: remove the `?`.
 - `GOF3138` (error, runtime): deferred call failed at scope exit — a
