@@ -1,7 +1,7 @@
 use crate::ast::{
     BinaryOp, BindingPattern, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function,
-    FunctionKind, Import, MatchPattern, Module, Param, SelectArmKind, Stmt, StructDecl,
-    StructField, TypeRef, UnaryOp,
+    FunctionKind, Import, MatchPattern, Module, Param, PatternLiteral, SelectArmKind, Stmt,
+    StructDecl, StructField, TypeRef, UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
@@ -223,10 +223,17 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
             let arms = arms
                 .iter()
                 .map(|arm| {
+                    // RFC 0052: `pattern if guard:` — one space around
+                    // the `if`, exactly like an `if` statement head.
+                    let guard = match &arm.guard {
+                        Some(guard_expr) => format!(" if {}", format_expr(guard_expr)),
+                        None => String::new(),
+                    };
                     format!(
-                        "{}{}:\n{}",
+                        "{}{}{}:\n{}",
                         "    ".repeat(indent_level + 1),
                         format_match_pattern(&arm.pattern),
+                        guard,
                         format_block(&arm.body, indent_level + 2)
                     )
                 })
@@ -270,6 +277,19 @@ fn format_binding_pattern(pattern: &BindingPattern) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        // RFC 0052: `_` matches anything and binds nothing.
+        BindingPattern::Wildcard(_) => "_".to_string(),
+        // RFC 0052 literal leaves render exactly as the expressions that
+        // construct the matched values.
+        BindingPattern::Literal(literal, _) => format_pattern_literal(literal),
+    }
+}
+
+fn format_pattern_literal(literal: &PatternLiteral) -> String {
+    match literal {
+        PatternLiteral::Int(value) => value.to_string(),
+        PatternLiteral::String(value) => format!("{value:?}"),
+        PatternLiteral::Bool(value) => value.to_string(),
     }
 }
 
@@ -629,6 +649,36 @@ mod tests {
         assert_eq!(
             formatted,
             "fixture(module) fn shared_total() -> int:\n    return 41\n"
+        );
+    }
+
+    #[test]
+    fn formatter_supports_guards_and_full_pattern_leaves() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(404) if 404 > 400:\n            return 1\n        Lamp.On(-1):\n            return 2\n        Lamp.On(_):\n            return 3\n        Lamp.Off:\n            return 4\n    (_, y) = (1, 2)\n    for (i, _) in [(1, 2)]:\n        print(i)\n    _ = y\n    return y\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        let expected = "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(404) if 404 > 400:\n            return 1\n        Lamp.On(-1):\n            return 2\n        Lamp.On(_):\n            return 3\n        Lamp.Off:\n            return 4\n    (_, y) = (1, 2)\n    for (i, _) in [(1, 2)]:\n        print(i)\n    _ = y\n    return y\n";
+        assert_eq!(formatted, expected);
+        // Round-trip: formatting the formatted output is a fixed point.
+        let reparsed = SourceFile::new("fmt.gof", formatted);
+        assert_eq!(
+            format_source(&reparsed).expect("reformatting should succeed"),
+            expected
+        );
+    }
+
+    #[test]
+    fn formatter_renders_string_and_bool_pattern_literals() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "enum Code:\n    Named(name: string)\n    Flag(active: bool)\n\nfn main() -> int:\n    code: Code = Code.Named(\"x\")\n    match code:\n        Code.Named(\"alpha\"):\n            return 1\n        Code.Flag(true):\n            return 2\n        Code.Named(name):\n            return len(name)\n        Code.Flag(active):\n            return 3\n",
+        );
+        let formatted = format_source(&source).expect("formatting should succeed");
+        assert_eq!(
+            formatted,
+            "enum Code:\n    Named(name: string)\n    Flag(active: bool)\n\nfn main() -> int:\n    code: Code = Code.Named(\"x\")\n    match code:\n        Code.Named(\"alpha\"):\n            return 1\n        Code.Flag(true):\n            return 2\n        Code.Named(name):\n            return len(name)\n        Code.Flag(active):\n            return 3\n"
         );
     }
 }

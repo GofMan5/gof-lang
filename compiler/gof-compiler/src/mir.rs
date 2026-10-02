@@ -250,6 +250,18 @@ impl MirBuilder {
                 for arm in arms {
                     let pattern = self.lower_match_pattern(&arm.pattern);
                     self.instructions.push(pattern);
+                    // RFC 0052 guards: the typed guard is lowered ahead of
+                    // the arm body so the MIR artifact carries it. This is
+                    // NOT guard dispatch semantics — compare-and-branch
+                    // arm dispatch (one branch per guard, fall-through to
+                    // the next arm) is Phase 2 backend work, exactly like
+                    // the defer lowering above; the bootstrap evaluator is
+                    // the current execution surface.
+                    if let Some(guard) = &arm.guard {
+                        let guard = self.lower_expr(guard);
+                        self.instructions
+                            .push(MirInstruction::Eval { value: guard });
+                    }
                     self.lower_block(&arm.body);
                 }
                 self.instructions.push(MirInstruction::EndMatch);

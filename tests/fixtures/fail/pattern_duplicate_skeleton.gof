@@ -1,0 +1,19 @@
+# RFC 0052 GOF3166: two unguarded arms share the same literal payload
+# skeleton (`Lamp.On(3)` twice). Pure-slot duplicates keep GOF3030;
+# skeletons containing literals are the GOF3166 family.
+
+enum Lamp:
+    On(level: int)
+    Off
+
+fn main() -> int:
+    lamp: Lamp = Lamp.Off
+    match lamp:
+        Lamp.On(3):
+            return 1
+        Lamp.On(3):
+            return 2
+        Lamp.On(level):
+            return 3
+        Lamp.Off:
+            return 4

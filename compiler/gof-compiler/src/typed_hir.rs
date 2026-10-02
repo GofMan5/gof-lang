@@ -1,8 +1,11 @@
-use crate::ast::{BinaryOp, FixtureScope, FunctionKind, UnaryOp};
+use crate::ast::{
+    BinaryOp, FixtureScope, FunctionKind, MatchArmShape, MatchArmSkeleton, UnaryOp,
+    check_duplicate_arm_skeleton, check_unreachable_arm, report_refutable_pattern,
+};
 use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::hir::{
     HirBindingPattern, HirEnum, HirExpr, HirFunction, HirMatchArm, HirMatchPattern, HirModule,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStruct, HirTypeRef,
+    HirPatternLiteral, HirSelectArm, HirSelectArmKind, HirStmt, HirStruct, HirTypeRef,
 };
 use crate::source::Span;
 use serde::Serialize;
@@ -249,6 +252,11 @@ pub enum TypedStmt {
 #[derive(Debug, Clone, Serialize)]
 pub struct TypedMatchArm {
     pub pattern: TypedMatchPattern,
+    /// RFC 0052 guard, typed in the arm scope after the pattern
+    /// bindings. The evaluator reads the AST guard directly; the MIR
+    /// artifact lowers it ahead of the arm body (Phase 2 owns the
+    /// compare-and-branch dispatch form).
+    pub guard: Option<TypedExpr>,
     pub body: Vec<TypedStmt>,
 }
 
@@ -2028,6 +2036,22 @@ fn lower_stmt(
             );
             let (name, name_span) = match pattern {
                 HirBindingPattern::Name(name, span) => (name.clone(), *span),
+                // RFC 0052: `_ = expr` evaluates the right-hand side and
+                // discards; the synthetic anchor exists only in the typed
+                // output, never in scopes.
+                HirBindingPattern::Wildcard(span) => ("__wildcard_discard".to_string(), *span),
+                // Unreachable through the parser (literal-led binding
+                // statements do not parse); kept defensive so a literal
+                // leaf can never silently create a binding.
+                HirBindingPattern::Literal(_, span) => {
+                    report_refutable_pattern(
+                        "binding statement target",
+                        *span,
+                        diagnostics,
+                        source_path,
+                    );
+                    ("__refutable_discard".to_string(), *span)
+                }
                 HirBindingPattern::Tuple(leaves, span) => {
                     // RFC 0050 destructuring: each leaf types against the
                     // corresponding tuple member. The typed output keeps a
@@ -2081,6 +2105,7 @@ fn lower_stmt(
                                     member_ty,
                                     *mutable,
                                     PatternBindingMode::Reassign,
+                                    "binding statement target",
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -2094,6 +2119,7 @@ fn lower_stmt(
                                     &Type::Unknown,
                                     *mutable,
                                     PatternBindingMode::Reassign,
+                                    "binding statement target",
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -2104,12 +2130,13 @@ fn lower_stmt(
                     ("__tuple_destructure".to_string(), *span)
                 }
             };
-            // Tuple patterns already defined their leaves above; the
-            // synthetic anchor exists only in the typed output, not in
-            // scopes (a second tuple bind in the same scope must not
-            // collide with it).
-            let is_tuple_pattern = matches!(pattern, HirBindingPattern::Tuple(_, _));
-            if !is_tuple_pattern {
+            // Tuple and wildcard patterns already defined (or discarded)
+            // their leaves above; the synthetic anchor exists only in the
+            // typed output, not in scopes (a second tuple bind in the same
+            // scope must not collide with it). Only a plain `Name` target
+            // defines a user-visible binding here.
+            let binds_by_name = matches!(pattern, HirBindingPattern::Name(_, _));
+            if binds_by_name {
                 if scopes.contains_in_current(&name) {
                     diagnostics.push(
                         Diagnostic::error(
@@ -2428,8 +2455,47 @@ fn lower_stmt(
             // pattern leaves. The typed output keeps a synthetic anchor
             // name (TUPLES-TODO(layer3): MIR destructuring lowering);
             // the evaluator reads the AST pattern directly.
+            // RFC 0052: `_` binds nothing; a literal leaf is refutable
+            // and rejected with GOF3163.
             let binding = match pattern {
                 HirBindingPattern::Name(name, _) => name.clone(),
+                HirBindingPattern::Wildcard(_) => {
+                    // RFC 0052 wildcard loop binding: binds nothing, but
+                    // the iterable contract still applies.
+                    let anchor = "__wildcard_loop".to_string();
+                    match &iterable.ty {
+                        Type::List(_) | Type::String | Type::Dict(_) | Type::Unknown => {}
+                        other => {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "GOF3048",
+                                    "`for` requires an iterable value",
+                                    format!(
+                                        "this loop target resolves to `{}`, but bootstrap `for` currently supports only `list`, `string`, and `dict`",
+                                        other.display_name()
+                                    ),
+                                    *span,
+                                )
+                                .with_fix_it("iterate over a list, string, or dict value")
+                                .with_source_path(source_path.to_path_buf()),
+                            );
+                        }
+                    }
+                    scopes.push();
+                    anchor
+                }
+                // Unreachable through the parser (literal-led loop
+                // bindings do not parse); kept defensive.
+                HirBindingPattern::Literal(_, literal_span) => {
+                    report_refutable_pattern(
+                        "for loop binding",
+                        *literal_span,
+                        diagnostics,
+                        source_path,
+                    );
+                    scopes.push();
+                    "__refutable_loop".to_string()
+                }
                 HirBindingPattern::Tuple(leaves, tuple_span) => {
                     let anchor = "__tuple_loop_destructure".to_string();
                     // Derive the element type without the binding-name
@@ -2509,6 +2575,7 @@ fn lower_stmt(
                                     // Loop leaves shadow outer bindings
                                     // per iteration, like single-name for.
                                     PatternBindingMode::Fresh,
+                                    "for loop binding",
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -2523,6 +2590,7 @@ fn lower_stmt(
                                     &Type::Unknown,
                                     false,
                                     PatternBindingMode::Fresh,
+                                    "for loop binding",
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -2533,15 +2601,18 @@ fn lower_stmt(
                     anchor
                 }
             };
-            let is_tuple_pattern = matches!(pattern, HirBindingPattern::Tuple(_, _));
-            let binding_type = if is_tuple_pattern {
+            // Loop patterns and wildcard bindings carry synthetic anchors
+            // only; a plain `Name` binding is the one user-visible loop
+            // variable, so it keeps the dedicated element-type resolution.
+            let binds_by_name = matches!(pattern, HirBindingPattern::Name(_, _));
+            let binding_type = if binds_by_name {
+                resolve_for_binding_type(&binding, &iterable, *span, diagnostics, source_path)
+            } else {
                 // The anchor itself carries no user-visible name; the
                 // element type was already split across the leaves.
                 Type::Unknown
-            } else {
-                resolve_for_binding_type(&binding, &iterable, *span, diagnostics, source_path)
             };
-            if !is_tuple_pattern {
+            if binds_by_name {
                 scopes.push();
             }
             scopes.define_current(
@@ -2683,43 +2754,66 @@ fn lower_match_arms(
         }
     };
 
-    let mut seen_variants = HashSet::new();
-    let typed_arms = arms
-        .iter()
-        .map(|arm| {
-            let (pattern, bindings) = lower_match_pattern(
-                &arm.pattern,
-                match_target.as_ref(),
-                &mut seen_variants,
-                enum_signatures,
+    let mut arm_shapes: Vec<MatchArmShape> = Vec::new();
+    let mut typed_arms = Vec::with_capacity(arms.len());
+    for arm in arms {
+        let (pattern, bindings) = lower_match_pattern(
+            &arm.pattern,
+            match_target.as_ref(),
+            enum_signatures,
+            diagnostics,
+            source_path,
+        );
+        // RFC 0052 arm-shape rules: repeated variants are legal when the
+        // arms differ (literal skeletons or guards). Exact duplicate
+        // skeletons (GOF3030 / GOF3166) and arms made dead by an earlier
+        // irrefutable arm for the same variant (GOF3167) are errors.
+        // Guards never count: the duplicate check considers only
+        // unguarded arms, and coverage below erases them entirely.
+        // The shape is syntactic, so it is built from the HIR pattern
+        // directly and checked with the shared ast-level rules.
+        let arm_shape = hir_match_arm_shape(&arm.pattern, arm.guard.is_some());
+        if match_target.is_some() {
+            check_duplicate_arm_skeleton(
+                &arm_shape,
+                &arm_shapes,
+                arm.span,
                 diagnostics,
                 source_path,
             );
-            scopes.push();
-            for binding in &bindings {
-                if scopes.contains_in_current(&binding.name) {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            "GOF3006",
-                            format!("duplicate binding `{}`", binding.name),
-                            "payload match bindings must be unique within the same match arm",
-                            arm.span,
-                        )
-                        .with_fix_it("rename or remove the duplicate payload binding")
-                        .with_source_path(source_path.to_path_buf()),
-                    );
-                } else {
-                    scopes.define_current(
-                        binding.name.clone(),
-                        LocalBinding {
-                            mutable: false,
-                            ty: binding.ty.clone(),
-                        },
-                    );
-                }
+            check_unreachable_arm(&arm_shape, &arm_shapes, arm.span, diagnostics, source_path);
+        }
+        arm_shapes.push(arm_shape);
+        scopes.push();
+        for binding in &bindings {
+            if scopes.contains_in_current(&binding.name) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3006",
+                        format!("duplicate binding `{}`", binding.name),
+                        "payload match bindings must be unique within the same match arm",
+                        arm.span,
+                    )
+                    .with_fix_it("rename or remove the duplicate payload binding")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            } else {
+                scopes.define_current(
+                    binding.name.clone(),
+                    LocalBinding {
+                        mutable: false,
+                        ty: binding.ty.clone(),
+                    },
+                );
             }
-            let body = lower_block(
-                &arm.body,
+        }
+        // RFC 0052 guard contract: the guard is typed in the arm scope —
+        // after the pattern's bindings, before the body — so it may
+        // reference them (GOF3165 for violations; no truthiness, no
+        // control flow inside the predicate).
+        let guard = arm.guard.as_ref().map(|guard_expr| {
+            let typed_guard = lower_expr(
+                guard_expr,
                 scopes,
                 signatures,
                 method_signatures,
@@ -2728,20 +2822,39 @@ fn lower_match_arms(
                 struct_signatures,
                 enum_signatures,
                 diagnostics,
-                loop_depth,
-                false,
                 function_return_type,
                 source_path,
             );
-            scopes.pop();
-            TypedMatchArm { pattern, body }
-        })
-        .collect::<Vec<_>>();
+            check_match_guard_contract(&typed_guard, arm, diagnostics, source_path);
+            typed_guard
+        });
+        let body = lower_block(
+            &arm.body,
+            scopes,
+            signatures,
+            method_signatures,
+            known_structs,
+            known_enums,
+            struct_signatures,
+            enum_signatures,
+            diagnostics,
+            loop_depth,
+            false,
+            function_return_type,
+            source_path,
+        );
+        scopes.pop();
+        typed_arms.push(TypedMatchArm {
+            pattern,
+            guard,
+            body,
+        });
+    }
 
     if let Some(match_target) = match_target {
         ensure_match_exhaustive(
             &match_target,
-            &seen_variants,
+            &arm_shapes,
             enum_signatures,
             diagnostics,
             span,
@@ -2913,7 +3026,6 @@ fn resolve_for_binding_type(
 fn lower_match_pattern(
     pattern: &HirMatchPattern,
     match_target: Option<&MatchTargetKind>,
-    seen_variants: &mut HashSet<String>,
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
@@ -3019,33 +3131,21 @@ fn lower_match_pattern(
         },
     };
 
-    if !seen_variants.insert(variant.clone()) {
-        diagnostics.push(
-            Diagnostic::error(
-                "GOF3030",
-                format!(
-                    "duplicate match arm for `{}.{variant}`",
-                    match_target.display_name()
-                ),
-                "each variant can appear only once in a match over the same value space",
-                *span,
-            )
-            .with_fix_it("remove the duplicate arm or replace it with another enum variant")
-            .with_source_path(source_path.to_path_buf()),
-        );
-    }
-
-    // RFC 0050 payload patterns: Name leaves keep today's behavior;
-    // Tuple leaves expand into per-leaf typed bindings split from the
-    // field's tuple type (GOF3156 on a non-tuple field, GOF3155 on
-    // arity mismatch). The pattern output flattens to a synthetic name —
-    // the evaluator reads the AST pattern directly (TUPLES-TODO(layer3):
-    // MIR destructuring lowering).
+    // RFC 0052 payload patterns: Name and Wildcard leaves keep today's
+    // binding behavior (wildcards bind nothing); Literal leaves are
+    // value refinements typed against the payload field (GOF3164 on
+    // mismatch); Tuple leaves expand into per-leaf typed bindings split
+    // from the field's tuple type (GOF3156 on a non-tuple field, GOF3155
+    // on arity mismatch). The pattern output flattens to a synthetic
+    // name — the evaluator reads the AST pattern directly
+    // (TUPLES-TODO(layer3): MIR destructuring lowering).
     let flat_pattern_names = bindings
         .iter()
         .map(|binding| match binding {
             HirBindingPattern::Name(name, _) => name.clone(),
             HirBindingPattern::Tuple(_, _) => "__tuple_payload_destructure".to_string(),
+            HirBindingPattern::Wildcard(_) => "__pattern_wildcard".to_string(),
+            HirBindingPattern::Literal(_, _) => "__pattern_literal".to_string(),
         })
         .collect::<Vec<_>>();
 
@@ -3093,6 +3193,20 @@ fn lower_match_pattern(
                     ty: field.ty.clone(),
                 });
             }
+            // RFC 0052: `_` matches any payload value and binds nothing.
+            HirBindingPattern::Wildcard(_) => {}
+            // RFC 0052: a literal leaf is an equality test against the
+            // payload value; its type must match the payload field's.
+            HirBindingPattern::Literal(literal, literal_span) => {
+                check_literal_pattern_type(
+                    literal,
+                    &field.ty,
+                    *literal_span,
+                    &format!("payload of `{enum_name}.{variant}`"),
+                    diagnostics,
+                    source_path,
+                );
+            }
             HirBindingPattern::Tuple(leaves, tuple_span) => match &field.ty {
                 Type::Tuple(members) => {
                     if leaves.len() != members.len() {
@@ -3120,6 +3234,7 @@ fn lower_match_pattern(
                         collect_payload_pattern_bindings(
                             leaf,
                             member_ty,
+                            &format!("payload of `{enum_name}.{variant}`"),
                             &mut typed_bindings,
                             diagnostics,
                             source_path,
@@ -3131,6 +3246,7 @@ fn lower_match_pattern(
                         collect_payload_pattern_bindings(
                             leaf,
                             &Type::Unknown,
+                            &format!("payload of `{enum_name}.{variant}`"),
                             &mut typed_bindings,
                             diagnostics,
                             source_path,
@@ -3175,13 +3291,16 @@ fn lower_match_pattern(
 }
 
 /// Expand one payload-pattern leaf into flat typed bindings: Name leaves
-/// bind directly; nested Tuple leaves recurse through the member type.
+/// bind directly; Wildcard leaves bind nothing; Literal leaves are value
+/// tests typed against the member type (GOF3164 on mismatch, even inside
+/// a tuple leaf); nested Tuple leaves recurse through the member type.
 /// Emits the same GOF3155/GOF3156 diagnostics as `type_binding_pattern_leaf`
 /// so nested payload mismatches are compile-time (typed HIR owns the
 /// checks; the evaluator's defensive runtime checks are a backstop).
 fn collect_payload_pattern_bindings(
     leaf: &HirBindingPattern,
     member_ty: &Type,
+    position: &str,
     typed_bindings: &mut Vec<TypedMatchBinding>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
@@ -3192,6 +3311,17 @@ fn collect_payload_pattern_bindings(
                 name: name.clone(),
                 ty: member_ty.clone(),
             });
+        }
+        HirBindingPattern::Wildcard(_) => {}
+        HirBindingPattern::Literal(literal, literal_span) => {
+            check_literal_pattern_type(
+                literal,
+                member_ty,
+                *literal_span,
+                position,
+                diagnostics,
+                source_path,
+            );
         }
         HirBindingPattern::Tuple(leaves, tuple_span) => {
             let nested = match member_ty {
@@ -3239,6 +3369,7 @@ fn collect_payload_pattern_bindings(
                         collect_payload_pattern_bindings(
                             nested_leaf,
                             nested_ty,
+                            position,
                             typed_bindings,
                             diagnostics,
                             source_path,
@@ -3250,6 +3381,7 @@ fn collect_payload_pattern_bindings(
                         collect_payload_pattern_bindings(
                             nested_leaf,
                             &Type::Unknown,
+                            position,
                             typed_bindings,
                             diagnostics,
                             source_path,
@@ -3263,12 +3395,23 @@ fn collect_payload_pattern_bindings(
 
 fn ensure_match_exhaustive(
     match_target: &MatchTargetKind,
-    seen_variants: &HashSet<String>,
+    arm_shapes: &[MatchArmShape],
     enum_signatures: &HashMap<String, EnumSignature>,
     diagnostics: &mut Diagnostics,
     span: Span,
     source_path: &Path,
 ) {
+    // RFC 0052 guard erasure: guards and literal refinements never count
+    // toward coverage. A variant is covered only by an UNGUARDED arm
+    // whose payload is irrefutable at every position (bindings,
+    // wildcards, tuples of those) — `HttpStatus(404, body)` refines, it
+    // does not cover. This keeps every match dispatchable at runtime
+    // with no fall-through hole and no new panic path.
+    let covered: HashSet<&str> = arm_shapes
+        .iter()
+        .filter(|shape| !shape.guarded && shape.payload_irrefutable)
+        .map(|shape| shape.variant.as_str())
+        .collect();
     let missing = match match_target {
         MatchTargetKind::Enum(enum_name) => {
             let Some(signature) = enum_signatures.get(enum_name) else {
@@ -3277,17 +3420,17 @@ fn ensure_match_exhaustive(
             signature
                 .variants
                 .iter()
-                .filter(|variant| !seen_variants.contains(&variant.name))
+                .filter(|variant| !covered.contains(variant.name.as_str()))
                 .map(|variant| variant.name.clone())
                 .collect::<Vec<_>>()
         }
         MatchTargetKind::Result { .. } => ["Ok".to_string(), "Err".to_string()]
             .into_iter()
-            .filter(|variant| !seen_variants.contains(variant))
+            .filter(|variant| !covered.contains(variant.as_str()))
             .collect::<Vec<_>>(),
         MatchTargetKind::Option { .. } => ["Some".to_string(), "None".to_string()]
             .into_iter()
-            .filter(|variant| !seen_variants.contains(variant))
+            .filter(|variant| !covered.contains(variant.as_str()))
             .collect::<Vec<_>>(),
     };
 
@@ -3309,9 +3452,167 @@ fn ensure_match_exhaustive(
                 ),
                 span,
             )
-            .with_fix_it("add match arms for every remaining enum variant")
+            .with_fix_it(
+                "add an unguarded arm binding or discarding each remaining variant (`Enum.Variant(name)` or `Enum.Variant(_)`)",
+            )
             .with_source_path(source_path.to_path_buf()),
         );
+    }
+}
+
+/// RFC 0052 GOF3164: a literal pattern whose type differs from the
+/// matched position's type. The check covers payload positions and
+/// tuple leaves inside them (`GOF3156` keeps every RFC 0050 contract;
+/// when a literal mismatches, even inside a tuple leaf, the code is
+/// GOF3164).
+fn check_literal_pattern_type(
+    literal: &HirPatternLiteral,
+    expected: &Type,
+    span: Span,
+    position: &str,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if matches!(expected, Type::Unknown) {
+        return;
+    }
+    let literal_ty = match literal {
+        HirPatternLiteral::Int(_) => Type::Int,
+        HirPatternLiteral::String(_) => Type::String,
+        HirPatternLiteral::Bool(_) => Type::Bool,
+    };
+    if literal_ty != *expected {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3164",
+                "literal pattern does not match the matched position's type",
+                format!(
+                    "the {position} expects `{}`, but the literal pattern is `{}`",
+                    expected.display_name(),
+                    literal_ty.display_name()
+                ),
+                span,
+            )
+            .with_fix_it(format!(
+                "use a `{}` literal, or bind the payload to a name",
+                expected.display_name()
+            ))
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+/// Build the shared (syntactic) arm shape from the HIR arm. The shape
+/// rules themselves live in `ast` next to the pattern grammar so the
+/// typed check and the evaluator backstop cannot drift apart.
+fn hir_match_arm_shape(pattern: &HirMatchPattern, guarded: bool) -> MatchArmShape {
+    let HirMatchPattern::EnumVariant {
+        enum_name,
+        variant,
+        bindings,
+        ..
+    } = pattern;
+    MatchArmShape {
+        enum_name: enum_name.clone(),
+        variant: variant.clone(),
+        guarded,
+        skeleton: bindings.iter().map(hir_pattern_skeleton).collect(),
+        payload_irrefutable: bindings.iter().all(hir_pattern_is_irrefutable),
+    }
+}
+
+fn hir_pattern_skeleton(pattern: &HirBindingPattern) -> MatchArmSkeleton {
+    match pattern {
+        HirBindingPattern::Name(..) | HirBindingPattern::Wildcard(..) => MatchArmSkeleton::Slot,
+        HirBindingPattern::Literal(literal, _) => MatchArmSkeleton::Literal(match literal {
+            HirPatternLiteral::Int(value) => crate::ast::PatternLiteral::Int(*value),
+            HirPatternLiteral::String(value) => crate::ast::PatternLiteral::String(value.clone()),
+            HirPatternLiteral::Bool(value) => crate::ast::PatternLiteral::Bool(*value),
+        }),
+        HirBindingPattern::Tuple(leaves, _) => {
+            MatchArmSkeleton::Tuple(leaves.iter().map(hir_pattern_skeleton).collect())
+        }
+    }
+}
+
+fn hir_pattern_is_irrefutable(pattern: &HirBindingPattern) -> bool {
+    match pattern {
+        HirBindingPattern::Name(..) | HirBindingPattern::Wildcard(..) => true,
+        HirBindingPattern::Literal(..) => false,
+        HirBindingPattern::Tuple(leaves, _) => leaves.iter().all(hir_pattern_is_irrefutable),
+    }
+}
+
+/// RFC 0052 GOF3165: the guard contract. The guard must resolve to
+/// `bool` — no truthiness, no coercion — and may not contain postfix
+/// `?`, `await`, or `go`; a guard is a predicate, and hiding control
+/// flow inside one makes the arm's behavior un-local.
+fn check_match_guard_contract(
+    guard: &TypedExpr,
+    arm: &HirMatchArm,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
+) {
+    if guard_contains_control_flow(guard) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3165",
+                "match guards cannot contain `?`, `await`, or `go`",
+                "unwrap, join, or spawn before the `match` or inside the arm body",
+                arm.span,
+            )
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+    if guard.ty != Type::Bool && !guard.ty.is_unknown() {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3165",
+                "match guard must resolve to `bool`",
+                format!(
+                    "this guard resolves to `{}`, but guards have no truthiness or coercion",
+                    guard.ty.display_name()
+                ),
+                arm.span,
+            )
+            .with_fix_it("use a comparison or boolean expression as the guard")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+/// Does this typed expression contain a `?` postfix, `await`, or `go`
+/// anywhere? Used to keep control flow out of match guards.
+fn guard_contains_control_flow(expr: &TypedExpr) -> bool {
+    match &expr.kind {
+        TypedExprKind::Propagate { .. }
+        | TypedExprKind::Await { .. }
+        | TypedExprKind::Spawn { .. } => true,
+        TypedExprKind::List { items } => items.iter().any(guard_contains_control_flow),
+        TypedExprKind::Dict { entries } => entries.iter().any(|entry| {
+            guard_contains_control_flow(&entry.key) || guard_contains_control_flow(&entry.value)
+        }),
+        TypedExprKind::Call { args, .. } => args.iter().any(guard_contains_control_flow),
+        TypedExprKind::MethodCall { target, args, .. } => {
+            guard_contains_control_flow(target) || args.iter().any(guard_contains_control_flow)
+        }
+        TypedExprKind::StructInit { args, .. } | TypedExprKind::EnumVariant { args, .. } => {
+            args.iter().any(guard_contains_control_flow)
+        }
+        TypedExprKind::Field { target, .. } => guard_contains_control_flow(target),
+        TypedExprKind::Index { target, index, .. } => {
+            guard_contains_control_flow(target) || guard_contains_control_flow(index)
+        }
+        TypedExprKind::TupleIndex { target, .. } => guard_contains_control_flow(target),
+        TypedExprKind::Unary { value, .. } => guard_contains_control_flow(value),
+        TypedExprKind::Binary { lhs, rhs, .. } => {
+            guard_contains_control_flow(lhs) || guard_contains_control_flow(rhs)
+        }
+        TypedExprKind::Tuple { items } => items.iter().any(guard_contains_control_flow),
+        TypedExprKind::Int(_)
+        | TypedExprKind::String(_)
+        | TypedExprKind::Bool(_)
+        | TypedExprKind::Local(_) => false,
     }
 }
 
@@ -3329,11 +3630,14 @@ enum PatternBindingMode {
 
 /// Type one destructuring leaf against a tuple member type following
 /// the mode. Nested Tuple leaves recurse with the member's tuple type.
+/// RFC 0052: Wildcard leaves bind nothing; Literal leaves are refutable
+/// and rejected in these irrefutable positions with GOF3163.
 fn type_binding_pattern_leaf(
     leaf: &HirBindingPattern,
     member_ty: &Type,
     mutable: bool,
     mode: PatternBindingMode,
+    position: &str,
     scopes: &mut ScopeStack,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
@@ -3407,6 +3711,14 @@ fn type_binding_pattern_leaf(
                 }
             }
         }
+        // RFC 0052: `_` matches anything and binds nothing — the member
+        // value is simply discarded.
+        HirBindingPattern::Wildcard(_) => {}
+        // RFC 0052 GOF3163: binding statements and `for` bindings accept
+        // only the irrefutable subset; a literal leaf can fail to match.
+        HirBindingPattern::Literal(_, span) => {
+            report_refutable_pattern(position, *span, diagnostics, source_path);
+        }
         HirBindingPattern::Tuple(leaves, span) => {
             let nested_members = match member_ty {
                 Type::Tuple(members) => Some(members.clone()),
@@ -3455,6 +3767,7 @@ fn type_binding_pattern_leaf(
                             nested_ty,
                             mutable,
                             mode,
+                            position,
                             scopes,
                             diagnostics,
                             source_path,
@@ -3468,6 +3781,7 @@ fn type_binding_pattern_leaf(
                             &Type::Unknown,
                             mutable,
                             mode,
+                            position,
                             scopes,
                             diagnostics,
                             source_path,
@@ -3492,11 +3806,14 @@ fn fallback_match_pattern(pattern: &HirMatchPattern) -> TypedMatchPattern {
             bindings: bindings
                 .iter()
                 .map(|binding| TypedMatchBinding {
-                    // Fallback patterns only keep Name leaves; tuple
-                    // payload leaves were already rejected upstream.
+                    // Fallback patterns only keep Name leaves; tuple,
+                    // wildcard, and literal payload leaves were already
+                    // rejected upstream.
                     name: match binding {
                         HirBindingPattern::Name(name, _) => name.clone(),
                         HirBindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
+                        HirBindingPattern::Wildcard(_) => "__pattern_wildcard".to_string(),
+                        HirBindingPattern::Literal(_, _) => "__pattern_literal".to_string(),
                     },
                     ty: Type::Unknown,
                 })
@@ -3658,15 +3975,18 @@ fn lower_expr(
                 .map(|binding| binding.ty)
                 .unwrap_or(Type::Unknown);
             if scopes.get(name).is_none() {
+                // RFC 0052: `_` in pattern position is a wildcard that
+                // discards — it binds nothing, so reading it afterwards
+                // is an unknown-binding error with an explanatory note.
+                let note = if name == "_" {
+                    "`_` is a wildcard in pattern positions: it matches anything and binds nothing"
+                } else {
+                    "the identifier is not a parameter or a previously created binding in scope"
+                };
                 diagnostics.push(
-                    Diagnostic::error(
-                        "GOF3002",
-                        format!("unknown local `{name}`"),
-                        "the identifier is not a parameter or a previously created binding in scope",
-                        *span,
-                    )
-                    .with_fix_it("define the binding before using it")
-                    .with_source_path(source_path.to_path_buf()),
+                    Diagnostic::error("GOF3002", format!("unknown local `{name}`"), note, *span)
+                        .with_fix_it("define the binding before using it")
+                        .with_source_path(source_path.to_path_buf()),
                 );
             }
             TypedExpr {
@@ -12788,6 +13108,249 @@ mod tests {
         .expect_err("result match arity should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3071"]);
+    }
+
+    #[test]
+    fn supports_guarded_match_arms_and_literal_refinements() {
+        // RFC 0052: repeated variants are legal when the arms differ by
+        // a guard or a literal skeleton; the guards see the arm's
+        // pattern bindings; a total unguarded arm closes the match.
+        let module = lower_source(
+            "enum HttpOutcome:\n    Done(status: int, body: string)\n    Failed(code: int)\n\nfn classify(outcome: HttpOutcome) -> string:\n    match outcome:\n        HttpOutcome.Done(status, body) if status == 404:\n            return \"missing: \" + body\n        HttpOutcome.Done(status, body) if status >= 500:\n            return \"server error: \" + to_string(status)\n        HttpOutcome.Done(200, body):\n            return \"ok \" + body\n        HttpOutcome.Done(status, body):\n            return \"other \" + to_string(status)\n        HttpOutcome.Failed(code):\n            return \"transport failure \" + to_string(code)\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[0] {
+            TypedStmt::Match { arms, .. } => {
+                assert_eq!(arms.len(), 5);
+                // Guards are typed in the arm scope and resolve to bool.
+                for arm in arms.iter().take(2) {
+                    let guard = arm.guard.as_ref().expect("guard should be typed");
+                    assert_eq!(guard.ty, Type::Bool);
+                    assert!(matches!(
+                        &guard.kind,
+                        TypedExprKind::Binary {
+                            op: BinaryOp::Eq,
+                            ..
+                        } | TypedExprKind::Binary {
+                            op: BinaryOp::Ge,
+                            ..
+                        }
+                    ));
+                }
+                assert!(arms[2].guard.is_none());
+                assert!(arms[3].guard.is_none());
+                // The literal-refinement arm keeps the payload typed.
+                assert!(matches!(
+                    &arms[2].pattern,
+                    TypedMatchPattern::EnumVariant { variant, bindings, .. }
+                        if variant == "Done"
+                            && bindings.len() == 2
+                            && bindings[1].ty == Type::String
+                ));
+            }
+            other => panic!("expected a match statement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn supports_wildcard_payloads_and_discard_bindings() {
+        let module = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(_):\n            return 1\n        Lamp.Off:\n            return 0\n    pair = (3, 4)\n    (_, y) = pair\n    _ = len(\"abc\")\n    for (i, _) in [(1, 2)]:\n        print(i)\n    for _ in [1]:\n        print(2)\n    return y\n",
+        )
+        .expect("typing should succeed");
+
+        match &module.functions[0].body[1] {
+            TypedStmt::Match { arms, .. } => {
+                assert!(matches!(
+                    &arms[0].pattern,
+                    TypedMatchPattern::EnumVariant { variant, bindings, .. }
+                        if variant == "On" && bindings.len() == 1
+                ));
+            }
+            other => panic!("expected a match statement, got {other:?}"),
+        }
+        // `(_, y)` types only the binding leaf; `_ = expr` discards.
+        match &module.functions[0].body[3] {
+            TypedStmt::Bind { name, value, .. } => {
+                assert_eq!(value.ty, Type::Tuple(vec![Type::Int, Type::Int]));
+                assert_eq!(name, "__tuple_destructure");
+            }
+            other => panic!("expected a tuple destructuring bind, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_refutable_patterns_in_binding_positions() {
+        // GOF3163: literals are refutable; binding statements and `for`
+        // bindings accept only the irrefutable subset.
+        let bind =
+            lower_source("fn main() -> int:\n    pair = (1, 2)\n    (a, 1) = pair\n    return a\n")
+                .expect_err("literal bind leaf should fail");
+        assert_eq!(bind.codes(), vec!["GOF3163"]);
+
+        let nested = lower_source(
+            "fn main() -> int:\n    frame = ((1, 2), 3)\n    ((a, 1), b) = frame\n    return a\n",
+        )
+        .expect_err("nested literal bind leaf should fail");
+        assert_eq!(nested.codes(), vec!["GOF3163"]);
+
+        let for_loop = lower_source(
+            "fn main() -> int:\n    for (a, 1) in [(1, 2)]:\n        print(a)\n    return 0\n",
+        )
+        .expect_err("literal for leaf should fail");
+        assert_eq!(for_loop.codes(), vec!["GOF3163"]);
+    }
+
+    #[test]
+    fn rejects_literal_pattern_type_mismatches() {
+        // GOF3164: a literal leaf must match the payload position's
+        // type — at the payload head and inside tuple leaves.
+        let string_literal_on_int = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(\"four\"):\n            return 1\n        Lamp.On(level):\n            return 2\n        Lamp.Off:\n            return 3\n",
+        )
+        .expect_err("string literal against int payload should fail");
+        assert_eq!(string_literal_on_int.codes(), vec!["GOF3164"]);
+
+        let int_literal_on_string = lower_source(
+            "enum Code:\n    Named(name: string)\n\nfn main() -> int:\n    code: Code = Code.Named(\"x\")\n    match code:\n        Code.Named(42):\n            return 1\n        Code.Named(name):\n            return len(name)\n",
+        )
+        .expect_err("int literal against string payload should fail");
+        assert_eq!(int_literal_on_string.codes(), vec!["GOF3164"]);
+
+        let bool_literal_on_int = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(true):\n            return 1\n        Lamp.On(level):\n            return 2\n        Lamp.Off:\n            return 3\n",
+        )
+        .expect_err("bool literal against int payload should fail");
+        assert_eq!(bool_literal_on_int.codes(), vec!["GOF3164"]);
+
+        // A literal inside a tuple leaf is still GOF3164 (RFC: when a
+        // literal mismatches, even inside a tuple leaf, the code is
+        // GOF3164 — GOF3156 keeps the RFC 0050 contracts).
+        let tuple_leaf = lower_source(
+            "enum Wrap:\n    Box(pair: (int, string))\n\nfn main() -> int:\n    wrap: Wrap = Wrap.Box((1, \"x\"))\n    match wrap:\n        Wrap.Box((\"one\", tag)):\n            return len(tag)\n        Wrap.Box(pair):\n            return len(pair.1)\n",
+        )
+        .expect_err("string literal against int tuple member should fail");
+        assert_eq!(tuple_leaf.codes(), vec!["GOF3164"]);
+    }
+
+    #[test]
+    fn rejects_invalid_match_guards() {
+        // GOF3165: the guard must resolve to bool — no truthiness.
+        let non_bool = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(level) if level:\n            return level\n        Lamp.On(level):\n            return 0\n        Lamp.Off:\n            return 1\n",
+        )
+        .expect_err("non-bool guard should fail");
+        assert_eq!(non_bool.codes(), vec!["GOF3165"]);
+
+        // GOF3165: `await` cannot hide inside a guard.
+        let await_guard = lower_source(
+            "fn work() -> int:\n    return 1\nfn main() -> int:\n    task = go work()\n    opt: Option[int] = Option.Some(1)\n    match opt:\n        Option.Some(level) if await task > level:\n            return level\n        Option.Some(level):\n            return 0\n        Option.None:\n            return 1\n",
+        )
+        .expect_err("await guard should fail");
+        assert_eq!(await_guard.codes(), vec!["GOF3165"]);
+
+        // GOF3165: `go` cannot hide inside a guard.
+        let go_guard = lower_source(
+            "fn work() -> int:\n    return 1\nfn ready(t: task[int]) -> bool:\n    return true\nfn main() -> int:\n    opt: Option[int] = Option.Some(1)\n    match opt:\n        Option.Some(level) if ready(go work()):\n            return level\n        Option.Some(level):\n            return 0\n        Option.None:\n            return 1\n",
+        )
+        .expect_err("go guard should fail");
+        assert_eq!(go_guard.codes(), vec!["GOF3165"]);
+
+        // GOF3165: postfix `?` cannot hide inside a guard.
+        let propagate_guard = lower_source(
+            "fn main() -> Result[int, RuntimeError]:\n    opt: Option[int] = Option.Some(1)\n    match opt:\n        Option.Some(level) if first([level])? > 0:\n            return Result.Ok(level)\n        Option.Some(level):\n            return Result.Ok(0)\n        Option.None:\n            return Result.Ok(1)\n",
+        )
+        .expect_err("propagate guard should fail");
+        assert_eq!(propagate_guard.codes(), vec!["GOF3165"]);
+    }
+
+    #[test]
+    fn rejects_duplicate_literal_skeleton_arms() {
+        // GOF3166: two UNGUARDED arms with the same literal payload
+        // skeleton. Pure-slot duplicates keep GOF3030 (see
+        // rejects_duplicate_match_arms); guards never count.
+        let diagnostics = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(3):\n            return 1\n        Lamp.On(3):\n            return 2\n        Lamp.On(level):\n            return 3\n        Lamp.Off:\n            return 4\n",
+        )
+        .expect_err("duplicate literal skeleton should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3166"]);
+
+        // Slot skeletons (`(x)` vs `(_)`) are still exact duplicates
+        // under GOF3030: bindings and wildcards are interchangeable.
+        let slot_duplicate = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(_):\n            return 1\n        Lamp.On(level):\n            return 2\n        Lamp.Off:\n            return 3\n",
+        )
+        .expect_err("slot duplicate should fail");
+        assert_eq!(slot_duplicate.codes(), vec!["GOF3030"]);
+
+        // A guarded arm followed by an unguarded arm with the same
+        // skeleton is the refinement idiom, not a duplicate.
+        lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(3) if true:\n            return 1\n        Lamp.On(3):\n            return 2\n        Lamp.On(level):\n            return 3\n        Lamp.Off:\n            return 4\n",
+        )
+        .expect("refinement idiom should typecheck");
+    }
+
+    #[test]
+    fn rejects_unreachable_match_arms() {
+        // GOF3167: an arm after an unguarded all-irrefutable arm for
+        // the same variant can never run — first match wins.
+        let diagnostics = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(level):\n            return level\n        Lamp.On(3):\n            return 3\n        Lamp.Off:\n            return 0\n",
+        )
+        .expect_err("arm after the total arm should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3167"]);
+
+        // A guarded arm after the total arm is equally dead (its guard
+        // references its OWN arm's binding — bindings are arm-scoped).
+        let guarded_after_total = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(level):\n            return level\n        Lamp.On(level) if level > 1:\n            return 3\n        Lamp.Off:\n            return 0\n",
+        )
+        .expect_err("guarded arm after the total arm should fail");
+        assert_eq!(guarded_after_total.codes(), vec!["GOF3167"]);
+
+        // The legal order: refinements first, total arm last.
+        lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.Off\n    match lamp:\n        Lamp.On(3):\n            return 3\n        Lamp.On(level) if level > 5:\n            return level\n        Lamp.On(level):\n            return 0\n        Lamp.Off:\n            return 1\n",
+        )
+        .expect("refinement order should typecheck");
+    }
+
+    #[test]
+    fn rejects_fully_guarded_variant_coverage() {
+        // RFC 0052 guard erasure: guards never count toward coverage.
+        // Both variants are only reachable through guarded arms, so the
+        // match is non-exhaustive (GOF3033).
+        let diagnostics = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(level) if level > 2:\n            return level\n        Lamp.Off if true:\n            return 0\n",
+        )
+        .expect_err("fully guarded match should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3033"]);
+
+        // A literal refinement alone does not cover its variant either.
+        let literal_only = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(4):\n            return 1\n        Lamp.Off:\n            return 0\n",
+        )
+        .expect_err("literal-only coverage should fail");
+        assert_eq!(literal_only.codes(), vec!["GOF3033"]);
+
+        // One unguarded total arm for the variant closes it.
+        lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(4) if true:\n            return 1\n        Lamp.On(level):\n            return 2\n        Lamp.Off:\n            return 0\n",
+        )
+        .expect("guarded refinement plus total arm should typecheck");
+    }
+
+    #[test]
+    fn rejects_reads_of_wildcard_discards() {
+        // RFC 0052: `_` binds nothing, so reading it afterwards is the
+        // unknown-binding diagnostic (GOF3002) with the wildcard note.
+        let diagnostics = lower_source(
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main() -> int:\n    lamp: Lamp = Lamp.On(4)\n    match lamp:\n        Lamp.On(_):\n            return _\n        Lamp.Off:\n            return 0\n",
+        )
+        .expect_err("reading the wildcard should fail");
+        assert_eq!(diagnostics.codes(), vec!["GOF3002"]);
     }
 
     #[test]

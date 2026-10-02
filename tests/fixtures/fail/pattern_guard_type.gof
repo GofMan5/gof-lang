@@ -1,0 +1,16 @@
+# RFC 0052 GOF3165: the guard must resolve to `bool` — no truthiness,
+# no coercion.
+
+enum Lamp:
+    On(level: int)
+    Off
+
+fn main() -> int:
+    lamp: Lamp = Lamp.On(4)
+    match lamp:
+        Lamp.On(level) if level:
+            return level
+        Lamp.On(level):
+            return 0
+        Lamp.Off:
+            return 1

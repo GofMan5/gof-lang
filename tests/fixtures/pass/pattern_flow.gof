@@ -1,0 +1,75 @@
+# Full patterns (RFC 0052): guarded arms dispatch top to bottom with
+# fall-through, literal payload refinements, wildcard payloads, and
+# nested literals inside tuple payloads. Guards never count toward
+# coverage — every variant keeps one unguarded irrefutable arm.
+
+enum HttpOutcome:
+    Done(status: int, body: string)
+    Failed(code: int)
+
+enum Wrap:
+    Box(pair: (int, string))
+
+fn classify(outcome: HttpOutcome) -> string:
+    match outcome:
+        HttpOutcome.Done(status, body) if status == 404 and starts_with(body, "mis"):
+            return "missing"
+        HttpOutcome.Done(status, body) if status >= 500:
+            return "server"
+        HttpOutcome.Done(200, _):
+            return "ok"
+        HttpOutcome.Done(status, body):
+            return "other"
+        HttpOutcome.Failed(code):
+            return "failed " + to_string(code)
+
+fn main() -> int:
+    # Guarded arms run before the unguarded total arm; a false guard
+    # falls through to the next arm (first match wins).
+    assert(classify(HttpOutcome.Done(404, "missing doc")) == "missing", "guards must see the arm bindings")
+    assert(classify(HttpOutcome.Done(500, "boom")) == "server", "the second guard runs in order")
+    assert(classify(HttpOutcome.Done(200, "anything")) == "ok", "the literal refinement matches by value")
+    assert(classify(HttpOutcome.Done(302, "redirect")) == "other", "the total arm closes the match")
+    assert(classify(HttpOutcome.Failed(7)) == "failed 7", "other variants dispatch unchanged")
+
+    # A repeated variant with different guards is legal: the narrowed
+    # GOF3030 fires only for exact unguarded skeleton duplicates, and
+    # guards never count for exhaustiveness.
+    match HttpOutcome.Done(302, "redirect"):
+        HttpOutcome.Done(status, body) if status == 301:
+            assert(false, "expected the guard to fall through")
+        HttpOutcome.Done(status, body) if status == 302:
+            assert(status == 302, "the second guarded arm runs")
+        HttpOutcome.Done(status, body):
+            assert(false, "expected a guarded arm to win")
+        HttpOutcome.Failed(code):
+            assert(false, "expected the done arms")
+
+    # Wildcard payloads match anything and bind nothing.
+    match HttpOutcome.Done(404, "x"):
+        HttpOutcome.Done(_, body):
+            assert(len(body) == 1, "the wildcard leaf discards its member")
+        HttpOutcome.Failed(code):
+            assert(false, "expected the done arm")
+
+    # A nested literal inside a tuple payload refines the whole leaf.
+    w = Wrap.Box((404, "not found"))
+    match w:
+        Wrap.Box((404, tag)):
+            assert(tag == "not found", "the nested literal must match by value")
+        Wrap.Box((_, tag)):
+            assert(false, "expected the refined tuple arm")
+
+    # Wildcard leaves in binding statements and for bindings.
+    point = (3, 4)
+    (_, y) = point
+    assert(y == 4, "the wildcard member is discarded")
+    mut seen = 0
+    for (i, _) in [(1, 10), (2, 20)]:
+        seen = seen + i
+    assert(seen == 3, "the loop wildcard skips its member")
+
+    # `_ = expr` evaluates the right-hand side for its effects and
+    # discards the value.
+    _ = len("discarded")
+    return 0

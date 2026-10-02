@@ -1,0 +1,8 @@
+# RFC 0052 GOF3163: binding statements accept only the irrefutable
+# subset — a literal leaf can fail to match, and a binding statement is
+# not a branch.
+
+fn main() -> int:
+    pair = (1, 2)
+    (a, 1) = pair
+    return a

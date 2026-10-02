@@ -111,25 +111,43 @@ pub struct TypeRef {
     pub span: Span,
 }
 
+/// A literal value in pattern position (RFC 0052). Int literals arrive
+/// with their optional leading `-` folded in (the lexer keeps no raw
+/// text, so `Minus` + `IntLiteral` is collapsed by the parser).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum PatternLiteral {
+    Int(i64),
+    String(String),
+    Bool(bool),
+}
+
 /// A destructuring target. `Name` is today's single-identifier binding;
 /// `Tuple` is the RFC 0050 tuple pattern, shared by binding statements,
-/// loop bindings, and match payload positions.
+/// loop bindings, and match payload positions; `Wildcard` is the RFC
+/// 0052 `_` leaf (matches anything, binds nothing); `Literal` is the
+/// RFC 0052 refinement leaf (int, string, or bool value test).
 #[derive(Debug, Clone, Serialize)]
 pub enum BindingPattern {
     Name(String, Span),
     Tuple(Vec<BindingPattern>, Span),
+    Wildcard(Span),
+    Literal(PatternLiteral, Span),
 }
 
 impl BindingPattern {
     pub fn span(&self) -> Span {
         match self {
-            BindingPattern::Name(_, span) | BindingPattern::Tuple(_, span) => *span,
+            BindingPattern::Name(_, span)
+            | BindingPattern::Tuple(_, span)
+            | BindingPattern::Wildcard(span)
+            | BindingPattern::Literal(_, span) => *span,
         }
     }
 
     /// Every leaf binding name in this pattern, left to right. Used by
     /// layers that still lower patterns to flat name lists (HIR, typed
     /// HIR, MIR) while tuple destructuring semantics land layer by layer.
+    /// Wildcard and literal leaves bind nothing and contribute no names.
     pub fn binding_names(&self) -> Vec<(String, Span)> {
         let mut names = Vec::new();
         self.collect_names(&mut names);
@@ -144,6 +162,7 @@ impl BindingPattern {
                     leaf.collect_names(names);
                 }
             }
+            BindingPattern::Wildcard(_) | BindingPattern::Literal(_, _) => {}
         }
     }
 }
@@ -198,6 +217,10 @@ pub enum Stmt {
 #[derive(Debug, Clone, Serialize)]
 pub struct MatchArm {
     pub pattern: MatchPattern,
+    /// RFC 0052 guard: `pattern if <bool expr>:` — legal on match arms
+    /// only. Evaluated after the pattern matched and its bindings were
+    /// created; a `false` guard falls through to the next arm.
+    pub guard: Option<Expr>,
     pub body: Vec<Stmt>,
     pub span: Span,
 }
@@ -675,11 +698,19 @@ impl<'a> Parser<'a> {
             // the tuple pattern is parsed speculatively: it is kept only when
             // a well-formed pattern is followed by `in`; otherwise the parser
             // rewinds and takes today's single-identifier binding path.
+            // RFC 0052: `_` is a wildcard leaf (binds nothing) and guards
+            // are rejected here with a specific parse error.
             let pattern = if self.check(TokenDiscriminant::LParen) {
                 let token_mark = self.mark();
                 let diagnostic_mark = self.diagnostics.0.len();
                 let pattern = self.parse_binding_pattern();
-                if self.check(TokenDiscriminant::In) {
+                if self.check(TokenDiscriminant::If) {
+                    // A guard cannot follow a `for` binding: keep the
+                    // (already well-formed) pattern and report the
+                    // guard placement, then recover past the guard.
+                    self.reject_position_guard();
+                    pattern
+                } else if self.check(TokenDiscriminant::In) {
                     pattern
                 } else {
                     // Rewind and restore the pre-tuples behavior: a
@@ -689,16 +720,16 @@ impl<'a> Parser<'a> {
                     // follows — never a silently-wrong program.
                     self.reset(token_mark);
                     self.diagnostics.0.truncate(diagnostic_mark);
-                    BindingPattern::Name(
-                        self.expect_ident("expected a loop binding after `for`"),
-                        self.previous().span,
-                    )
+                    let name = self.expect_ident("expected a loop binding after `for`");
+                    let name_span = self.previous().span;
+                    self.reject_position_guard();
+                    binding_leaf_from_name(name, name_span)
                 }
             } else {
-                BindingPattern::Name(
-                    self.expect_ident("expected a loop binding after `for`"),
-                    self.previous().span,
-                )
+                let name = self.expect_ident("expected a loop binding after `for`");
+                let name_span = self.previous().span;
+                self.reject_position_guard();
+                binding_leaf_from_name(name, name_span)
             };
             self.expect(
                 TokenDiscriminant::In,
@@ -768,6 +799,9 @@ impl<'a> Parser<'a> {
             // parsed as an expression first and reinterpreted as a pattern.
             if self.check(TokenDiscriminant::LParen) {
                 let expr = self.parse_expr();
+                // RFC 0052: `mut (a, b) if c = pair` — a guard cannot sit in
+                // a binding statement; recover past it so the `=` follows.
+                self.reject_position_guard();
                 self.expect(TokenDiscriminant::Equal, "expected `=` in a binding");
                 let pattern = self.binding_pattern_from_expr(expr);
                 let value = self.parse_expr();
@@ -784,6 +818,7 @@ impl<'a> Parser<'a> {
                 };
             }
             let name = self.expect_ident("expected an identifier after `mut`");
+            self.reject_position_guard();
             let ty = self.parse_optional_type_ref();
             self.expect(TokenDiscriminant::Equal, "expected `=` in a binding");
             let value = self.parse_expr();
@@ -792,7 +827,7 @@ impl<'a> Parser<'a> {
                 "expected a newline after binding",
             );
             return Stmt::Bind {
-                pattern: BindingPattern::Name(name, span),
+                pattern: binding_leaf_from_name(name, span),
                 mutable: true,
                 ty,
                 value,
@@ -803,6 +838,7 @@ impl<'a> Parser<'a> {
         if self.check_ident_binding_or_assignment() {
             let name = self.expect_ident("expected a binding target");
             let span = self.previous().span;
+            self.reject_position_guard();
             let ty = self.parse_optional_type_ref();
             self.expect(
                 TokenDiscriminant::Equal,
@@ -813,9 +849,12 @@ impl<'a> Parser<'a> {
                 TokenDiscriminant::Newline,
                 "expected a newline after assignment",
             );
-            return if ty.is_some() {
+            return if ty.is_some() || name == "_" {
+                // RFC 0052: `_ = expr` evaluates the right-hand side for
+                // its effects and discards the value — the wildcard binds
+                // nothing, replacing the accidental `_` name binding.
                 Stmt::Bind {
-                    pattern: BindingPattern::Name(name, span),
+                    pattern: binding_leaf_from_name(name, span),
                     mutable: false,
                     ty,
                     value,
@@ -833,6 +872,10 @@ impl<'a> Parser<'a> {
         // before, so no existing program changes meaning.
         if self.check(TokenDiscriminant::LParen) {
             let expr = self.parse_expr();
+            // RFC 0052: `(a, b) if c = pair` — a guard cannot sit in a
+            // binding statement. Report the placement error, recover past
+            // the guard expression, and let the binding grammar continue.
+            self.reject_position_guard();
             if self.check(TokenDiscriminant::Equal) {
                 let span = expr.span();
                 self.advance();
@@ -901,7 +944,19 @@ impl<'a> Parser<'a> {
 
     fn parse_match_arm(&mut self) -> MatchArm {
         let pattern = self.parse_match_pattern();
-        let span = pattern.span();
+        let mut span = pattern.span();
+        // RFC 0052 guards: `pattern if <expr>:` — match arms only. The
+        // guard expression extends to the arm's terminating `:`
+        // (expression parsing is bracket-aware, so a `:` inside a dict
+        // literal in the guard is consumed by dict parsing).
+        let guard = if self.check(TokenDiscriminant::If) {
+            self.advance();
+            let guard = self.parse_expr();
+            span = Span::new(span.line, span.column, guard.span().end_column);
+            Some(guard)
+        } else {
+            None
+        };
         self.expect(
             TokenDiscriminant::Colon,
             "expected `:` after match arm pattern",
@@ -909,6 +964,7 @@ impl<'a> Parser<'a> {
         let body = self.parse_block("expected an indented block after match arm");
         MatchArm {
             pattern,
+            guard,
             body,
             span,
         }
@@ -1677,6 +1733,27 @@ impl<'a> Parser<'a> {
             )
     }
 
+    /// RFC 0052: guards are match-arm-only. When `if` follows a
+    /// binding-statement target or a `for` loop binding, report the
+    /// specific GOF2002 placement error and recover by consuming the
+    /// guard expression so parsing continues at the `=` / `in` the
+    /// statement grammar requires.
+    fn reject_position_guard(&mut self) {
+        if self.check(TokenDiscriminant::If) {
+            let span = self.advance().span;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF2002",
+                    "guards apply only to match arms",
+                    "binding statements and `for` bindings cannot carry a guard",
+                    span,
+                )
+                .with_fix_it("remove the `if` condition, or rewrite this as a `match` arm"),
+            );
+            let _ = self.parse_expr();
+        }
+    }
+
     /// Save the current token position so a speculative parse can be undone.
     fn mark(&self) -> usize {
         self.current
@@ -1709,23 +1786,65 @@ impl<'a> Parser<'a> {
         Some(value as usize)
     }
 
-    /// Parse one binding position in a match arm payload: a plain identifier
-    /// (today's behavior, unchanged) or a nested tuple pattern.
+    /// Parse one pattern leaf literal (RFC 0052): an int literal with an
+    /// optional leading `-` (a token pair, not an evaluated expression),
+    /// a string literal with the existing lexer escapes, or `true` /
+    /// `false`. Returns `None` when the next token cannot begin a
+    /// literal leaf so the caller falls through to the identifier path.
+    fn parse_pattern_leaf_literal(&mut self) -> Option<BindingPattern> {
+        if matches!(self.peek().kind, TokenKind::Minus)
+            && matches!(
+                self.peek_next().map(|token| &token.kind),
+                Some(TokenKind::IntLiteral(_))
+            )
+        {
+            let start = self.advance().span;
+            let TokenKind::IntLiteral(value) = self.advance().kind else {
+                return None;
+            };
+            return Some(BindingPattern::Literal(
+                PatternLiteral::Int(value.wrapping_neg()),
+                Span::new(start.line, start.column, self.previous().span.end_column),
+            ));
+        }
+        let literal = match self.peek().kind.clone() {
+            TokenKind::IntLiteral(value) => PatternLiteral::Int(value),
+            TokenKind::StringLiteral(value) => PatternLiteral::String(value),
+            TokenKind::True => PatternLiteral::Bool(true),
+            TokenKind::False => PatternLiteral::Bool(false),
+            _ => return None,
+        };
+        let span = self.advance().span;
+        Some(BindingPattern::Literal(literal, span))
+    }
+
+    /// Parse one binding position in a match arm payload (RFC 0050 +
+    /// RFC 0052): a plain identifier, the `_` wildcard, a literal leaf,
+    /// or a nested tuple pattern.
     fn parse_match_binding(&mut self) -> BindingPattern {
         if self.check(TokenDiscriminant::LParen) {
             return self.parse_binding_pattern();
         }
+        if let Some(literal) = self.parse_pattern_leaf_literal() {
+            return literal;
+        }
         let name = self.expect_ident("expected a binding name in the payload match pattern");
-        BindingPattern::Name(name, self.previous().span)
+        let span = self.previous().span;
+        binding_leaf_from_name(name, span)
     }
 
-    /// Parse a binding pattern: an identifier leaf or a parenthesized tuple
-    /// pattern with two or more members. The degenerate shapes (`()`,
-    /// `(x)`, trailing commas) are parser-visible and emit GOF3155 directly.
+    /// Parse a binding pattern: an identifier leaf, the `_` wildcard, a
+    /// literal leaf, or a parenthesized tuple pattern with two or more
+    /// members. The degenerate shapes (`()`, `(x)`, trailing commas) are
+    /// parser-visible and emit GOF3155 directly.
     fn parse_binding_pattern(&mut self) -> BindingPattern {
         if !self.check(TokenDiscriminant::LParen) {
+            if let Some(literal) = self.parse_pattern_leaf_literal() {
+                return literal;
+            }
             let name = self.expect_ident("expected a binding name");
-            return BindingPattern::Name(name, self.previous().span);
+            let span = self.previous().span;
+            return binding_leaf_from_name(name, span);
         }
         let start = self.advance().span;
         if self.check(TokenDiscriminant::RParen) {
@@ -1810,10 +1929,10 @@ impl<'a> Parser<'a> {
 
     /// Reinterpret a parsed tuple literal as a destructuring pattern. The
     /// statement began with `(` and is followed by `=`, so the expression is
-    /// a tuple literal (`(a, b)`) whose leaves must be identifiers or nested
-    /// tuple literals. A bare identifier can only come from grouping
-    /// parentheses like `(x)` — the single-member target shape — and is
-    /// rejected with GOF3155.
+    /// a tuple literal (`(a, b)`) whose leaves must be identifiers, `_`,
+    /// literals, or nested tuple literals. A bare identifier can only come
+    /// from grouping parentheses like `(x)` — the single-member target
+    /// shape — and is rejected with GOF3155.
     fn binding_pattern_from_expr(&mut self, expr: Expr) -> BindingPattern {
         match expr {
             Expr::Tuple { items, span } => {
@@ -1836,25 +1955,29 @@ impl<'a> Parser<'a> {
                     )
                     .with_fix_it("remove the parentheses around the binding name"),
                 );
-                BindingPattern::Name(name, span)
+                binding_leaf_from_name(name, span)
             }
             other => {
                 self.diagnostics.push(
                     Diagnostic::error(
                         "GOF2001",
-                        "pattern leaves must be identifiers or nested tuple patterns",
-                        "tuple destructuring targets must be binding names, not arbitrary expressions",
+                        "pattern leaves must be identifiers, literals, or nested tuple patterns",
+                        "tuple destructuring targets must be binding names or literal values, not arbitrary expressions",
                         other.span(),
                     )
-                    .with_fix_it("replace this expression with a binding name or a nested tuple pattern"),
+                    .with_fix_it("replace this expression with a binding name, a literal, or a nested tuple pattern"),
                 );
                 BindingPattern::Name("_error".to_string(), other.span())
             }
         }
     }
 
-    /// A leaf INSIDE a tuple pattern: an identifier is the good case
-    /// (silent); nested tuples recurse; anything else is GOF2001.
+    /// A leaf INSIDE a tuple pattern: an identifier or `_` is the good case
+    /// (silent); literals (including `-1`, which the expression parser
+    /// produced as a unary negation) recurse into `Literal` leaves; nested
+    /// tuples recurse; anything else is GOF2001. Literal leaves are parsed
+    /// here so the typed layer can reject refutable patterns in binding
+    /// statements and `for` bindings with GOF3163 (RFC 0052).
     fn pattern_leaf_from_expr(&mut self, expr: Expr) -> BindingPattern {
         match expr {
             Expr::Tuple { items, span } => {
@@ -1864,16 +1987,35 @@ impl<'a> Parser<'a> {
                     .collect();
                 BindingPattern::Tuple(leaves, span)
             }
-            Expr::Ident(name, span) => BindingPattern::Name(name, span),
+            Expr::Ident(name, span) => binding_leaf_from_name(name, span),
+            Expr::Int(value, span) => BindingPattern::Literal(PatternLiteral::Int(value), span),
+            Expr::String(value, span) => {
+                BindingPattern::Literal(PatternLiteral::String(value), span)
+            }
+            Expr::Bool(value, span) => BindingPattern::Literal(PatternLiteral::Bool(value), span),
+            Expr::Unary {
+                op: UnaryOp::Neg,
+                value,
+                span,
+            } if matches!(value.as_ref(), Expr::Int(..)) => {
+                // A negative int literal in a tuple pattern: `(-1, x)`.
+                // The expression parser folds `Minus` + `Int` into a unary
+                // negation; the pattern grammar treats it as one literal
+                // leaf (RFC 0052 lexer note).
+                let Expr::Int(value, _) = *value else {
+                    unreachable!("guarded by the matches! above");
+                };
+                BindingPattern::Literal(PatternLiteral::Int(-value), span)
+            }
             other => {
                 self.diagnostics.push(
                     Diagnostic::error(
                         "GOF2001",
-                        "pattern leaves must be identifiers or nested tuple patterns",
-                        "tuple destructuring targets must be binding names, not arbitrary expressions",
+                        "pattern leaves must be identifiers, literals, or nested tuple patterns",
+                        "tuple destructuring targets must be binding names or literal values, not arbitrary expressions",
                         other.span(),
                     )
-                    .with_fix_it("replace this expression with a binding name or a nested tuple pattern"),
+                    .with_fix_it("replace this expression with a binding name, a literal, or a nested tuple pattern"),
                 );
                 BindingPattern::Name("_error".to_string(), other.span())
             }
@@ -1938,6 +2080,182 @@ impl MatchPattern {
             MatchPattern::EnumVariant { span, .. } => *span,
         }
     }
+}
+
+/// Build one identifier-position pattern leaf (RFC 0052): `_` is the
+/// wildcard — it matches anything and binds nothing — while every other
+/// identifier binds. `_` stays a valid identifier everywhere outside
+/// pattern positions; wildcard-ness is a property of pattern position,
+/// not a new reserved word.
+fn binding_leaf_from_name(name: String, span: Span) -> BindingPattern {
+    if name == "_" {
+        BindingPattern::Wildcard(span)
+    } else {
+        BindingPattern::Name(name, span)
+    }
+}
+
+/// Normalized arm-head skeleton for the RFC 0052 duplicate and
+/// unreachability rules. Bindings and wildcards are interchangeable
+/// slots; literals compare by kind and value; tuples compare pairwise.
+///
+/// These shape rules are syntactic — no type information is involved —
+/// so they live next to the pattern AST and are shared by the typed
+/// layer (the check) and the bootstrap evaluator (the backstop), which
+/// keeps the two from drifting apart.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MatchArmSkeleton {
+    Slot,
+    Literal(PatternLiteral),
+    Tuple(Vec<MatchArmSkeleton>),
+}
+
+/// The shape facts one match arm contributes to the RFC 0052 arm-set
+/// rules: which enum and variant it matches, whether it is guarded, its
+/// payload skeleton, and whether its payload is irrefutable at every
+/// position (bindings, wildcards, tuples of those).
+#[derive(Debug, Clone)]
+pub struct MatchArmShape {
+    pub enum_name: String,
+    pub variant: String,
+    pub guarded: bool,
+    pub skeleton: Vec<MatchArmSkeleton>,
+    pub payload_irrefutable: bool,
+}
+
+pub fn match_arm_skeleton_leaf(pattern: &BindingPattern) -> MatchArmSkeleton {
+    match pattern {
+        BindingPattern::Name(..) | BindingPattern::Wildcard(..) => MatchArmSkeleton::Slot,
+        BindingPattern::Literal(literal, _) => MatchArmSkeleton::Literal(literal.clone()),
+        BindingPattern::Tuple(leaves, _) => {
+            MatchArmSkeleton::Tuple(leaves.iter().map(match_arm_skeleton_leaf).collect())
+        }
+    }
+}
+
+pub fn pattern_is_irrefutable(pattern: &BindingPattern) -> bool {
+    match pattern {
+        BindingPattern::Name(..) | BindingPattern::Wildcard(..) => true,
+        BindingPattern::Literal(..) => false,
+        BindingPattern::Tuple(leaves, _) => leaves.iter().all(pattern_is_irrefutable),
+    }
+}
+
+fn skeleton_contains_literal(skeleton: &[MatchArmSkeleton]) -> bool {
+    skeleton.iter().any(|leaf| match leaf {
+        MatchArmSkeleton::Slot => false,
+        MatchArmSkeleton::Literal(_) => true,
+        MatchArmSkeleton::Tuple(nested) => skeleton_contains_literal(nested),
+    })
+}
+
+/// GOF3030 / GOF3166: two UNGUARDED arms for the same variant whose
+/// skeletons are equal (same variant, same literal values in
+/// corresponding positions, bindings and wildcards interchangeable as
+/// slots). Pure-slot skeletons keep the classic `GOF3030` trigger so
+/// every program that compiles today reports the same code; skeletons
+/// containing literals are the `GOF3166` family. Arms differing only by
+/// a guard are never duplicates — guards never count.
+pub fn check_duplicate_arm_skeleton(
+    current: &MatchArmShape,
+    prior: &[MatchArmShape],
+    arm_span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &std::path::Path,
+) {
+    if current.guarded {
+        return;
+    }
+    let is_duplicate = prior.iter().any(|shape| {
+        !shape.guarded && shape.variant == current.variant && shape.skeleton == current.skeleton
+    });
+    if !is_duplicate {
+        return;
+    }
+    if skeleton_contains_literal(&current.skeleton) {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3166",
+                "duplicate match arm pattern",
+                "two unguarded arms share the same literal payload skeleton",
+                arm_span,
+            )
+            .with_fix_it("remove the duplicate arm, or distinguish it with a guard")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    } else {
+        diagnostics.push(
+            Diagnostic::error(
+                "GOF3030",
+                format!(
+                    "duplicate match arm for `{}.{}`",
+                    current.enum_name, current.variant
+                ),
+                "each variant can appear only once in a match over the same value space",
+                arm_span,
+            )
+            .with_fix_it("remove the duplicate arm or replace it with another enum variant")
+            .with_source_path(source_path.to_path_buf()),
+        );
+    }
+}
+
+/// GOF3167: an arm that follows an unguarded arm for the same variant
+/// whose payload is irrefutable (bindings, wildcards, tuples of those)
+/// can never run — first match wins, and the earlier arm already
+/// matches every value of the variant. Exact skeleton duplicates are
+/// claimed by GOF3030/GOF3166 first, so the refinement idiom (a guarded
+/// arm, then an unguarded total arm) stays legal.
+pub fn check_unreachable_arm(
+    current: &MatchArmShape,
+    prior: &[MatchArmShape],
+    arm_span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &std::path::Path,
+) {
+    for shape in prior {
+        if !shape.guarded && shape.variant == current.variant && shape.payload_irrefutable {
+            let exact_duplicate = !current.guarded && shape.skeleton == current.skeleton;
+            if !exact_duplicate {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3167",
+                        "unreachable match arm",
+                        format!(
+                            "an earlier unguarded `{}.{}` arm already matches every value this arm could match",
+                            shape.enum_name, shape.variant
+                        ),
+                        arm_span,
+                    )
+                    .with_fix_it("remove the unreachable arm, or move it above the total arm")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            return;
+        }
+    }
+}
+
+/// RFC 0052 GOF3163: a refutable pattern leaf (a literal) used as a
+/// binding-statement target or `for` loop binding. Those positions are
+/// not branches — a pattern that can fail to match there has no failing
+/// case to handle. Shared by the typed check and the evaluator's
+/// backstop so the wording cannot drift.
+pub fn report_refutable_pattern(
+    position: &str,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+    source_path: &std::path::Path,
+) {
+    diagnostics.push(
+        Diagnostic::error(
+            "GOF3163",
+            format!("refutable pattern in a {position}"),
+            "this pattern can fail to match; use a `match` statement to handle the failing case",
+            span,
+        )
+        .with_source_path(source_path.to_path_buf()),
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2124,12 +2442,14 @@ fn token_debug_name(kind: &TokenKind) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryOp, BindingPattern, Expr, FunctionKind, MatchPattern, SelectArmKind, Stmt, UnaryOp,
-        parse,
+        BinaryOp, BindingPattern, Expr, FunctionKind, MatchArmSkeleton, MatchPattern,
+        PatternLiteral, SelectArmKind, Stmt, UnaryOp, match_arm_skeleton_leaf, parse,
+        pattern_is_irrefutable,
     };
     use crate::cst::CstModule;
     use crate::lexer::lex;
     use crate::source::SourceFile;
+    use crate::source::Span;
 
     #[test]
     fn parses_function_module() {
@@ -2831,9 +3151,37 @@ mod tests {
     }
 
     #[test]
-    fn tuple_pattern_leaves_must_be_identifiers() {
+    fn tuple_pattern_leaves_must_be_identifiers_or_literals() {
+        // RFC 0052: literal leaves now PARSE (the typed layer rejects
+        // refutable patterns in binding statements with GOF3163).
+        let body = parse_body("fn main():\n    (a, 1) = origin\n");
+        assert!(matches!(
+            &body[0],
+            Stmt::Bind {
+                pattern: BindingPattern::Tuple(leaves, _),
+                ..
+            } if leaves.len() == 2
+                && matches!(&leaves[0], BindingPattern::Name(name, _) if name == "a")
+                && matches!(
+                    &leaves[1],
+                    BindingPattern::Literal(crate::ast::PatternLiteral::Int(1), _)
+                )
+        ));
+        // Negative int literals fold into one Literal leaf.
+        let body = parse_body("fn main():\n    (a, -1) = origin\n");
+        assert!(matches!(
+            &body[0],
+            Stmt::Bind {
+                pattern: BindingPattern::Tuple(leaves, _),
+                ..
+            } if matches!(
+                &leaves[1],
+                BindingPattern::Literal(crate::ast::PatternLiteral::Int(-1), _)
+            )
+        ));
+        // Arbitrary expressions are still malformed leaves (GOF2001).
         assert_eq!(
-            parse_diagnostics("fn main():\n    (a, 1) = origin\n"),
+            parse_diagnostics("fn main():\n    (a, a + b) = origin\n"),
             vec!["GOF2001"]
         );
         assert_eq!(
@@ -2925,6 +3273,233 @@ mod tests {
                 "enum Status:\n    Ready\n    Busy\n\nfn main(status: Status) -> bool:\n    match status:\n        Status.Busy((x)):\n            return true\n        Status.Ready:\n            return false\n"
             ),
             vec!["GOF3155"]
+        );
+    }
+
+    #[test]
+    fn parses_match_arm_guards_with_colon_termination() {
+        let source = SourceFile::new(
+            "test.gof",
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main(lamp: Lamp) -> int:\n    match lamp:\n        Lamp.On(level) if level > 2:\n            return level\n        Lamp.On(level):\n            return 0\n        Lamp.Off:\n            return 1\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        let Stmt::Match { arms, .. } = &module.functions[0].body[0] else {
+            panic!("expected a match statement");
+        };
+        assert!(matches!(
+            &arms[0].guard,
+            Some(Expr::Binary {
+                op: BinaryOp::Gt,
+                ..
+            })
+        ));
+        assert!(arms[1].guard.is_none());
+        assert!(arms[2].guard.is_none());
+        // The guard expression extends to the arm's terminating `:`
+        // (bracket-aware parsing), so a dict literal inside a guard ends
+        // at its own braces and the arm still terminates at `:`.
+        let source = SourceFile::new(
+            "test.gof",
+            "enum Lamp:\n    On(level: int)\n    Off\n\nfn main(lamp: Lamp, table: dict) -> int:\n    match lamp:\n        Lamp.On(level) if len(table) > 0 and level > 2:\n            return level\n        Lamp.On(level):\n            return 0\n        Lamp.Off:\n            return 1\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        let Stmt::Match { arms, .. } = &module.functions[0].body[0] else {
+            panic!("expected a match statement");
+        };
+        assert!(matches!(
+            &arms[0].guard,
+            Some(Expr::Binary {
+                op: BinaryOp::And,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn guards_are_rejected_outside_match_arms() {
+        // RFC 0052: guards are match-arm-only; `if` after a binding
+        // statement target or a `for` binding is a specific GOF2002.
+        assert_eq!(
+            parse_diagnostics("fn main():\n    (a, b) if a > 0 = origin\n"),
+            vec!["GOF2002"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main():\n    mut (a, b) if a > 0 = origin\n"),
+            vec!["GOF2002"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main():\n    for (a, b) if a > 0 in pairs:\n        return 0\n"),
+            vec!["GOF2002"]
+        );
+        assert_eq!(
+            parse_diagnostics("fn main():\n    for item if true in pairs:\n        return 0\n"),
+            vec!["GOF2002"]
+        );
+    }
+
+    #[test]
+    fn parses_literal_and_wildcard_payload_leaves() {
+        let source = SourceFile::new(
+            "test.gof",
+            "enum HttpOutcome:\n    Done(status: int, body: string)\n    Flag(active: bool)\n\nfn main(outcome: HttpOutcome) -> int:\n    match outcome:\n        HttpOutcome.Done(-1, _):\n            return 1\n        HttpOutcome.Done(200, body):\n            return 2\n        HttpOutcome.Done(status, \"plain\"):\n            return 3\n        HttpOutcome.Done(status, body):\n            return 4\n        HttpOutcome.Flag(true):\n            return 5\n        HttpOutcome.Flag(active):\n            return 6\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        let Stmt::Match { arms, .. } = &module.functions[0].body[0] else {
+            panic!("expected a match statement");
+        };
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[0].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(matches!(
+            &bindings[0],
+            BindingPattern::Literal(PatternLiteral::Int(-1), _)
+        ));
+        assert!(matches!(&bindings[1], BindingPattern::Wildcard(_)));
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[1].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(matches!(
+            &bindings[0],
+            BindingPattern::Literal(PatternLiteral::Int(200), _)
+        ));
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[2].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(matches!(
+            &bindings[1],
+            BindingPattern::Literal(PatternLiteral::String(text), _) if text == "plain"
+        ));
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[4].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(matches!(
+            &bindings[0],
+            BindingPattern::Literal(PatternLiteral::Bool(true), _)
+        ));
+    }
+
+    #[test]
+    fn parses_wildcard_leaves_in_bind_and_for_positions() {
+        let body = parse_body(
+            "fn main():\n    (_, y) = point\n    mut (w, _) = size\n    _ = compute()\n    mut _ = probe()\n    for (i, _) in pairs:\n        print(i)\n    for _ in values:\n        print(1)\n",
+        );
+        assert!(matches!(
+            &body[0],
+            Stmt::Bind {
+                pattern: BindingPattern::Tuple(leaves, _),
+                ..
+            } if matches!(&leaves[0], BindingPattern::Wildcard(_))
+                && matches!(&leaves[1], BindingPattern::Name(name, _) if name == "y")
+        ));
+        assert!(matches!(
+            &body[1],
+            Stmt::Bind {
+                pattern: BindingPattern::Tuple(leaves, _),
+                mutable: true,
+                ..
+            } if matches!(&leaves[1], BindingPattern::Wildcard(_))
+        ));
+        // `_ = expr` is the explicit evaluate-and-discard idiom, not an
+        // assignment to a name `_`.
+        assert!(matches!(
+            &body[2],
+            Stmt::Bind {
+                pattern: BindingPattern::Wildcard(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &body[3],
+            Stmt::Bind {
+                pattern: BindingPattern::Wildcard(_),
+                mutable: true,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &body[4],
+            Stmt::For {
+                pattern: BindingPattern::Tuple(leaves, _),
+                ..
+            } if matches!(&leaves[1], BindingPattern::Wildcard(_))
+        ));
+        assert!(matches!(
+            &body[5],
+            Stmt::For {
+                pattern: BindingPattern::Wildcard(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_nested_literal_in_tuple_payload_patterns() {
+        let source = SourceFile::new(
+            "test.gof",
+            "enum Wrap:\n    Box(pair: (int, string))\n\nfn main(wrap: Wrap) -> int:\n    match wrap:\n        Wrap.Box((404, tag)):\n            return len(tag)\n        Wrap.Box((_, tag)):\n            return len(tag) + 1\n        Wrap.Box(pair):\n            return len(pair.1)\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let module = parse(&CstModule::new(tokens)).expect("parsing should succeed");
+        let Stmt::Match { arms, .. } = &module.functions[0].body[0] else {
+            panic!("expected a match statement");
+        };
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[0].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(matches!(
+            &bindings[0],
+            BindingPattern::Tuple(leaves, _)
+                if matches!(
+                    &leaves[0],
+                    BindingPattern::Literal(PatternLiteral::Int(404), _)
+                ) && matches!(&leaves[1], BindingPattern::Name(name, _) if name == "tag")
+        ));
+        let MatchPattern::EnumVariant { bindings, .. } = &arms[1].pattern else {
+            panic!("expected an enum variant pattern");
+        };
+        assert!(matches!(
+            &bindings[0],
+            BindingPattern::Tuple(leaves, _)
+                if matches!(&leaves[0], BindingPattern::Wildcard(_))
+        ));
+    }
+
+    #[test]
+    fn pattern_leaves_bind_no_wildcard_names() {
+        // The shared shape helpers: wildcards bind nothing, literals are
+        // refutable, skeletons treat slots as interchangeable.
+        let leaves = vec![
+            BindingPattern::Wildcard(Span::new(1, 1, 2)),
+            BindingPattern::Name("x".to_string(), Span::new(1, 4, 5)),
+            BindingPattern::Tuple(
+                vec![
+                    BindingPattern::Literal(PatternLiteral::Int(1), Span::new(1, 7, 8)),
+                    BindingPattern::Wildcard(Span::new(1, 10, 11)),
+                ],
+                Span::new(1, 6, 12),
+            ),
+        ];
+        assert_eq!(
+            leaves
+                .iter()
+                .flat_map(|leaf| leaf.binding_names())
+                .collect::<Vec<_>>(),
+            vec![("x".to_string(), Span::new(1, 4, 5))]
+        );
+        assert!(pattern_is_irrefutable(&leaves[0]));
+        assert!(pattern_is_irrefutable(&leaves[1]));
+        assert!(!pattern_is_irrefutable(&leaves[2]));
+        assert_eq!(match_arm_skeleton_leaf(&leaves[0]), MatchArmSkeleton::Slot);
+        assert_eq!(match_arm_skeleton_leaf(&leaves[1]), MatchArmSkeleton::Slot);
+        assert_eq!(
+            match_arm_skeleton_leaf(&leaves[2]),
+            MatchArmSkeleton::Tuple(vec![
+                MatchArmSkeleton::Literal(PatternLiteral::Int(1)),
+                MatchArmSkeleton::Slot,
+            ])
         );
     }
 }

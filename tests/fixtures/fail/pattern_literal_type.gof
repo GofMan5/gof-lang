@@ -1,0 +1,16 @@
+# RFC 0052 GOF3164: a literal pattern must match its position's type —
+# a string literal cannot refine an int payload.
+
+enum Lamp:
+    On(level: int)
+    Off
+
+fn main() -> int:
+    lamp: Lamp = Lamp.On(4)
+    match lamp:
+        Lamp.On("four"):
+            return 1
+        Lamp.On(level):
+            return 2
+        Lamp.Off:
+            return 3

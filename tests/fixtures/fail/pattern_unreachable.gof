@@ -1,0 +1,17 @@
+# RFC 0052 GOF3167: the unguarded `Lamp.On(level)` arm matches every
+# value of the variant, so the literal refinement after it can never
+# run — first match wins.
+
+enum Lamp:
+    On(level: int)
+    Off
+
+fn main() -> int:
+    lamp: Lamp = Lamp.Off
+    match lamp:
+        Lamp.On(level):
+            return level
+        Lamp.On(3):
+            return 3
+        Lamp.Off:
+            return 0

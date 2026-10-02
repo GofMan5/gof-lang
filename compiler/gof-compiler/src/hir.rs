@@ -76,10 +76,23 @@ pub struct HirTypeRef {
     pub span: Span,
 }
 
+/// A literal value in pattern position (RFC 0052), mirroring
+/// `ast::PatternLiteral`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub enum HirPatternLiteral {
+    Int(i64),
+    String(String),
+    Bool(bool),
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub enum HirBindingPattern {
     Name(String, Span),
     Tuple(Vec<HirBindingPattern>, Span),
+    /// RFC 0052 `_` leaf: matches anything, binds nothing.
+    Wildcard(Span),
+    /// RFC 0052 literal leaf: an int / string / bool value test.
+    Literal(HirPatternLiteral, Span),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,6 +145,10 @@ pub enum HirStmt {
 #[derive(Debug, Clone, Serialize)]
 pub struct HirMatchArm {
     pub pattern: HirMatchPattern,
+    /// RFC 0052 guard: `pattern if <bool expr>:` — match arms only.
+    /// Evaluated after the pattern matched and its bindings were
+    /// created; a `false` guard falls through to the next arm.
+    pub guard: Option<HirExpr>,
     pub body: Vec<HirStmt>,
     pub span: Span,
 }
@@ -389,6 +406,7 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
 fn lower_match_arm(arm: &crate::ast::MatchArm) -> HirMatchArm {
     HirMatchArm {
         pattern: lower_match_pattern(&arm.pattern),
+        guard: arm.guard.as_ref().map(lower_expr),
         body: arm.body.iter().map(lower_stmt).collect(),
         span: arm.span,
     }
@@ -418,6 +436,17 @@ fn lower_binding_pattern(pattern: &crate::ast::BindingPattern) -> HirBindingPatt
         crate::ast::BindingPattern::Tuple(leafs, span) => {
             HirBindingPattern::Tuple(leafs.iter().map(lower_binding_pattern).collect(), *span)
         }
+        crate::ast::BindingPattern::Wildcard(span) => HirBindingPattern::Wildcard(*span),
+        crate::ast::BindingPattern::Literal(literal, span) => HirBindingPattern::Literal(
+            match literal {
+                crate::ast::PatternLiteral::Int(value) => HirPatternLiteral::Int(*value),
+                crate::ast::PatternLiteral::String(value) => {
+                    HirPatternLiteral::String(value.clone())
+                }
+                crate::ast::PatternLiteral::Bool(value) => HirPatternLiteral::Bool(*value),
+            },
+            *span,
+        ),
     }
 }
 

@@ -1,0 +1,15 @@
+# RFC 0052 guard erasure: guards never count toward coverage. `On` is
+# reachable only through a guarded arm, so the match is non-exhaustive
+# even though a `Lamp.On(4)` value would run the guarded body.
+
+enum Lamp:
+    On(level: int)
+    Off
+
+fn main() -> int:
+    lamp: Lamp = Lamp.On(4)
+    match lamp:
+        Lamp.On(level) if level > 2:
+            return level
+        Lamp.Off:
+            return 0
