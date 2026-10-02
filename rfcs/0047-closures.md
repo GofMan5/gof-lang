@@ -119,6 +119,14 @@ fn main() -> int:
   under the RFC 0043 boundary rule: handle captures stay shared, value
   closures transfer when unique and deep-copy when shared, owned closures
   move. Channel payloads of closure type follow the same rule
+
+**Defer target capture (RFC 0045 interplay).** When defer accepts a
+closure value as its target, the defer record must capture the closure
+VALUE (per its taxon), not the binding name: `mut c = f; defer c(); c = g`
+must call `f` at scope exit. The shipped defer implementation captures
+plain-call targets by name, which is safe today because only the
+immutable function tables exist; the closures slice must switch defer
+target capture to the taxon rules above.
 - closure bodies may declare their own locals (immutable and `mut`).
   Mutation of closure-local state is ordinary function behavior; it is
   never visible outside the closure and dies with the call
