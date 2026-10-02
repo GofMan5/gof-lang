@@ -190,6 +190,37 @@ Operational helpers now use the same contract:
 - `recv(channel)` returns `Result[T, RuntimeError]`
 - JSON, CSV, TOML, and HTTP helpers also return `Result`
 
+## Option values
+
+`Option[T]` is the explicit-absence baseline: a value is either
+`Option.Some(value)` or `Option.None`. There is no null and no default
+value for absence.
+
+```gof
+fn find_user(id: int) -> Option[string]:
+    if id == 1:
+        return Option.Some("gofer")
+    return Option.None
+
+fn greet(name: Option[string]) -> string:
+    match name:
+        Option.Some(value):
+            return "hello, " + value
+        Option.None:
+            return "hello, stranger"
+```
+
+Current rules:
+
+- `Option[T]` is a built-in parameterized type
+- `Option.Some(value)` constructs a payload-bearing value
+- `Option.None` is the unit variant, written without parentheses
+- option values are resolved with exhaustive `match` or `unwrap_or(default)`
+- receiver helpers: `opt.unwrap_or(default)`, `opt.is_some()`, `opt.is_none()`
+- postfix `?` does not apply to `Option` — that operator belongs to `Result[T, E]`
+- option values participate in equality when the payload type is equality-comparable
+- there is no implicit coercion between `T` and `Option[T]` in either direction
+
 ## RuntimeError
 
 `RuntimeError` is the built-in operational error enum.

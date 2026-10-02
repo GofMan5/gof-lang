@@ -98,6 +98,31 @@ fn halve(value: int) -> Result[int, string]:
 - postfix `expr?` распаковывает `Ok` и делает ранний `return` на `Err`
 - operational helpers тоже возвращают `Result`
 
+## Option
+
+`Option[T]` — явное отсутствие значения: либо `Option.Some(value)`,
+либо `Option.None`. Null в языке нет.
+
+```gof
+fn find_user(id: int) -> Option[string]:
+    if id == 1:
+        return Option.Some("gofer")
+    return Option.None
+
+fn greet(name: Option[string]) -> string:
+    match name:
+        Option.Some(value):
+            return "hello, " + value
+        Option.None:
+            return "hello, stranger"
+```
+
+- `Option.Some(value)` — конструктор с payload; `Option.None` — unit-вариант без скобок
+- отсутствие разрешается исчерпывающим `match` или `unwrap_or(default)`
+- receiver-хелперы: `opt.unwrap_or(default)`, `opt.is_some()`, `opt.is_none()`
+- postfix `?` к `Option` не применяется — это оператор `Result[T, E]`
+- неявной конверсии между `T` и `Option[T]` нет ни в одну сторону
+
 ## RuntimeError
 
 Встроенный operational error enum: `EnvMissing`, `Io`, `ChannelClosed`, `Cancelled`, `TaskFailed`, `TaskPanicked`, `ParseInt`, `EmptySequence`, `Slice`, `Json`, `Csv`, `Toml`, `HttpRequest`, `HttpStatus`.

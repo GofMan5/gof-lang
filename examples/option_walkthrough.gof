@@ -1,0 +1,41 @@
+# Option walkthrough (RFC 0049): explicit absence with Option.Some /
+# Option.None, resolved through `match` or `unwrap_or` — never null and
+# never postfix `?` (that belongs to Result[T, E]).
+
+fn find_user(id: int) -> Option[string]:
+    # Absence is a value, not a missing reference: the None arm carries
+    # the same weight as a payload-bearing Some arm.
+    if id == 1:
+        return Option.Some("gofer")
+    return Option.None
+
+fn greet(name: Option[string]) -> string:
+    # `match` resolves absence exhaustively; the compiler rejects a
+    # non-exhaustive match over Option.
+    match name:
+        Option.Some(value):
+            return "hello, " + value
+        Option.None:
+            return "hello, stranger"
+
+fn main() -> int:
+    a: Option[string] = find_user(1)
+    b: Option[string] = find_user(2)
+
+    # greet handles both arms, so absence never silently leaks.
+    print(greet(a))
+    print(greet(b))
+
+    # unwrap_or supplies a default at the read site.
+    print(b.unwrap_or("anonymous"))
+
+    # Receiver helpers read presence without unwrapping.
+    print(a.is_some())
+    print(b.is_none())
+
+    # Option composes with the rest of the language: equality compares
+    # payloads only when the payload type supports it.
+    same = a == Option.Some("gofer")
+    print(same)
+
+    return 0

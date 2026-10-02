@@ -43,6 +43,27 @@
     ],
     "description": "Defer a call to run LIFO at the exit of the current block (RFC 0045)"
   },
+  "Option Function": {
+    "prefix": "gofoption",
+    "body": [
+      "fn ${1:find}(id: int) -> Option[${2:string}]:",
+      "    if ${3:id == 1}:",
+      "        return Option.Some(${4:value})",
+      "    return Option.None"
+    ],
+    "description": "Create a function that returns Option.Some(value) or Option.None (RFC 0049)"
+  },
+  "Option Match": {
+    "prefix": "gofoptionmatch",
+    "body": [
+      "match ${1:value}:",
+      "    Option.Some(${2:inner}):",
+      "        ${3:return inner}",
+      "    Option.None:",
+      "        ${4:return 0}"
+    ],
+    "description": "Resolve an Option exhaustively through match (RFC 0049)"
+  },
   "Struct": {
     "prefix": "gofstruct",
     "body": [
