@@ -42,12 +42,15 @@ import time
 
 fn main() -> Result[int, RuntimeError]:
     deadline = deadline_after(1000)?
-    writer = open_write_stream_with_timeout("roundtrip.txt", 1000)?
+    # The doctest working directory is docs/site/content/docs/en, so a
+    # relative scratch path would litter the docs tree; route scratch
+    # I/O through the repo's gitignored target/ directory instead.
+    writer = open_write_stream_with_timeout("../../../../target/docs-roundtrip.txt", 1000)?
     writer.write_all_string("hello")?
     writer.flush()?
     writer.close()?
 
-    reader = open_read_stream_with_timeout("roundtrip.txt", 1000)?
+    reader = open_read_stream_with_timeout("../../../../target/docs-roundtrip.txt", 1000)?
     text = reader.read_all_string()?
     reader.close()?
     return Result.Ok(len(text) + deadline.unix_millis() - deadline.unix_millis())

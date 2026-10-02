@@ -29,12 +29,15 @@ import time
 
 fn main() -> Result[int, RuntimeError]:
     deadline = deadline_after(1000)?
-    writer = open_write_stream_with_timeout("roundtrip.txt", 1000)?
+    # Рабочая директория доктеста — docs/site/content/docs/ru, поэтому
+    # относительный scratch-путь замусорил бы дерево доков; scratch-I/O
+    # идёт через гитигноренный target/ репозитория.
+    writer = open_write_stream_with_timeout("../../../../target/docs-roundtrip.txt", 1000)?
     writer.write_all_string("hello")?
     writer.flush()?
     writer.close()?
 
-    reader = open_read_stream_with_timeout("roundtrip.txt", 1000)?
+    reader = open_read_stream_with_timeout("../../../../target/docs-roundtrip.txt", 1000)?
     text = reader.read_all_string()?
     reader.close()?
     return Result.Ok(len(text) + deadline.unix_millis() - deadline.unix_millis())
