@@ -132,6 +132,7 @@ pub enum Value {
     Channel(ChannelValue),
     CancelToken(CancelTokenValue),
     Task(TaskValue),
+    Tuple(Vec<Value>),
     Unit,
 }
 
@@ -150,6 +151,7 @@ impl Debug for Value {
             Self::Channel(_) => f.write_str("Channel(<open>)"),
             Self::CancelToken(_) => f.write_str("CancelToken(<active-or-cancelled>)"),
             Self::Task(_) => f.write_str("Task(<pending-or-completed>)"),
+            Self::Tuple(values) => f.debug_tuple("Tuple").field(values).finish(),
             Self::Unit => f.write_str("Unit"),
         }
     }
@@ -170,6 +172,8 @@ impl PartialEq for Value {
             (Self::Channel(lhs), Self::Channel(rhs)) => lhs.ptr_eq(rhs),
             (Self::CancelToken(lhs), Self::CancelToken(rhs)) => lhs.ptr_eq(rhs),
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
+            // RFC 0050: tuple equality is pairwise and recursive.
+            (Self::Tuple(lhs), Self::Tuple(rhs)) => lhs == rhs,
             (Self::Unit, Self::Unit) => true,
             _ => false,
         }
@@ -200,6 +204,15 @@ impl Value {
             Self::Channel(_) => Some("<channel>".to_string()),
             Self::CancelToken(_) => Some("<cancel_token>".to_string()),
             Self::Task(_) => Some("<task>".to_string()),
+            // RFC 0050 rendering: `(member, member, ...)` recursively.
+            Self::Tuple(values) => Some(format!(
+                "({})",
+                values
+                    .iter()
+                    .map(|value| value.cli_text().unwrap_or_else(|| "unit".to_string()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
             Self::Unit => None,
         }
     }
@@ -1516,7 +1529,7 @@ fn builtin_enum_table() -> HashMap<String, EnumDecl> {
 struct ResolvedMatchPattern {
     enum_name: String,
     variant: String,
-    bindings: Vec<String>,
+    bindings: Vec<crate::ast::BindingPattern>,
 }
 
 #[derive(Clone)]
@@ -3573,24 +3586,6 @@ fn eval_stmt(
             span,
             ..
         } => {
-            // TUPLES-TODO(layer3): tuple destructuring execution. Layer 1
-            // keeps single-name behavior; Tuple patterns were already
-            // rejected by the typed layer, so the evaluator mirrors that
-            // defensively.
-            let name = match pattern {
-                crate::ast::BindingPattern::Name(name, _) => name.clone(),
-                crate::ast::BindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
-            };
-            if scopes.contains_in_current(&name) {
-                return Err(Diagnostics(vec![Diagnostic::error(
-                    "GOF3006",
-                    format!("duplicate binding `{name}`"),
-                    "gof currently does not allow duplicate bindings in the same block scope",
-                    *span,
-                )])
-                .into());
-            }
-
             let value = eval_expr(
                 value,
                 scopes,
@@ -3601,14 +3596,76 @@ fn eval_stmt(
                 output,
                 source_path,
             )?;
-            scopes.define_current(
-                name.clone(),
-                Binding {
-                    mutable: *mutable,
-                    value,
-                },
-            );
-            Ok(EvalOutcome::Next)
+            // RFC 0050 destructuring: tuple patterns split the value
+            // across the leaves; single names keep today's semantics.
+            match pattern {
+                crate::ast::BindingPattern::Name(name, _) => {
+                    if scopes.contains_in_current(name) {
+                        return Err(Diagnostics(vec![Diagnostic::error(
+                            "GOF3006",
+                            format!("duplicate binding `{name}`"),
+                            "gof currently does not allow duplicate bindings in the same block scope",
+                            *span,
+                        )])
+                        .into());
+                    }
+                    scopes.define_current(
+                        name.clone(),
+                        Binding {
+                            mutable: *mutable,
+                            value,
+                        },
+                    );
+                    Ok(EvalOutcome::Next)
+                }
+                crate::ast::BindingPattern::Tuple(leaves, tuple_span) => {
+                    let members = match value {
+                        Value::Tuple(members) => members,
+                        other => {
+                            return Err(Diagnostics(vec![
+                                Diagnostic::error(
+                                    "GOF3156",
+                                    "tuple destructuring requires a tuple value",
+                                    format!(
+                                        "this initializer resolves to `{}`, not a tuple",
+                                        value_name(&other)
+                                    ),
+                                    *tuple_span,
+                                )
+                                .with_fix_it("initialize the pattern from a tuple-typed expression")
+                                .with_source_path(source_path.to_path_buf()),
+                            ])
+                            .into());
+                        }
+                    };
+                    if leaves.len() != members.len() {
+                        return Err(Diagnostics(vec![Diagnostic::error(
+                            "GOF3155",
+                            "tuple destructuring arity mismatch",
+                            format!(
+                                "the pattern expects {} binding(s), but the tuple has {} member(s)",
+                                leaves.len(),
+                                members.len()
+                            ),
+                            *tuple_span,
+                        )
+                        .with_fix_it("match the number of pattern leaves to the tuple arity")
+                        .with_source_path(source_path.to_path_buf())])
+                        .into());
+                    }
+                    for (leaf, member) in leaves.iter().zip(members.into_iter()) {
+                        bind_pattern_leaf(
+                            leaf,
+                            member,
+                            *mutable,
+                            scopes,
+                            *tuple_span,
+                            source_path,
+                        )?;
+                    }
+                    Ok(EvalOutcome::Next)
+                }
+            }
         }
         Stmt::Assign { name, value, span } => {
             let value = eval_expr(
@@ -3901,13 +3958,8 @@ fn eval_stmt(
             body,
             span,
         } => {
-            // TUPLES-TODO(layer3): tuple loop-pattern destructuring.
-            // Layer 1 keeps single-name behavior; Tuple patterns were
-            // already rejected by the typed layer.
-            let binding = match pattern {
-                crate::ast::BindingPattern::Name(name, _) => name.clone(),
-                crate::ast::BindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
-            };
+            // RFC 0050 loop patterns: each element destructures across
+            // the pattern leaves; single names keep today's semantics.
             let iterable = eval_expr(
                 iterable,
                 scopes,
@@ -3922,13 +3974,63 @@ fn eval_stmt(
 
             for item in items {
                 scopes.push();
-                scopes.define_current(
-                    binding.clone(),
-                    Binding {
-                        mutable: false,
-                        value: item,
-                    },
-                );
+                match pattern {
+                    crate::ast::BindingPattern::Name(binding, _) => {
+                        scopes.define_current(
+                            binding.clone(),
+                            Binding {
+                                mutable: false,
+                                value: item,
+                            },
+                        );
+                    }
+                    crate::ast::BindingPattern::Tuple(leaves, tuple_span) => {
+                        let members = match item {
+                            Value::Tuple(members) => members,
+                            other => {
+                                scopes.pop();
+                                return Err(Diagnostics(vec![Diagnostic::error(
+                                    "GOF3156",
+                                    "tuple loop patterns require tuple elements",
+                                    format!(
+                                        "this element resolves to `{}`, not a tuple",
+                                        value_name(&other)
+                                    ),
+                                    *tuple_span,
+                                )
+                                .with_fix_it("iterate a list of tuples, or bind each element to one name")
+                                .with_source_path(source_path.to_path_buf())])
+                                .into());
+                            }
+                        };
+                        if leaves.len() != members.len() {
+                            scopes.pop();
+                            return Err(Diagnostics(vec![Diagnostic::error(
+                                "GOF3155",
+                                "tuple loop pattern arity mismatch",
+                                format!(
+                                    "the pattern expects {} binding(s), but each element has {} member(s)",
+                                    leaves.len(),
+                                    members.len()
+                                ),
+                                *tuple_span,
+                            )
+                            .with_fix_it("match the number of pattern leaves to the element arity")
+                            .with_source_path(source_path.to_path_buf())])
+                            .into());
+                        }
+                        for (leaf, member) in leaves.iter().zip(members.into_iter()) {
+                            bind_pattern_leaf(
+                                leaf,
+                                member,
+                                false,
+                                scopes,
+                                *tuple_span,
+                                source_path,
+                            )?;
+                        }
+                    }
+                }
                 match eval_block(
                     body,
                     scopes,
@@ -4048,13 +4150,70 @@ fn eval_stmt(
                     for (binding, (_, payload_value)) in
                         pattern.bindings.iter().zip(target_enum.payloads.iter())
                     {
-                        scopes.define_current(
-                            binding.clone(),
-                            Binding {
-                                mutable: false,
-                                value: payload_value.clone(),
-                            },
-                        );
+                        // RFC 0050 payload patterns: Name leaves bind
+                        // directly (today's behavior); Tuple leaves
+                        // destructure the payload value.
+                        match binding {
+                            crate::ast::BindingPattern::Name(name, _) => {
+                                scopes.define_current(
+                                    name.clone(),
+                                    Binding {
+                                        mutable: false,
+                                        value: payload_value.clone(),
+                                    },
+                                );
+                            }
+                            crate::ast::BindingPattern::Tuple(leaves, tuple_span) => {
+                                let members = match payload_value {
+                                    Value::Tuple(members) => members.clone(),
+                                    other => {
+                                        scopes.pop();
+                                        return Err(Diagnostics(vec![Diagnostic::error(
+                                            "GOF3156",
+                                            "tuple payload patterns require a tuple payload",
+                                            format!(
+                                                "this payload resolves to `{}`, not a tuple",
+                                                value_name(other)
+                                            ),
+                                            *tuple_span,
+                                        )
+                                        .with_fix_it(
+                                            "bind the payload to a single name for non-tuple fields",
+                                        )
+                                        .with_source_path(source_path.to_path_buf())])
+                                        .into());
+                                    }
+                                };
+                                if leaves.len() != members.len() {
+                                    scopes.pop();
+                                    return Err(Diagnostics(vec![Diagnostic::error(
+                                        "GOF3155",
+                                        "tuple payload pattern arity mismatch",
+                                        format!(
+                                            "the pattern expects {} binding(s), but the payload tuple has {} member(s)",
+                                            leaves.len(),
+                                            members.len()
+                                        ),
+                                        *tuple_span,
+                                    )
+                                    .with_fix_it(
+                                        "match the number of pattern leaves to the payload arity",
+                                    )
+                                    .with_source_path(source_path.to_path_buf())])
+                                    .into());
+                                }
+                                for (leaf, member) in leaves.iter().zip(members.into_iter()) {
+                                    bind_pattern_leaf(
+                                        leaf,
+                                        member,
+                                        false,
+                                        scopes,
+                                        *tuple_span,
+                                        source_path,
+                                    )?;
+                                }
+                            }
+                        }
                     }
                     let result = eval_block(
                         &arm.body,
@@ -5627,26 +5786,137 @@ fn eval_expr(
                 eval_expr(rhs, scopes, functions, methods, structs, enums, output, source_path)?;
             Ok(eval_binary(lhs, *op, rhs, *span, source_path)?)
         }
-        // TUPLES-TODO(layer3): tuple evaluation (Value::Tuple) and
-        // TupleIndex member loads. Layer 1 keeps the evaluator safe:
-        // tuple literals and `.N` access are already rejected by the
-        // typed layer, so these arms only mirror that defensively.
-        Expr::Tuple { span, .. } => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
-            "GOF3155",
-            "tuple literals are not lowered yet",
-            "tuple literals parse, but evaluation lands with the tuples semantic slice",
-            *span,
-        )
-        .with_fix_it("use separate bindings until the tuples slice lands")
-        .with_source_path(source_path.to_path_buf())])),
-        Expr::TupleIndex { span, .. } => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
-            "GOF3157",
-            "tuple element access is not lowered yet",
-            "tuple `.N` access parses, but evaluation lands with the tuples semantic slice",
-            *span,
-        )
-        .with_fix_it("access tuple members through a single binding until the tuples slice lands")
-        .with_source_path(source_path.to_path_buf())])),
+        // RFC 0050 tuple literals: members evaluate left to right into a
+        // Value::Tuple (value semantics, cheap to clone).
+        Expr::Tuple { items, span } => {
+            let mut values = Vec::with_capacity(items.len());
+            for item in items {
+                values.push(eval_expr(
+                    item,
+                    scopes,
+                    functions,
+                    methods,
+                    structs,
+                    enums,
+                    output,
+                    source_path,
+                )?);
+            }
+            Ok(Value::Tuple(values))
+        }
+        // RFC 0050 element access: `.N` loads the Nth member. The typed
+        // layer guarantees range and tuple-ness; a defensive runtime
+        // check keeps the evaluator total.
+        Expr::TupleIndex {
+            target,
+            index,
+            span,
+        } => {
+            let target =
+                eval_expr(target, scopes, functions, methods, structs, enums, output, source_path)?;
+            match target {
+                Value::Tuple(values) => match values.get(*index) {
+                    Some(member) => Ok(member.clone()),
+                    None => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
+                        "GOF3157",
+                        format!("index {index} is out of range for a tuple of {} member(s)", values.len()),
+                        "tuple element access must stay within the tuple arity",
+                        *span,
+                    )
+                    .with_fix_it(format!("use an index between 0 and {}", values.len().saturating_sub(1)))
+                    .with_source_path(source_path.to_path_buf())])),
+                },
+                other => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
+                    "GOF3157",
+                    "tuple element access requires a tuple value",
+                    format!("this target resolves to `{}`, not a tuple", value_name(&other)),
+                    *span,
+                )
+                .with_fix_it("apply `.N` only to tuple values")
+                .with_source_path(source_path.to_path_buf())])),
+            }
+        }
+    }
+}
+
+/// Bind one destructuring leaf to a member value: Name leaves follow
+/// today's Bind semantics; nested Tuple leaves recurse. Existing
+/// mutable names reassign, fresh names bind immutably unless `mut`
+/// distributes to the whole pattern.
+fn bind_pattern_leaf(
+    leaf: &crate::ast::BindingPattern,
+    member: Value,
+    mutable: bool,
+    scopes: &mut ScopeStack,
+    span: Span,
+    source_path: &Path,
+) -> EvalResult<()> {
+    match leaf {
+        crate::ast::BindingPattern::Name(name, _) => {
+            // Reassigning an existing binding through a destructuring
+            // pattern keeps the binding's own mutability (matching the
+            // typed layer's contract); fresh names take the pattern's
+            // distributed `mut`.
+            if let Some(existing) = scopes.get_mut(name) {
+                existing.value = member;
+            } else {
+                scopes.define_current(
+                    name.clone(),
+                    Binding {
+                        mutable,
+                        value: member,
+                    },
+                );
+            }
+            Ok(())
+        }
+        crate::ast::BindingPattern::Tuple(leaves, tuple_span) => {
+            let members = match member {
+                Value::Tuple(members) => members,
+                other => {
+                    return Err(Diagnostics(vec![
+                        Diagnostic::error(
+                            "GOF3156",
+                            "tuple destructuring requires a tuple value",
+                            format!(
+                                "this member resolves to `{}`, not a nested tuple",
+                                value_name(&other)
+                            ),
+                            span,
+                        )
+                        .with_fix_it("use an identifier leaf for non-tuple members")
+                        .with_source_path(source_path.to_path_buf()),
+                    ])
+                    .into());
+                }
+            };
+            if leaves.len() != members.len() {
+                return Err(Diagnostics(vec![Diagnostic::error(
+                    "GOF3155",
+                    "tuple destructuring arity mismatch",
+                    format!(
+                        "the nested pattern expects {} binding(s), but the member tuple has {} member(s)",
+                        leaves.len(),
+                        members.len()
+                    ),
+                    *tuple_span,
+                )
+                .with_fix_it("match the number of pattern leaves to the tuple arity")
+                .with_source_path(source_path.to_path_buf())])
+                .into());
+            }
+            for (nested_leaf, nested_member) in leaves.iter().zip(members.into_iter()) {
+                bind_pattern_leaf(
+                    nested_leaf,
+                    nested_member,
+                    mutable,
+                    scopes,
+                    *tuple_span,
+                    source_path,
+                )?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -6177,18 +6447,9 @@ fn resolve_match_pattern(
 
     let variant_fields = match_variant_field_names(enum_name, field, enums, *span, source_path)?;
 
-    // TUPLES-TODO(layer3): tuple payload-pattern destructuring at
-    // evaluation. Layer 1 flattens Name leaves (today's behavior) and
-    // defers Tuple leaves; the typed layer already rejects them.
-    let flat_bindings = bindings
-        .iter()
-        .map(|binding| match binding {
-            crate::ast::BindingPattern::Name(name, _) => name.clone(),
-            crate::ast::BindingPattern::Tuple(_, _) => "__tuple_unsupported".to_string(),
-        })
-        .collect::<Vec<_>>();
-
-    if variant_fields.len() != flat_bindings.len() {
+    // RFC 0050 payload patterns: bindings keep their structure so the
+    // arm execution destructures tuple payloads per leaf.
+    if variant_fields.len() != bindings.len() {
         return eval_diagnostics(Diagnostics(vec![
             Diagnostic::error(
                 "GOF3071",
@@ -6198,7 +6459,7 @@ fn resolve_match_pattern(
                 format!(
                     "expected {} binding(s), got {}",
                     variant_fields.len(),
-                    flat_bindings.len()
+                    bindings.len()
                 ),
                 *span,
             )
@@ -6219,7 +6480,7 @@ fn resolve_match_pattern(
     Ok(ResolvedMatchPattern {
         enum_name: enum_name.clone(),
         variant: field.clone(),
-        bindings: flat_bindings,
+        bindings: bindings.clone(),
     })
 }
 
@@ -6308,6 +6569,27 @@ fn eval_binary(
         (Value::Dict(lhs), BinaryOp::Ne, Value::Dict(rhs)) => Ok(Value::Bool(lhs != rhs)),
         (Value::Unit, BinaryOp::Eq, Value::Unit) => Ok(Value::Bool(true)),
         (Value::Unit, BinaryOp::Ne, Value::Unit) => Ok(Value::Bool(false)),
+        // RFC 0050: tuple equality is pairwise; ordering is
+        // lexicographic, left to right, short-circuiting at the first
+        // unequal member. The typed layer guarantees the operand
+        // capability; member ordering recurses through this match.
+        (Value::Tuple(lhs), op @ (BinaryOp::Eq | BinaryOp::Ne), Value::Tuple(rhs)) => {
+            Ok(Value::Bool(match op {
+                BinaryOp::Eq => lhs == rhs,
+                _ => lhs != rhs,
+            }))
+        }
+        (Value::Tuple(lhs), op, Value::Tuple(rhs)) => {
+            let ordering = tuple_lexicographic_ordering(&lhs, &rhs);
+            let result = match op {
+                BinaryOp::Lt => ordering == std::cmp::Ordering::Less,
+                BinaryOp::Le => ordering != std::cmp::Ordering::Greater,
+                BinaryOp::Gt => ordering == std::cmp::Ordering::Greater,
+                BinaryOp::Ge => ordering != std::cmp::Ordering::Less,
+                _ => unreachable!("tuple non-comparison operators are handled above"),
+            };
+            Ok(Value::Bool(result))
+        }
         _ => eval_diagnostics(Diagnostics(vec![Diagnostic::error(
             "GOF3001",
             "unsupported expression in bootstrap evaluator",
@@ -6316,6 +6598,24 @@ fn eval_binary(
         )
         .with_source_path(source_path.to_path_buf())])),
     }
+}
+
+/// RFC 0050 lexicographic tuple ordering: members compare left to
+/// right, short-circuiting at the first unequal pair. Ints compare
+/// numerically, strings bytewise, nested tuples recursively.
+fn tuple_lexicographic_ordering(lhs: &[Value], rhs: &[Value]) -> std::cmp::Ordering {
+    for (lhs_member, rhs_member) in lhs.iter().zip(rhs.iter()) {
+        let member_ordering = match (lhs_member, rhs_member) {
+            (Value::Int(lhs), Value::Int(rhs)) => lhs.cmp(rhs),
+            (Value::String(lhs), Value::String(rhs)) => lhs.cmp(rhs),
+            (Value::Tuple(lhs), Value::Tuple(rhs)) => tuple_lexicographic_ordering(lhs, rhs),
+            _ => std::cmp::Ordering::Equal,
+        };
+        if member_ordering != std::cmp::Ordering::Equal {
+            return member_ordering;
+        }
+    }
+    lhs.len().cmp(&rhs.len())
 }
 
 fn binary_op_name(op: BinaryOp) -> &'static str {
@@ -13870,9 +14170,11 @@ fn render_template_value(value: &Value, key: &str) -> Result<String, String> {
         Value::Int(value) => Ok(value.to_string()),
         Value::Bool(value) => Ok(value.to_string()),
         Value::Json(value) => Ok(render_json_template_value(value)),
-        Value::Struct(_) | Value::Enum(_) | Value::List(_) | Value::Dict(_) => value
-            .cli_text()
-            .ok_or_else(|| format!("template key `{key}` cannot be rendered as text")),
+        Value::Struct(_) | Value::Enum(_) | Value::List(_) | Value::Dict(_) | Value::Tuple(_) => {
+            value
+                .cli_text()
+                .ok_or_else(|| format!("template key `{key}` cannot be rendered as text"))
+        }
         Value::Opaque(_)
         | Value::Channel(_)
         | Value::CancelToken(_)
@@ -14407,6 +14709,7 @@ fn value_name(value: &Value) -> &'static str {
         Value::Channel(_) => "channel",
         Value::CancelToken(_) => "cancel_token",
         Value::Task(_) => "task",
+        Value::Tuple(_) => "tuple",
         Value::Unit => "unit",
     }
 }

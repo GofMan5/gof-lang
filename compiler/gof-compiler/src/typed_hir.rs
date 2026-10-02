@@ -2102,42 +2102,49 @@ fn lower_stmt(
                     ("__tuple_destructure".to_string(), *span)
                 }
             };
-            if scopes.contains_in_current(&name) {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "GOF3006",
-                        format!("duplicate binding `{name}`"),
-                        "gof currently does not allow duplicate bindings in the same block scope",
-                        name_span,
-                    )
-                    .with_fix_it("rename this binding or reuse the existing one")
-                    .with_source_path(source_path.to_path_buf()),
-                );
-            }
+            // Tuple patterns already defined their leaves above; the
+            // synthetic anchor exists only in the typed output, not in
+            // scopes (a second tuple bind in the same scope must not
+            // collide with it).
+            let is_tuple_pattern = matches!(pattern, HirBindingPattern::Tuple(_, _));
+            if !is_tuple_pattern {
+                if scopes.contains_in_current(&name) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3006",
+                            format!("duplicate binding `{name}`"),
+                            "gof currently does not allow duplicate bindings in the same block scope",
+                            name_span,
+                        )
+                        .with_fix_it("rename this binding or reuse the existing one")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
 
-            if ty.is_some() {
-                ensure_type_compatibility(
-                    &declared_type,
-                    &value.ty,
-                    name_span,
-                    diagnostics,
-                    format!("binding `{name}` has incompatible annotated type"),
-                    format!(
-                        "the binding is annotated as `{}`, but the initializer resolves to `{}`",
-                        declared_type.display_name(),
-                        value.ty.display_name()
-                    ),
-                    source_path,
+                if ty.is_some() {
+                    ensure_type_compatibility(
+                        &declared_type,
+                        &value.ty,
+                        name_span,
+                        diagnostics,
+                        format!("binding `{name}` has incompatible annotated type"),
+                        format!(
+                            "the binding is annotated as `{}`, but the initializer resolves to `{}`",
+                            declared_type.display_name(),
+                            value.ty.display_name()
+                        ),
+                        source_path,
+                    );
+                }
+                let binding_type = combine_declared_and_actual_type(&declared_type, &value.ty);
+                scopes.define_current(
+                    name.clone(),
+                    LocalBinding {
+                        mutable: *mutable,
+                        ty: binding_type,
+                    },
                 );
             }
-            let binding_type = combine_declared_and_actual_type(&declared_type, &value.ty);
-            scopes.define_current(
-                name.clone(),
-                LocalBinding {
-                    mutable: *mutable,
-                    ty: binding_type,
-                },
-            );
 
             TypedStmt::Bind {
                 name: name.clone(),
@@ -3246,9 +3253,10 @@ fn ensure_match_exhaustive(
 }
 
 /// Type one destructuring leaf against a tuple member type. Name leaves
-/// follow today's Bind semantics (fresh = immutable local; existing mut
-/// binding = reassign with compatibility; existing immutable = GOF3003);
-/// nested Tuple leaves recurse with the member's tuple type.
+/// follow the Bind/Assign contract: fresh names bind (immutably unless
+/// `mut` distributes); existing mutable bindings reassign with type
+/// compatibility; existing immutable bindings are GOF3003. Nested Tuple
+/// leaves recurse with the member's tuple type.
 fn type_binding_pattern_leaf(
     leaf: &HirBindingPattern,
     member_ty: &Type,
@@ -3259,25 +3267,43 @@ fn type_binding_pattern_leaf(
 ) {
     match leaf {
         HirBindingPattern::Name(name, span) => {
-            if scopes.contains_in_current(name) {
-                diagnostics.push(
-                    Diagnostic::error(
-                        "GOF3006",
-                        format!("duplicate binding `{name}`"),
-                        "gof currently does not allow duplicate bindings in the same block scope",
+            if let Some(existing) = scopes.get_mut(name) {
+                if !existing.mutable {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3003",
+                            format!("cannot reassign immutable binding `{name}`"),
+                            "bindings declared without `mut` are immutable after their first assignment",
+                            *span,
+                        )
+                        .with_fix_it("declare the binding as `mut name = ...` before reassigning it")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                } else {
+                    ensure_type_compatibility(
+                        &existing.ty,
+                        member_ty,
                         *span,
-                    )
-                    .with_fix_it("rename this binding or reuse the existing one")
-                    .with_source_path(source_path.to_path_buf()),
+                        diagnostics,
+                        format!("assignment to `{name}` violates its type"),
+                        format!(
+                            "the binding holds `{}`, but the destructured member resolves to `{}`",
+                            existing.ty.display_name(),
+                            member_ty.display_name()
+                        ),
+                        source_path,
+                    );
+                    existing.ty = combine_declared_and_actual_type(&existing.ty, member_ty);
+                }
+            } else {
+                scopes.define_current(
+                    name.clone(),
+                    LocalBinding {
+                        mutable,
+                        ty: member_ty.clone(),
+                    },
                 );
             }
-            scopes.define_current(
-                name.clone(),
-                LocalBinding {
-                    mutable,
-                    ty: member_ty.clone(),
-                },
-            );
         }
         HirBindingPattern::Tuple(leaves, span) => {
             let nested_members = match member_ty {
