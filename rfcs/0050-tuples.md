@@ -213,6 +213,8 @@ fn is_grow(gesture: Gesture) -> bool:
 ```
 
 ```gof text
+import testing
+
 fn divmod(a: int, b: int) -> Result[(int, int), RuntimeError]:
     if b == 0:
         return Result.Err(RuntimeError.Io("division by zero"))
@@ -315,7 +317,9 @@ Tuples are ordinary values and types in every existing position:
 ### Rendering
 
 Tuples render as `(member, member, ...)` recursively, so `print`,
-`to_string`, `TestContext.equal`, and snapshots show `(1, "x")`. There is
+`to_string`, `TestContext.equal`, and snapshots show `(1, x)` — string
+members render unquoted, matching the existing list/dict rendering
+convention (`[a, b]`, not `["a", "b"]`). There is
 no tuple-to-`json` bridge: JSON helpers keep requiring `json` values and
 converting a tuple is explicit `to_string` — no implicit coercion.
 
@@ -443,20 +447,29 @@ This RFC adds three error codes:
 
 - `GOF3155`: invalid tuple arity or shape — single-element or empty tuple
   forms (`(x,)`, `()`, `(T,)`, `(T)`, `(p)` in pattern or target
-  position), trailing commas, destructuring or match-pattern arity that
-  does not match the tuple's member count, and tuple-literal arity that
-  does not match its expected type. Fix-it: remove the trailing comma or
-  parentheses, or add or remove bindings
-- `GOF3156`: incompatible tuple member type — a member expression or type
-  that does not match the corresponding member type in annotations,
-  parameters, returns, type arguments, struct fields, enum payload
-  construction, or container elements; destructuring a value that is not
-  a tuple; a tuple pattern applied to a non-tuple payload field. The note
-  names the expected and found member types and positions
-- `GOF3157`: invalid tuple element access — a non-canonical integer
-  literal after `.`, element access on a non-tuple value, an index outside
-  the tuple's arity, or extraction of an owned member (note: destructure
-  the tuple or `clone` it)
+  position), trailing commas, and destructuring or match-pattern arity
+  that does not match the tuple's member count. Fix-it: remove the
+  trailing comma or parentheses, or add or remove bindings
+- `GOF3156`: tuple destructuring against a non-tuple value — a
+  destructuring pattern applied to a value or payload field that is not
+  a tuple (including nested leaves). The note names the expected and
+  found member types
+- `GOF3157`: invalid tuple element access — element access on a
+  non-tuple value or an index outside the tuple's arity (extraction of
+  an owned member joins with RFC 0043's move checker when owned taxa
+  land)
+
+Implementation amendment (review-verified): where tuple member types
+flow through EXISTING position machinery — annotated bindings,
+parameters, returns, type arguments, struct fields, enum payload
+construction, and container elements — the existing position codes
+fire (`GOF3013` for type mismatches, `GOF3017` for list-element
+mismatches), with the tuple member types named in their notes. The
+three new codes own the tuple-SPECIFIC shapes above instead of
+duplicating position checks. Comparing different tuple types likewise
+reuses `GOF3087` with both types in the note (the "type error, not a
+capability question" wording above is satisfied by the note carrying
+the mismatched types; no separate code is allocated).
 
 Existing codes keep their contracts: comparison-capability violations
 reuse `GOF3087`; consuming an owned-member tuple through destructuring

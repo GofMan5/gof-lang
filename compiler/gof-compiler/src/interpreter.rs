@@ -3658,6 +3658,7 @@ fn eval_stmt(
                             leaf,
                             member,
                             *mutable,
+                            PatternBindingMode::Reassign,
                             scopes,
                             *tuple_span,
                             source_path,
@@ -4024,6 +4025,9 @@ fn eval_stmt(
                                 leaf,
                                 member,
                                 false,
+                                // Loop leaves shadow outer bindings per
+                                // iteration, like single-name for.
+                                PatternBindingMode::Fresh,
                                 scopes,
                                 *tuple_span,
                                 source_path,
@@ -4207,6 +4211,10 @@ fn eval_stmt(
                                         leaf,
                                         member,
                                         false,
+                                        // Match-arm leaves bind fresh in
+                                        // the arm scope, never mutating
+                                        // outer bindings.
+                                        PatternBindingMode::Fresh,
                                         scopes,
                                         *tuple_span,
                                         source_path,
@@ -5788,7 +5796,7 @@ fn eval_expr(
         }
         // RFC 0050 tuple literals: members evaluate left to right into a
         // Value::Tuple (value semantics, cheap to clone).
-        Expr::Tuple { items, span } => {
+        Expr::Tuple { items, .. } => {
             let mut values = Vec::with_capacity(items.len());
             for item in items {
                 values.push(eval_expr(
@@ -5839,34 +5847,60 @@ fn eval_expr(
     }
 }
 
+/// How destructuring leaves bind at one call site.
+#[derive(Clone, Copy, PartialEq)]
+enum PatternBindingMode {
+    /// Bind statements: fresh names bind; existing bindings reassign
+    /// (the swap `(a, b) = (b, a)` needs the RHS evaluated first, then
+    /// per-leaf reassignment).
+    Reassign,
+    /// Loop bodies and match arms: leaves always define fresh bindings
+    /// in the pushed iteration/arm scope, shadowing outer names exactly
+    /// like today's single-name loop binding and payload binding do.
+    Fresh,
+}
+
 /// Bind one destructuring leaf to a member value: Name leaves follow
-/// today's Bind semantics; nested Tuple leaves recurse. Existing
-/// mutable names reassign, fresh names bind immutably unless `mut`
-/// distributes to the whole pattern.
+/// the mode (reassign vs fresh); nested Tuple leaves recurse.
 fn bind_pattern_leaf(
     leaf: &crate::ast::BindingPattern,
     member: Value,
     mutable: bool,
+    mode: PatternBindingMode,
     scopes: &mut ScopeStack,
     span: Span,
     source_path: &Path,
 ) -> EvalResult<()> {
     match leaf {
         crate::ast::BindingPattern::Name(name, _) => {
-            // Reassigning an existing binding through a destructuring
-            // pattern keeps the binding's own mutability (matching the
-            // typed layer's contract); fresh names take the pattern's
-            // distributed `mut`.
-            if let Some(existing) = scopes.get_mut(name) {
-                existing.value = member;
-            } else {
-                scopes.define_current(
-                    name.clone(),
-                    Binding {
-                        mutable,
-                        value: member,
-                    },
-                );
+            match mode {
+                PatternBindingMode::Reassign => {
+                    // Reassigning an existing binding through a
+                    // destructuring pattern keeps the binding's own
+                    // mutability (matching the typed layer's contract).
+                    if let Some(existing) = scopes.get_mut(name) {
+                        existing.value = member;
+                    } else {
+                        scopes.define_current(
+                            name.clone(),
+                            Binding {
+                                mutable,
+                                value: member,
+                            },
+                        );
+                    }
+                }
+                PatternBindingMode::Fresh => {
+                    scopes.define_current(
+                        name.clone(),
+                        Binding {
+                            // Loop and match leaves are immutable inside
+                            // their scope; `mut` never distributes here.
+                            mutable: false,
+                            value: member,
+                        },
+                    );
+                }
             }
             Ok(())
         }
@@ -5910,6 +5944,7 @@ fn bind_pattern_leaf(
                     nested_leaf,
                     nested_member,
                     mutable,
+                    mode,
                     scopes,
                     *tuple_span,
                     source_path,

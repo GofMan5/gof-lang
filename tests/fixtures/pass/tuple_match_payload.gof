@@ -1,0 +1,45 @@
+# Match-payload tuple destructuring (RFC 0050): payload patterns bind
+# fresh in the arm scope — outer bindings are never mutated — and the
+# Gesture shape from the RFC round-trips.
+
+enum Gesture:
+    Pan(delta: (int, int))
+    Pinch(start: (int, int), end: (int, int))
+
+enum Wrap:
+    Box(pair: (int, int))
+
+fn main() -> int:
+    g = Gesture.Pan((-3, 7))
+    match g:
+        Gesture.Pan((dx, dy)):
+            assert(dx == -3, "expected the first payload member")
+            assert(dy == 7, "expected the second payload member")
+        Gesture.Pinch((x0, y0), (x1, y1)):
+            assert(false, "expected the pan arm")
+
+    p = Gesture.Pinch((1, 2), (10, 20))
+    match p:
+        Gesture.Pan((dx, dy)):
+            assert(false, "expected the pinch arm")
+        Gesture.Pinch((x0, y0), (x1, y1)):
+            assert(x1 - x0 == 9, "expected the pinch deltas")
+            assert(y1 - y0 == 18, "expected the pinch delta span")
+
+    # Leaves shadow: the outer immutable `a` must stay untouched.
+    a = 100
+    w = Wrap.Box((7, 8))
+    match w:
+        Wrap.Box((a, b)):
+            assert(a == 7, "expected the arm-local leaf")
+            assert(b == 8, "expected the second arm-local leaf")
+    assert(a == 100, "expected the outer binding to stay untouched")
+
+    # Result payloads destructure the same way.
+    pair_result = Result.Ok((5, 6))
+    match pair_result:
+        Result.Ok((x, y)):
+            assert(x + y == 11, "expected the result payload members")
+        Result.Err(e):
+            assert(false, "expected the ok arm")
+    return 0

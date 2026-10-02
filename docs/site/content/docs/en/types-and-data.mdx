@@ -280,6 +280,10 @@ It currently includes:
 Methods are explicit, not magical.
 
 ```gof
+struct Point:
+    x: int
+    y: int
+
 fn Point.with_bonus(self: Point, extra: int) -> int:
     return self.x + self.y + extra
 ```

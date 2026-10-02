@@ -2004,7 +2004,7 @@ fn lower_stmt(
             mutable,
             ty,
             value,
-            span,
+            ..
         } => {
             let value = lower_expr(
                 value,
@@ -2080,6 +2080,7 @@ fn lower_stmt(
                                     leaf,
                                     member_ty,
                                     *mutable,
+                                    PatternBindingMode::Reassign,
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -2092,6 +2093,7 @@ fn lower_stmt(
                                     leaf,
                                     &Type::Unknown,
                                     *mutable,
+                                    PatternBindingMode::Reassign,
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -2504,6 +2506,9 @@ fn lower_stmt(
                                     leaf,
                                     member_ty,
                                     false,
+                                    // Loop leaves shadow outer bindings
+                                    // per iteration, like single-name for.
+                                    PatternBindingMode::Fresh,
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -2517,6 +2522,7 @@ fn lower_stmt(
                                     leaf,
                                     &Type::Unknown,
                                     false,
+                                    PatternBindingMode::Fresh,
                                     scopes,
                                     diagnostics,
                                     source_path,
@@ -3111,12 +3117,24 @@ fn lower_match_pattern(
                         .iter()
                         .zip(members.iter().chain(std::iter::repeat(&Type::Unknown)));
                     for (leaf, member_ty) in zipped {
-                        collect_payload_pattern_bindings(leaf, member_ty, &mut typed_bindings);
+                        collect_payload_pattern_bindings(
+                            leaf,
+                            member_ty,
+                            &mut typed_bindings,
+                            diagnostics,
+                            source_path,
+                        );
                     }
                 }
                 Type::Unknown => {
                     for leaf in leaves {
-                        collect_payload_pattern_bindings(leaf, &Type::Unknown, &mut typed_bindings);
+                        collect_payload_pattern_bindings(
+                            leaf,
+                            &Type::Unknown,
+                            &mut typed_bindings,
+                            diagnostics,
+                            source_path,
+                        );
                     }
                 }
                 other => {
@@ -3158,10 +3176,15 @@ fn lower_match_pattern(
 
 /// Expand one payload-pattern leaf into flat typed bindings: Name leaves
 /// bind directly; nested Tuple leaves recurse through the member type.
+/// Emits the same GOF3155/GOF3156 diagnostics as `type_binding_pattern_leaf`
+/// so nested payload mismatches are compile-time (typed HIR owns the
+/// checks; the evaluator's defensive runtime checks are a backstop).
 fn collect_payload_pattern_bindings(
     leaf: &HirBindingPattern,
     member_ty: &Type,
     typed_bindings: &mut Vec<TypedMatchBinding>,
+    diagnostics: &mut Diagnostics,
+    source_path: &Path,
 ) {
     match leaf {
         HirBindingPattern::Name(name, _) => {
@@ -3170,18 +3193,56 @@ fn collect_payload_pattern_bindings(
                 ty: member_ty.clone(),
             });
         }
-        HirBindingPattern::Tuple(leaves, _) => {
+        HirBindingPattern::Tuple(leaves, tuple_span) => {
             let nested = match member_ty {
                 Type::Tuple(members) => Some(members.clone()),
-                _ => None,
+                Type::Unknown => None,
+                other => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3156",
+                            "tuple payload patterns require a tuple payload",
+                            format!(
+                                "this payload member resolves to `{}`, not a nested tuple",
+                                other.display_name()
+                            ),
+                            *tuple_span,
+                        )
+                        .with_fix_it("use an identifier leaf for non-tuple members")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                    None
+                }
             };
             match nested {
                 Some(members) => {
+                    if leaves.len() != members.len() {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3155",
+                                "tuple payload pattern arity mismatch",
+                                format!(
+                                    "the nested pattern expects {} binding(s), but the payload tuple has {} member(s)",
+                                    leaves.len(),
+                                    members.len()
+                                ),
+                                *tuple_span,
+                            )
+                            .with_fix_it("match the number of pattern leaves to the payload arity")
+                            .with_source_path(source_path.to_path_buf()),
+                        );
+                    }
                     let zipped = leaves
                         .iter()
                         .zip(members.iter().chain(std::iter::repeat(&Type::Unknown)));
                     for (nested_leaf, nested_ty) in zipped {
-                        collect_payload_pattern_bindings(nested_leaf, nested_ty, typed_bindings);
+                        collect_payload_pattern_bindings(
+                            nested_leaf,
+                            nested_ty,
+                            typed_bindings,
+                            diagnostics,
+                            source_path,
+                        );
                     }
                 }
                 None => {
@@ -3190,6 +3251,8 @@ fn collect_payload_pattern_bindings(
                             nested_leaf,
                             &Type::Unknown,
                             typed_bindings,
+                            diagnostics,
+                            source_path,
                         );
                     }
                 }
@@ -3252,57 +3315,82 @@ fn ensure_match_exhaustive(
     }
 }
 
-/// Type one destructuring leaf against a tuple member type. Name leaves
-/// follow the Bind/Assign contract: fresh names bind (immutably unless
-/// `mut` distributes); existing mutable bindings reassign with type
-/// compatibility; existing immutable bindings are GOF3003. Nested Tuple
-/// leaves recurse with the member's tuple type.
+/// How destructuring leaves type-check at one call site.
+#[derive(Clone, Copy, PartialEq)]
+enum PatternBindingMode {
+    /// Bind statements: existing mutable bindings reassign with type
+    /// compatibility; existing immutable bindings report GOF3003.
+    Reassign,
+    /// Loop bodies and match arms: leaves always bind fresh (shadowing
+    /// outer names), exactly like today's single-name loop and payload
+    /// bindings.
+    Fresh,
+}
+
+/// Type one destructuring leaf against a tuple member type following
+/// the mode. Nested Tuple leaves recurse with the member's tuple type.
 fn type_binding_pattern_leaf(
     leaf: &HirBindingPattern,
     member_ty: &Type,
     mutable: bool,
+    mode: PatternBindingMode,
     scopes: &mut ScopeStack,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) {
     match leaf {
         HirBindingPattern::Name(name, span) => {
-            if let Some(existing) = scopes.get_mut(name) {
-                if !existing.mutable {
-                    diagnostics.push(
-                        Diagnostic::error(
-                            "GOF3003",
-                            format!("cannot reassign immutable binding `{name}`"),
-                            "bindings declared without `mut` are immutable after their first assignment",
-                            *span,
-                        )
-                        .with_fix_it("declare the binding as `mut name = ...` before reassigning it")
-                        .with_source_path(source_path.to_path_buf()),
-                    );
-                } else {
-                    ensure_type_compatibility(
-                        &existing.ty,
-                        member_ty,
-                        *span,
-                        diagnostics,
-                        format!("assignment to `{name}` violates its type"),
-                        format!(
-                            "the binding holds `{}`, but the destructured member resolves to `{}`",
-                            existing.ty.display_name(),
-                            member_ty.display_name()
-                        ),
-                        source_path,
-                    );
-                    existing.ty = combine_declared_and_actual_type(&existing.ty, member_ty);
+            match mode {
+                PatternBindingMode::Reassign => {
+                    if let Some(existing) = scopes.get_mut(name) {
+                        if !existing.mutable {
+                            diagnostics.push(
+                                Diagnostic::error(
+                                    "GOF3003",
+                                    format!("cannot reassign immutable binding `{name}`"),
+                                    "bindings declared without `mut` are immutable after their first assignment",
+                                    *span,
+                                )
+                                .with_fix_it("declare the binding as `mut name = ...` before reassigning it")
+                                .with_source_path(source_path.to_path_buf()),
+                            );
+                        } else {
+                            ensure_type_compatibility(
+                                &existing.ty,
+                                member_ty,
+                                *span,
+                                diagnostics,
+                                format!("assignment to `{name}` violates its type"),
+                                format!(
+                                    "the binding holds `{}`, but the destructured member resolves to `{}`",
+                                    existing.ty.display_name(),
+                                    member_ty.display_name()
+                                ),
+                                source_path,
+                            );
+                            existing.ty = combine_declared_and_actual_type(&existing.ty, member_ty);
+                        }
+                    } else {
+                        scopes.define_current(
+                            name.clone(),
+                            LocalBinding {
+                                mutable,
+                                ty: member_ty.clone(),
+                            },
+                        );
+                    }
                 }
-            } else {
-                scopes.define_current(
-                    name.clone(),
-                    LocalBinding {
-                        mutable,
-                        ty: member_ty.clone(),
-                    },
-                );
+                PatternBindingMode::Fresh => {
+                    // Loop and match leaves shadow: the outer binding is
+                    // untouched, and the leaf is immutable in its scope.
+                    scopes.define_current(
+                        name.clone(),
+                        LocalBinding {
+                            mutable: false,
+                            ty: member_ty.clone(),
+                        },
+                    );
+                }
             }
         }
         HirBindingPattern::Tuple(leaves, span) => {
@@ -3352,6 +3440,7 @@ fn type_binding_pattern_leaf(
                             nested_leaf,
                             nested_ty,
                             mutable,
+                            mode,
                             scopes,
                             diagnostics,
                             source_path,
@@ -3364,6 +3453,7 @@ fn type_binding_pattern_leaf(
                             nested_leaf,
                             &Type::Unknown,
                             mutable,
+                            mode,
                             scopes,
                             diagnostics,
                             source_path,

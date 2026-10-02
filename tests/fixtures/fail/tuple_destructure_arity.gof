@@ -1,0 +1,4 @@
+fn main() -> int:
+    pair: (int, int) = (1, 2)
+    (a, b, c) = pair
+    return a + b + c

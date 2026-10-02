@@ -157,6 +157,10 @@ fn main() -> int:
 ## Методы
 
 ```gof
+struct Point:
+    x: int
+    y: int
+
 fn Point.with_bonus(self: Point, extra: int) -> int:
     return self.x + self.y + extra
 ```

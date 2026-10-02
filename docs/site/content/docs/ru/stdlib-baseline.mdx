@@ -37,7 +37,7 @@ fn main() -> Result[int, RuntimeError]:
     reader = open_read_stream_with_timeout("roundtrip.txt", 1000)?
     text = reader.read_all_string()?
     reader.close()?
-        return Result.Ok(len(text) + deadline.unix_millis() - deadline.unix_millis())
+    return Result.Ok(len(text) + deadline.unix_millis() - deadline.unix_millis())
 ```
 
 ```gof

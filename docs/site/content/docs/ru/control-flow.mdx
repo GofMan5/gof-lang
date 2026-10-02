@@ -136,15 +136,14 @@ fn compute() -> Result[int, string]:
 fn sweep(paths: list[string]) -> Result[int, RuntimeError]:
     mut total = 0
     for path in paths:
-        stream = open_read_stream(path)?
-        defer stream.close()
-        text = stream.read_all_string()?
+        text = read_file(path)?
+        defer write_file(path, text)
         total = total + len(text)
     return Result.Ok(total)
 ```
 
-Если чтание вернёт ошибку, `stream.close()` текущей итерации всё равно
-выполнится до того, как ошибка покинет функцию.
+Если чтение вернёт ошибку, отложенный `write_file(path, text)` текущей
+итерации всё равно выполнится до того, как ошибка покинет функцию.
 
 Правила:
 

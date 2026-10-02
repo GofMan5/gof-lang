@@ -168,15 +168,14 @@ in reverse registration order (LIFO).
 fn sweep(paths: list[string]) -> Result[int, RuntimeError]:
     mut total = 0
     for path in paths:
-        stream = open_read_stream(path)?
-        defer stream.close()
-        text = stream.read_all_string()?
+        text = read_file(path)?
+        defer write_file(path, text)
         total = total + len(text)
     return Result.Ok(total)
 ```
 
-If a read propagates an error, the current iteration's `stream.close()`
-still runs before the error leaves the function.
+If a read propagates an error, the current iteration's deferred
+`write_file(path, text)` still runs before the error leaves the function.
 
 Current rules:
 

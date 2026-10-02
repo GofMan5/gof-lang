@@ -299,6 +299,20 @@ fn format_match_pattern(pattern: &MatchPattern) -> String {
 }
 
 fn format_type_ref(ty: &TypeRef) -> String {
+    // RFC 0050 tuple types: the parser builds TypeRef { name: "tuple" }
+    // from the parenthesized `(T1, T2)` spelling; render that spelling
+    // back. The `tuple[...]` identifier form is a parser error, so a
+    // round-trip must never emit it.
+    if ty.name == "tuple" && !ty.args.is_empty() {
+        return format!(
+            "({})",
+            ty.args
+                .iter()
+                .map(format_type_ref)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     if ty.args.is_empty() {
         ty.name.clone()
     } else {

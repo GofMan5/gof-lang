@@ -682,15 +682,15 @@ impl<'a> Parser<'a> {
                 if self.check(TokenDiscriminant::In) {
                     pattern
                 } else {
-                    // Rewind and mirror today's grammar: a parenthesized
-                    // loop target is not a binding, so the expression is
-                    // consumed and the shared `in` expectation reports the
-                    // single recoverable error.
+                    // Rewind and restore the pre-tuples behavior: a
+                    // parenthesized loop target is NOT a valid binding,
+                    // so the identifier expectation reports the first
+                    // error and the parser's normal recovery cascade
+                    // follows — never a silently-wrong program.
                     self.reset(token_mark);
                     self.diagnostics.0.truncate(diagnostic_mark);
-                    let _ = self.parse_expr();
                     BindingPattern::Name(
-                        "__parenthesized_loop_target".to_string(),
+                        self.expect_ident("expected a loop binding after `for`"),
                         self.previous().span,
                     )
                 }
