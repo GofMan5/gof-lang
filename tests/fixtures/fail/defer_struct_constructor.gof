@@ -1,0 +1,7 @@
+struct Point:
+    x: int
+    y: int
+
+fn main() -> int:
+    defer Point(1, 2)
+    return 0

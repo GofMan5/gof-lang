@@ -1,0 +1,18 @@
+fn fail() -> Result[int, RuntimeError]:
+    return Result.Err(RuntimeError.Io("body failed"))
+
+fn cleanup() -> Result[unit, RuntimeError]:
+    return Result.Err(RuntimeError.Io("cleanup failed"))
+
+fn run() -> Result[int, RuntimeError]:
+    defer cleanup()
+    value = fail()?
+    return Result.Ok(value)
+
+fn main() -> int:
+    outcome = run()
+    match outcome:
+        Result.Ok(value):
+            return value
+        Result.Err(error):
+            return 1

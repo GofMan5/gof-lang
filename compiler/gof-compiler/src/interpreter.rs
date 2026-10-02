@@ -3339,13 +3339,19 @@ struct DeferRecord {
     // evaluated once, at registration (RFC 0045).
     call: crate::ast::Expr,
     values: Vec<(String, Value)>,
+    // Rendered original call text for GOF3138 messages (RFC 0045:
+    // "Message: rendered call and rendered failure").
+    rendered_call: String,
     span: Span,
 }
 
 fn defer_failure_diagnostic(record: &DeferRecord, message: String) -> Diagnostic {
     Diagnostic::error(
         "GOF3138",
-        format!("deferred call failed at scope exit: {message}"),
+        format!(
+            "deferred call failed at scope exit: {}: {message}",
+            record.rendered_call
+        ),
         "a deferred call failed while the scope was exiting; remaining deferred calls still ran before reporting, and failures are never swallowed",
         record.span,
     )
@@ -3504,22 +3510,21 @@ fn eval_block(
         (Ok(_), Some(failures)) => Err(EvalSignal::Diagnostics(failures)),
         (Err(EvalSignal::Propagate(value)), None) => Err(EvalSignal::Propagate(value)),
         (Err(EvalSignal::Propagate(value)), Some(failures)) => {
-            // RFC 0045 `?`-exit rule: the cleanup failure is primary and
-            // the in-flight recoverable error stays visible in the message.
+            // RFC 0045 `?`-exit rule: the cleanup failure is primary
+            // (GOF3138, single prefix, rendered error) and the in-flight
+            // recoverable error is preserved in the NOTE per the
+            // diagnostics contract.
+            let in_flight = render_defer_failure_value(&value);
             let failures = Diagnostics(
                 failures
                     .0
                     .into_iter()
                     .map(|diagnostic| {
-                        let in_flight = value.cli_text().unwrap_or_default();
-                        let message = format!(
-                            "deferred call failed at scope exit: {} (the scope was exiting with an in-flight propagated error: {in_flight})",
-                            diagnostic.message
+                        let note = format!(
+                            "{} (the scope was exiting with an in-flight propagated error: {in_flight})",
+                            diagnostic.note
                         );
-                        Diagnostic {
-                            message,
-                            ..diagnostic
-                        }
+                        Diagnostic { note, ..diagnostic }
                     })
                     .collect(),
             );
@@ -3702,6 +3707,7 @@ fn eval_stmt(
                             span: *call_span,
                         },
                         values,
+                        rendered_call: crate::formatter::format_expr(call),
                         span: *span,
                     }
                 }
@@ -3749,6 +3755,7 @@ fn eval_stmt(
                             span: *call_span,
                         },
                         values,
+                        rendered_call: crate::formatter::format_expr(call),
                         span: *span,
                     }
                 }

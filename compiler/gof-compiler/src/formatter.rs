@@ -291,7 +291,7 @@ fn format_type_ref(ty: &TypeRef) -> String {
     }
 }
 
-fn format_expr(expr: &Expr) -> String {
+pub(crate) fn format_expr(expr: &Expr) -> String {
     match expr {
         Expr::Int(value, _) => value.to_string(),
         Expr::String(value, _) => format!("{value:?}"),

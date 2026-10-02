@@ -1,0 +1,7 @@
+enum JobState:
+    Ready
+    Running(pid: int)
+
+fn main() -> int:
+    defer JobState.Running(42)
+    return 0

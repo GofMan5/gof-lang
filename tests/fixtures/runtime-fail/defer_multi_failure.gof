@@ -1,0 +1,10 @@
+fn fail_a() -> Result[unit, RuntimeError]:
+    return Result.Err(RuntimeError.Io("a"))
+
+fn fail_b() -> Result[unit, RuntimeError]:
+    return Result.Err(RuntimeError.Io("b"))
+
+fn main() -> int:
+    defer fail_a()
+    defer fail_b()
+    return 0

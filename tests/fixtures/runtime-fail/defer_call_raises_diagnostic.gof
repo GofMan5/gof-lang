@@ -1,0 +1,6 @@
+fn boom() -> int:
+    return 10 / 0
+
+fn main() -> int:
+    defer boom()
+    return 0

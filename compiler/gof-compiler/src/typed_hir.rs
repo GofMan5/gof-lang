@@ -2146,7 +2146,11 @@ fn lower_stmt(
                 _ => call.clone(),
             };
             // GOF3136: the deferred expression must be a call expression
-            // (function call or method call, per RFC 0045).
+            // (function call or method call, per RFC 0045). Struct
+            // constructor and enum payload construction targets are also
+            // rejected here (RFC 0045): the lowered kind is checked after
+            // lower_expr resolves the call, and the diagnostic uses the
+            // target expression span.
             if !matches!(call, HirExpr::Call { .. } | HirExpr::MethodCall { .. }) {
                 diagnostics.push(
                     Diagnostic::error(
@@ -2174,6 +2178,38 @@ fn lower_stmt(
                 function_return_type,
                 source_path,
             );
+            // Struct-constructor and enum-payload defer targets resolve to
+            // construction kinds, not calls (RFC 0045: "resolves to a
+            // struct constructor or enum payload construction" is GOF3136).
+            match &typed_call.kind {
+                TypedExprKind::StructInit { name, .. } => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3136",
+                            format!("invalid `defer` target: struct constructor `{name}`"),
+                            "a struct constructor builds a value instead of performing an action; `defer` needs a call whose side effect runs at scope exit",
+                            typed_call.span,
+                        )
+                        .with_fix_it("defer a function or method call instead")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
+                TypedExprKind::EnumVariant {
+                    enum_name, variant, ..
+                } => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3136",
+                            format!("invalid `defer` target: enum payload construction `{enum_name}.{variant}`"),
+                            "an enum payload construction builds a value instead of performing an action; `defer` needs a call whose side effect runs at scope exit",
+                            typed_call.span,
+                        )
+                        .with_fix_it("defer a function or method call instead")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
+                _ => {}
+            }
             TypedStmt::Defer { call: typed_call }
         }
         HirStmt::If {
