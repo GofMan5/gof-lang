@@ -204,6 +204,9 @@ pub enum TypedStmt {
     },
     Break,
     Continue,
+    Defer {
+        call: TypedExpr,
+    },
     If {
         condition: TypedExpr,
         then_body: Vec<TypedStmt>,
@@ -878,9 +881,7 @@ pub fn lower(module: &HirModule) -> Result<TypedModule, Diagnostics> {
                     arity: function.params.len(),
                     param_types,
                     declared_return_type: declared_return_type.clone(),
-                    fixture_value_type: declared_return_type
-                        .as_ref()
-                        .and_then(fixture_value_type),
+                    fixture_value_type: declared_return_type.as_ref().and_then(fixture_value_type),
                     return_type: declared_return_type.unwrap_or(Type::Unknown),
                 },
             );
@@ -1132,7 +1133,10 @@ fn validate_test_contract(
     }
 }
 
-fn parse_fixture_scope(function: &HirFunction, diagnostics: &mut Diagnostics) -> Option<FixtureScope> {
+fn parse_fixture_scope(
+    function: &HirFunction,
+    diagnostics: &mut Diagnostics,
+) -> Option<FixtureScope> {
     let Some(scope_ref) = function.fixture_scope.as_ref() else {
         diagnostics.push(
             Diagnostic::error(
@@ -1154,7 +1158,10 @@ fn parse_fixture_scope(function: &HirFunction, diagnostics: &mut Diagnostics) ->
             diagnostics.push(
                 Diagnostic::error(
                     "GOF3121",
-                    format!("fixture `{}` uses an unknown scope `{}`", function.name, scope_ref.name),
+                    format!(
+                        "fixture `{}` uses an unknown scope `{}`",
+                        function.name, scope_ref.name
+                    ),
                     "supported fixture scopes are currently `test` and `module`",
                     scope_ref.span,
                 )
@@ -1203,7 +1210,10 @@ fn validate_fixture_contract(
                     ),
                     param.span,
                 )
-                .with_fix_it(format!("annotate `{}` as `{}: Type`", param.name, param.name))
+                .with_fix_it(format!(
+                    "annotate `{}` as `{}: Type`",
+                    param.name, param.name
+                ))
                 .with_source_path(function.source_path.clone()),
             );
             continue;
@@ -1277,16 +1287,17 @@ fn validate_fixture_cleanup_hooks(
         .iter()
         .filter_map(|function| {
             let receiver_type = function.receiver_type.as_ref()?;
-            Some(((receiver_type.name.clone(), function.name.clone()), function))
+            Some((
+                (receiver_type.name.clone(), function.name.clone()),
+                function,
+            ))
         })
         .collect::<HashMap<_, _>>();
     let mut validated_receivers = HashSet::new();
 
-    for function in module
-        .functions
-        .iter()
-        .filter(|function| function.kind == FunctionKind::Fixture && function.receiver_type.is_none())
-    {
+    for function in module.functions.iter().filter(|function| {
+        function.kind == FunctionKind::Fixture && function.receiver_type.is_none()
+    }) {
         let Some(signature) = signatures.get(&function.name) else {
             continue;
         };
@@ -1601,7 +1612,10 @@ fn detect_fixture_cycle(
                 Diagnostic::error(
                     "GOF3122",
                     format!("fixture cycle detected for `{}`", fixture.name),
-                    format!("fixture dependencies must stay acyclic, but this path loops: {}", cycle.join(" -> ")),
+                    format!(
+                        "fixture dependencies must stay acyclic, but this path loops: {}",
+                        cycle.join(" -> ")
+                    ),
                     fixture.contract_span,
                 )
                 .with_fix_it("break the cycle by extracting shared setup into an upstream fixture")
@@ -1646,6 +1660,7 @@ fn hir_stmt_span(stmt: &HirStmt) -> Span {
         HirStmt::Return(_, span)
         | HirStmt::Break(span)
         | HirStmt::Continue(span)
+        | HirStmt::Defer(_, span)
         | HirStmt::Expr(_, span) => *span,
         HirStmt::Bind { span, .. }
         | HirStmt::Assign { span, .. }
@@ -2099,6 +2114,59 @@ fn lower_stmt(
         HirStmt::Continue(span) => {
             validate_loop_control("continue", *span, loop_depth, diagnostics, source_path);
             TypedStmt::Continue
+        }
+        HirStmt::Defer(call, span) => {
+            // GOF3137: postfix `?` on a deferred call has no propagation
+            // destination at scope exit (RFC 0045).
+            let call = match call {
+                HirExpr::Propagate {
+                    value,
+                    span: inner_span,
+                } => {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3137",
+                            "postfix `?` cannot be applied to a deferred call",
+                            "a deferred call runs at scope exit where there is no propagation destination; its result is discarded and failures surface as GOF3138",
+                            *inner_span,
+                        )
+                        .with_fix_it("remove the `?` from the deferred call")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                    (**value).clone()
+                }
+                _ => call.clone(),
+            };
+            // GOF3136: the deferred expression must be a call expression
+            // (function call or method call, per RFC 0045).
+            if !matches!(call, HirExpr::Call { .. } | HirExpr::MethodCall { .. }) {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3136",
+                        "invalid `defer` target",
+                        "`defer` requires a call expression; it defers a call, not a value",
+                        *span,
+                    )
+                    .with_fix_it("wrap the expression in a call, e.g. `defer close(stream)`")
+                    .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            // Argument arity and type checks reuse the ordinary call
+            // diagnostics through lower_expr (RFC 0045).
+            let typed_call = lower_expr(
+                &call,
+                scopes,
+                signatures,
+                method_signatures,
+                known_structs,
+                known_enums,
+                struct_signatures,
+                enum_signatures,
+                diagnostics,
+                function_return_type,
+                source_path,
+            );
+            TypedStmt::Defer { call: typed_call }
         }
         HirStmt::If {
             condition,
@@ -5364,6 +5432,7 @@ fn collect_return_types(
             | TypedStmt::Assign { .. }
             | TypedStmt::Break
             | TypedStmt::Continue
+            | TypedStmt::Defer { .. }
             | TypedStmt::Expr(_) => {}
         }
     }
@@ -9460,10 +9529,9 @@ mod tests {
 
     #[test]
     fn rejects_unknown_fixture_scope() {
-        let diagnostics = lower_source(
-            "fixture(package) fn shared_total() -> int:\n    return 41\n",
-        )
-        .expect_err("unknown fixture scopes should fail");
+        let diagnostics =
+            lower_source("fixture(package) fn shared_total() -> int:\n    return 41\n")
+                .expect_err("unknown fixture scopes should fail");
 
         assert_eq!(diagnostics.codes(), vec!["GOF3121"]);
     }

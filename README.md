@@ -75,7 +75,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | `struct`, payload `enum`, exhaustive `match` with destructuring | stable |
 | `Result[T, E]`, `Result.Ok`, `Result.Err`, postfix `?`, exhaustive `match` over `Result` | stable |
 | Methods, field access, constructors | stable |
-| `if`/`else`, `while`, `for`, `break`, `continue`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
+| `if`/`else`, `while`, `for`, `break`, `continue`, `defer`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |
 | `print`, `assert`, `argv`, `read_stdin()`, `read_stdin_lines()`, `env`, `cwd`, `run_process(...)`, file and line I/O, path/fs helpers, string helpers, sequence helpers (`first`/`last`/`slice`/`reverse`/`sort`/`min`/`max`), conversion helpers, `base64_encode(...)`, `base64_decode(...)`, `range`, `sleep(...)`, `unix_seconds()`, `unix_millis()` | stable |
 | JSON, CSV, TOML, YAML, and `template_render(...)` helpers plus bootstrap `http_get(...)` / `http_post(...)` / `http_request(...)` | bootstrap |

@@ -1,0 +1,24 @@
+fn producer(ch: channel[int]) -> int:
+    mut value = 99
+    defer send(ch, value)
+    value = 11
+    send(ch, 10)
+    return 0
+
+fn main() -> int:
+    ch: channel[int] = channel()
+    task = go producer(ch)
+    first = recv(ch)
+    second = recv(ch)
+    await task
+    match first:
+        Result.Ok(a):
+            match second:
+                Result.Ok(b):
+                    if a == 10 and b == 99:
+                        return 0
+                    return 1
+                Result.Err(error):
+                    return 2
+        Result.Err(error):
+            return 2

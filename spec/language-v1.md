@@ -60,6 +60,7 @@ The bootstrap compiler in this repository currently supports:
 - `for binding in iterable:`
 - `break`
 - `continue`
+- `defer <call-expression>` for explicit scope-exit cleanup
 - `go` for spawning top-level named function calls
 - `await` for waiting on task values
 - `await_result(task)` and `await_result(task, token)` for explicit recoverable task joins
@@ -450,5 +451,10 @@ The bootstrap compiler in this repository currently supports:
 - `continue` currently skips to the next iteration of the nearest enclosing `while` or `for`
 - using `break` or `continue` outside a loop is a compile error
 - using `for` on a non-iterable value is a compile error
+- `defer` currently accepts a call expression (top-level function, method call, builtin, or closure value target) and evaluates its argument expressions at registration, exactly as an ordinary call at that point
+- deferred calls run LIFO at the exit of the block they were registered in, on every exit path: normal completion, `return`, `?` early propagation, runtime diagnostics, and `break` / `continue`
+- `defer` inside a loop body scopes to the loop-body block and flushes at the end of every iteration, including `break` and `continue` exits
+- a deferred call that completes with `Result.Err` or raises a runtime diagnostic surfaces as `GOF3138` at the `defer` registration site, and the remaining deferred calls still run before reporting
+- the deferred call's return value is discarded; there is no `recover`
 
 Everything else is specified as future work and intentionally blocked from pretending to be stable.

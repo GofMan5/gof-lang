@@ -1,0 +1,28 @@
+fn producer(ch: channel[int]) -> int:
+    defer send(ch, 30)
+    defer send(ch, 20)
+    send(ch, 10)
+    return 0
+
+fn main() -> int:
+    ch: channel[int] = channel()
+    task = go producer(ch)
+    first = recv(ch)
+    second = recv(ch)
+    third = recv(ch)
+    await task
+    match first:
+        Result.Ok(a):
+            match second:
+                Result.Ok(b):
+                    match third:
+                        Result.Ok(c):
+                            if a == 10 and b == 20 and c == 30:
+                                return 0
+                            return 1
+                        Result.Err(error):
+                            return 2
+                Result.Err(error):
+                    return 2
+        Result.Err(error):
+            return 2

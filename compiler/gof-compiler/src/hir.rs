@@ -110,6 +110,7 @@ pub enum HirStmt {
     },
     Break(Span),
     Continue(Span),
+    Defer(HirExpr, Span),
     Match {
         value: HirExpr,
         arms: Vec<HirMatchArm>,
@@ -356,6 +357,7 @@ fn lower_stmt(stmt: &Stmt) -> HirStmt {
         },
         Stmt::Break(span) => HirStmt::Break(*span),
         Stmt::Continue(span) => HirStmt::Continue(*span),
+        Stmt::Defer(call, span) => HirStmt::Defer(lower_expr(call), *span),
         Stmt::Match { value, arms, span } => HirStmt::Match {
             value: lower_expr(value),
             arms: arms.iter().map(lower_match_arm).collect(),

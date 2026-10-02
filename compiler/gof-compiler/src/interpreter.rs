@@ -1913,10 +1913,7 @@ impl ChannelHandle {
         self.notify_waiters_locked(&mut state);
     }
 
-    fn has_waiting_receiver(
-        state: &ChannelState,
-        excluded_select_wait_id: Option<u64>,
-    ) -> bool {
+    fn has_waiting_receiver(state: &ChannelState, excluded_select_wait_id: Option<u64>) -> bool {
         state.blocking_receivers > 0
             || state
                 .select_waiting_receivers
@@ -2634,13 +2631,15 @@ pub fn run_test_function_with_output(
         ])
     })?;
     let typed_function = typed_functions.get(function_name).cloned().ok_or_else(|| {
-        Diagnostics(vec![Diagnostic::error(
-            "GOF3115",
-            format!("unknown test function `{function_name}`"),
-            "the requested language-level test is missing from the typed module",
-            Span::new(1, 1, 1),
-        )
-        .with_fix_it("rebuild the module graph and rerun the requested test")])
+        Diagnostics(vec![
+            Diagnostic::error(
+                "GOF3115",
+                format!("unknown test function `{function_name}`"),
+                "the requested language-level test is missing from the typed module",
+                Span::new(1, 1, 1),
+            )
+            .with_fix_it("rebuild the module graph and rerun the requested test"),
+        ])
     })?;
 
     let mut test_context = None;
@@ -2653,13 +2652,11 @@ pub fn run_test_function_with_output(
             let mut resolution_failure = None;
             for binding in bindings {
                 match binding {
-                    FixtureParamBinding::TestContext => resolved.push(Value::Opaque(
-                        OpaqueValue::TestContext(ensure_test_context(
-                            &mut test_context,
-                            &options,
-                            function_name,
-                        )),
-                    )),
+                    FixtureParamBinding::TestContext => {
+                        resolved.push(Value::Opaque(OpaqueValue::TestContext(
+                            ensure_test_context(&mut test_context, &options, function_name),
+                        )))
+                    }
                     FixtureParamBinding::Dependency(name) => {
                         match resolve_fixture(
                             &name,
@@ -2933,20 +2930,27 @@ fn resolve_fixture(
 fn unwrap_fixture_value(spec: &FixtureRuntimeSpec, value: Value) -> Result<Value, String> {
     match &spec.return_type {
         Type::Result(_, _) => match value {
-            Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Ok" => {
+            Value::Enum(enum_value)
+                if enum_value.name == "Result" && enum_value.variant == "Ok" =>
+            {
                 Ok(enum_value
                     .payloads
                     .first()
                     .map(|(_, value)| value.clone())
                     .unwrap_or(Value::Unit))
             }
-            Value::Enum(enum_value) if enum_value.name == "Result" && enum_value.variant == "Err" => {
+            Value::Enum(enum_value)
+                if enum_value.name == "Result" && enum_value.variant == "Err" =>
+            {
                 let detail = enum_value
                     .payloads
                     .first()
                     .and_then(|(_, value)| value.cli_text())
                     .unwrap_or_else(|| "fixture returned Result.Err".to_string());
-                Err(format!("fixture `{}` returned Result.Err({detail})", spec.name))
+                Err(format!(
+                    "fixture `{}` returned Result.Err({detail})",
+                    spec.name
+                ))
             }
             other => Err(format!(
                 "fixture `{}` returned `{}` instead of `Result[...]`",
@@ -2974,15 +2978,9 @@ fn cleanup_fixture_cache(
         let Some(value) = fixture_values.remove(&name) else {
             continue;
         };
-        if let Err(error) = run_fixture_cleanup_hook(
-            &name,
-            &value,
-            functions,
-            methods,
-            structs,
-            enums,
-            output,
-        ) {
+        if let Err(error) =
+            run_fixture_cleanup_hook(&name, &value, functions, methods, structs, enums, output)
+        {
             errors.push(error);
         }
     }
@@ -3008,8 +3006,16 @@ fn run_fixture_cleanup_hook(
         return Ok(());
     };
 
-    let result = eval_function(&function, &[value.clone()], functions, methods, structs, enums, output)
-        .map_err(|diagnostics| render_fixture_cleanup_diagnostics(&function, diagnostics))?;
+    let result = eval_function(
+        &function,
+        &[value.clone()],
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+    )
+    .map_err(|diagnostics| render_fixture_cleanup_diagnostics(&function, diagnostics))?;
     validate_fixture_cleanup_result(fixture_name, result)
 }
 
@@ -3327,6 +3333,110 @@ fn test_outcome_from_diagnostics(diagnostics: Diagnostics) -> TestExecutionOutco
     }
 }
 
+struct DeferRecord {
+    // Synthetic call expression whose arguments are identifiers bound to
+    // the captured values below: the original argument expressions are
+    // evaluated once, at registration (RFC 0045).
+    call: crate::ast::Expr,
+    values: Vec<(String, Value)>,
+    span: Span,
+}
+
+fn defer_failure_diagnostic(record: &DeferRecord, message: String) -> Diagnostic {
+    Diagnostic::error(
+        "GOF3138",
+        format!("deferred call failed at scope exit: {message}"),
+        "a deferred call failed while the scope was exiting; remaining deferred calls still ran before reporting, and failures are never swallowed",
+        record.span,
+    )
+}
+
+fn render_defer_failure_value(value: &Value) -> String {
+    match value {
+        Value::Enum(error) if error.name == "RuntimeError" => error
+            .payloads
+            .first()
+            .map(|(_, payload)| payload.cli_text().unwrap_or_default())
+            .unwrap_or_default(),
+        other => other.cli_text().unwrap_or_default(),
+    }
+}
+
+fn flush_deferred(
+    deferred: &mut Vec<DeferRecord>,
+    scopes: &mut ScopeStack,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+    source_path: &Path,
+) -> Option<Diagnostics> {
+    let mut failures: Vec<Diagnostic> = Vec::new();
+    while let Some(record) = deferred.pop() {
+        // Bind the captured registration-time values into a temporary
+        // scope and dispatch the synthetic call through the ordinary call
+        // machinery: user functions, builtins, and method calls all reuse
+        // their existing dispatch.
+        scopes.push();
+        for (name, value) in &record.values {
+            scopes.define_current(
+                name.clone(),
+                Binding {
+                    mutable: false,
+                    value: value.clone(),
+                },
+            );
+        }
+        let outcome = eval_expr(
+            &record.call,
+            scopes,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            source_path,
+        );
+        scopes.pop();
+        match outcome {
+            Ok(Value::Enum(result)) if result.name == "Result" && result.variant == "Err" => {
+                let message = result
+                    .payloads
+                    .first()
+                    .map(|(_, error)| render_defer_failure_value(error))
+                    .unwrap_or_else(|| "unknown error".to_string());
+                failures.push(
+                    defer_failure_diagnostic(&record, message)
+                        .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            Ok(_) => {}
+            Err(EvalSignal::Diagnostics(mut diagnostics)) => {
+                // RFC 0045 failure class: the deferred call's own diagnostic
+                // stays primary; GOF3138 identifies the registration site.
+                failures.append(&mut diagnostics.0);
+                failures.push(
+                    defer_failure_diagnostic(&record, "raised a runtime diagnostic".to_string())
+                        .with_source_path(source_path.to_path_buf()),
+                );
+            }
+            Err(EvalSignal::Propagate(value)) => {
+                let message = render_defer_failure_value(&value);
+                failures.push(
+                    defer_failure_diagnostic(&record, message)
+                        .with_source_path(source_path.to_path_buf()),
+                );
+            }
+        }
+    }
+    if failures.is_empty() {
+        None
+    } else {
+        Some(Diagnostics(failures))
+    }
+}
+
 fn eval_block(
     stmts: &[Stmt],
     scopes: &mut ScopeStack,
@@ -3343,31 +3453,85 @@ fn eval_block(
         scopes.push();
     }
 
-    for stmt in stmts {
-        let outcome = eval_stmt(
-            stmt,
-            scopes,
-            functions,
-            methods,
-            structs,
-            enums,
-            output,
-            loop_depth,
-            source_path,
-        )?;
-        if !matches!(outcome, EvalOutcome::Next) {
-            if nested_scope {
-                scopes.pop();
-            }
-            return Ok(outcome);
-        }
-    }
+    // Block-local pending-defer list (RFC 0045): statements register through
+    // `eval_stmt`; the flush below runs them LIFO on every exit path of
+    // this block activation.
+    let mut deferred: Vec<DeferRecord> = Vec::new();
 
-    if nested_scope {
+    let result: EvalResult<EvalOutcome> = (|| {
+        for stmt in stmts {
+            let outcome = eval_stmt(
+                stmt,
+                scopes,
+                functions,
+                methods,
+                structs,
+                enums,
+                output,
+                loop_depth,
+                source_path,
+                &mut deferred,
+            )?;
+            if !matches!(outcome, EvalOutcome::Next) {
+                return Ok(outcome);
+            }
+        }
+        Ok(EvalOutcome::Next)
+    })();
+
+    // Flush pending defers LIFO on every exit path (RFC 0045): deferred
+    // calls execute at scope exit — before the block's values leave scope
+    // — and failures are collected, never swallowed (GOF3138).
+    let defer_failures = flush_deferred(
+        &mut deferred,
+        scopes,
+        functions,
+        methods,
+        structs,
+        enums,
+        output,
+        source_path,
+    );
+
+    // Scope-pop discipline unchanged from the pre-defer behavior: pop on
+    // the Ok paths, leave the stack alone on Err paths.
+    if result.is_ok() && nested_scope {
         scopes.pop();
     }
 
-    Ok(EvalOutcome::Next)
+    match (result, defer_failures) {
+        (Ok(outcome), None) => Ok(outcome),
+        (Ok(_), Some(failures)) => Err(EvalSignal::Diagnostics(failures)),
+        (Err(EvalSignal::Propagate(value)), None) => Err(EvalSignal::Propagate(value)),
+        (Err(EvalSignal::Propagate(value)), Some(failures)) => {
+            // RFC 0045 `?`-exit rule: the cleanup failure is primary and
+            // the in-flight recoverable error stays visible in the message.
+            let failures = Diagnostics(
+                failures
+                    .0
+                    .into_iter()
+                    .map(|diagnostic| {
+                        let in_flight = value.cli_text().unwrap_or_default();
+                        let message = format!(
+                            "deferred call failed at scope exit: {} (the scope was exiting with an in-flight propagated error: {in_flight})",
+                            diagnostic.message
+                        );
+                        Diagnostic {
+                            message,
+                            ..diagnostic
+                        }
+                    })
+                    .collect(),
+            );
+            Err(EvalSignal::Diagnostics(failures))
+        }
+        (Err(EvalSignal::Diagnostics(mut diagnostics)), extra) => {
+            if let Some(failures) = extra {
+                diagnostics.0.extend(failures.0);
+            }
+            Err(EvalSignal::Diagnostics(diagnostics))
+        }
+    }
 }
 
 fn eval_stmt(
@@ -3380,6 +3544,7 @@ fn eval_stmt(
     output: &OutputBuffer,
     loop_depth: usize,
     source_path: &Path,
+    deferred: &mut Vec<DeferRecord>,
 ) -> EvalResult<EvalOutcome> {
     match stmt {
         Stmt::Return(expr, _) => match eval_expr(
@@ -3500,6 +3665,112 @@ fn eval_stmt(
                 .into());
             }
             Ok(EvalOutcome::Continue)
+        }
+        Stmt::Defer(call, span) => {
+            // RFC 0045 registration semantics: the call target and every
+            // argument expression evaluate NOW, at the `defer` statement;
+            // the deferred call itself runs at block exit (see eval_block).
+            // `?` inside an argument expression propagates right here, and
+            // the defer is never registered.
+            let record = match call {
+                crate::ast::Expr::Call {
+                    callee,
+                    args,
+                    span: call_span,
+                } => {
+                    let mut values = Vec::new();
+                    let mut ident_args = Vec::new();
+                    for (index, arg) in args.iter().enumerate() {
+                        let value = eval_expr(
+                            arg,
+                            scopes,
+                            functions,
+                            methods,
+                            structs,
+                            enums,
+                            output,
+                            source_path,
+                        )?;
+                        let slot = format!("__defer_arg_{index}");
+                        values.push((slot.clone(), value));
+                        ident_args.push(crate::ast::Expr::Ident(slot, *span));
+                    }
+                    DeferRecord {
+                        call: crate::ast::Expr::Call {
+                            callee: callee.clone(),
+                            args: ident_args,
+                            span: *call_span,
+                        },
+                        values,
+                        span: *span,
+                    }
+                }
+                crate::ast::Expr::MethodCall {
+                    target,
+                    method,
+                    args,
+                    span: call_span,
+                } => {
+                    let receiver = eval_expr(
+                        target,
+                        scopes,
+                        functions,
+                        methods,
+                        structs,
+                        enums,
+                        output,
+                        source_path,
+                    )?;
+                    let mut values = vec![("__defer_recv".to_string(), receiver)];
+                    let mut ident_args = Vec::new();
+                    for (index, arg) in args.iter().enumerate() {
+                        let value = eval_expr(
+                            arg,
+                            scopes,
+                            functions,
+                            methods,
+                            structs,
+                            enums,
+                            output,
+                            source_path,
+                        )?;
+                        let slot = format!("__defer_arg_{index}");
+                        values.push((slot.clone(), value));
+                        ident_args.push(crate::ast::Expr::Ident(slot, *span));
+                    }
+                    DeferRecord {
+                        call: crate::ast::Expr::MethodCall {
+                            target: Box::new(crate::ast::Expr::Ident(
+                                "__defer_recv".to_string(),
+                                *span,
+                            )),
+                            method: method.clone(),
+                            args: ident_args,
+                            span: *call_span,
+                        },
+                        values,
+                        span: *span,
+                    }
+                }
+                _ => {
+                    // Static checks own this diagnostic (GOF3136); the
+                    // evaluator re-reports it defensively for any path the
+                    // static layer did not gate (RFC 0045).
+                    return Err(Diagnostics(vec![
+                        Diagnostic::error(
+                            "GOF3136",
+                            "invalid `defer` target",
+                            "`defer` requires a call expression; it defers a call, not a value",
+                            *span,
+                        )
+                        .with_fix_it("wrap the expression in a call, e.g. `defer close(stream)`")
+                        .with_source_path(source_path.to_path_buf()),
+                    ])
+                    .into());
+                }
+            };
+            deferred.push(record);
+            Ok(EvalOutcome::Next)
         }
         Stmt::If {
             condition,
@@ -9097,7 +9368,10 @@ fn prepare_select_operation(
     }
 }
 
-fn poll_select_operation(operation: &PreparedSelectOperation, select_wait_id: u64) -> Option<Value> {
+fn poll_select_operation(
+    operation: &PreparedSelectOperation,
+    select_wait_id: u64,
+) -> Option<Value> {
     match operation {
         PreparedSelectOperation::Recv {
             channel,
@@ -14185,8 +14459,7 @@ mod tests {
         assert!(matches!(first.outcome, TestExecutionOutcome::Passed));
         assert!(matches!(second.outcome, TestExecutionOutcome::Passed));
         assert_eq!(
-            fs::read_to_string(temp.path().join("counter.txt"))
-                .expect("counter file should exist"),
+            fs::read_to_string(temp.path().join("counter.txt")).expect("counter file should exist"),
             "1"
         );
     }
@@ -15178,9 +15451,8 @@ mod tests {
             let wait_channel = Arc::clone(&channel);
             let token = CancelTokenValue::new();
             let wait_token = token.clone();
-            let waiter = std::thread::spawn(move || {
-                wait_channel.send(Value::Int(7), Some(&wait_token))
-            });
+            let waiter =
+                std::thread::spawn(move || wait_channel.send(Value::Int(7), Some(&wait_token)));
 
             std::thread::sleep(Duration::from_millis(2));
             token.cancel();

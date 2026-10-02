@@ -180,6 +180,7 @@ fn format_stmt(stmt: &Stmt, indent_level: usize) -> String {
         Stmt::Assign { name, value, .. } => format!("{indent}{name} = {}", format_expr(value)),
         Stmt::Break(_) => format!("{indent}break"),
         Stmt::Continue(_) => format!("{indent}continue"),
+        Stmt::Defer(call, _) => format!("{indent}defer {}", format_expr(call)),
         Stmt::If {
             condition,
             then_body,

@@ -145,6 +145,7 @@ pub enum Stmt {
     },
     Break(Span),
     Continue(Span),
+    Defer(Expr, Span),
     Match {
         value: Expr,
         arms: Vec<MatchArm>,
@@ -356,7 +357,10 @@ impl<'a> Parser<'a> {
                 TokenDiscriminant::RParen,
                 "expected `)` after the fixture scope",
             );
-            self.expect(TokenDiscriminant::Fn, "expected `fn` after `fixture(scope)`");
+            self.expect(
+                TokenDiscriminant::Fn,
+                "expected `fn` after `fixture(scope)`",
+            );
             (
                 FunctionKind::Fixture,
                 Some(FixtureScopeRef {
@@ -655,6 +659,16 @@ impl<'a> Parser<'a> {
                 "expected a newline after `continue`",
             );
             return Stmt::Continue(span);
+        }
+
+        if self.matches(TokenDiscriminant::Defer) {
+            let span = self.previous().span;
+            let call = self.parse_expr();
+            self.expect(
+                TokenDiscriminant::Newline,
+                "expected a newline after `defer`",
+            );
+            return Stmt::Defer(call, span);
         }
 
         if self.matches(TokenDiscriminant::Match) {
@@ -1419,6 +1433,7 @@ enum TokenDiscriminant {
     In,
     Break,
     Continue,
+    Defer,
     Match,
     Select,
     Default,
@@ -1475,6 +1490,7 @@ impl TokenDiscriminant {
                 | (Self::In, TokenKind::In)
                 | (Self::Break, TokenKind::Break)
                 | (Self::Continue, TokenKind::Continue)
+                | (Self::Defer, TokenKind::Defer)
                 | (Self::Match, TokenKind::Match)
                 | (Self::Select, TokenKind::Select)
                 | (Self::Default, TokenKind::Default)
@@ -1529,6 +1545,7 @@ impl TokenDiscriminant {
             Self::In => "`in`",
             Self::Break => "`break`",
             Self::Continue => "`continue`",
+            Self::Defer => "`defer`",
             Self::Match => "`match`",
             Self::Select => "`select`",
             Self::Default => "`default`",

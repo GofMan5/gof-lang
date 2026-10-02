@@ -1,0 +1,23 @@
+struct Emitter:
+    value: int
+
+fn Emitter.emit(self: Emitter, ch: channel[int]) -> unit:
+    send(ch, self.value)
+
+fn producer(ch: channel[int]) -> int:
+    emitter = Emitter(42)
+    defer emitter.emit(ch)
+    return 0
+
+fn main() -> int:
+    ch: channel[int] = channel()
+    task = go producer(ch)
+    first = recv(ch)
+    await task
+    match first:
+        Result.Ok(a):
+            if a == 42:
+                return 0
+            return 1
+        Result.Err(error):
+            return 2

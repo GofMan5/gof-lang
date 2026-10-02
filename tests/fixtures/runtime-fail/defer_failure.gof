@@ -1,0 +1,6 @@
+fn cleanup() -> Result[unit, RuntimeError]:
+    return Result.Err(RuntimeError.Io("deferred cleanup failed"))
+
+fn main() -> int:
+    defer cleanup()
+    return 0

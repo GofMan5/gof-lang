@@ -139,3 +139,6 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3126`: unknown doctest fence modifier
 - `GOF3127`: conflicting doctest fence modes
 - `GOF3128`: unterminated doctest fence
+- `GOF3136`: invalid `defer` target
+- `GOF3137`: postfix `?` applied to a deferred call
+- `GOF3138`: deferred call failed at scope exit

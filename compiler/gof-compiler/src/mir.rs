@@ -306,6 +306,14 @@ impl MirBuilder {
                 let value = self.lower_expr(expr);
                 self.instructions.push(MirInstruction::Eval { value });
             }
+            // Bootstrap MIR note: the defer call lowers as its registration
+            // evaluation (argument expressions); the scope-exit region with
+            // the pending-defer slots is a Phase 2 backend artifact
+            // (RFC 0045 "Layer implementation notes").
+            TypedStmt::Defer { call } => {
+                let value = self.lower_expr(call);
+                self.instructions.push(MirInstruction::Eval { value });
+            }
         }
     }
 
