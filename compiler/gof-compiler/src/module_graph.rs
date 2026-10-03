@@ -1564,7 +1564,7 @@ fn report_import_collision(
     diagnostics.push(
         Diagnostic::error(
             "GOF3171",
-            format!("two imports both export `{name}` into this module"),
+            format!("two imports both contribute `{name}` into this module"),
             format!(
                 "the name arrives from `{}` and `{}`; neither declaration is local, so the ambiguity comes from the import choices",
                 other_source.display(),

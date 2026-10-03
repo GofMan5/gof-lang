@@ -939,7 +939,7 @@ fn run_const_pass(
         const_types.insert(decl.name.clone(), ty.clone());
         // Taxon rule (GOF3175): the declared type must be deeply
         // value-taxon. Handle/owned members reject.
-        if !is_deep_value_taxon(&ty) {
+        if !is_deep_value_taxon(&ty, struct_signatures, enum_signatures, &mut HashSet::new()) {
             diagnostics.push(
                 Diagnostic::error(
                     "GOF3175",
@@ -1110,8 +1110,18 @@ fn collect_const_refs(expr: &TypedExpr, refs: &mut Vec<String>) {
 }
 
 /// RFC 0054: is the type deeply value-taxon? Handle types, owned types
-/// (future), and composites carrying them reject.
-fn is_deep_value_taxon(ty: &Type) -> bool {
+/// (future), and composites carrying them reject. User structs and
+/// enums recurse through their field/payload types — a struct holding
+/// a channel is not const-eligible even though the struct itself is a
+/// value type at runtime. `active` guards self-referential composite
+/// types (`struct A: children: list[A]` is legal at the type level and
+/// would otherwise loop forever).
+fn is_deep_value_taxon(
+    ty: &Type,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    active: &mut HashSet<String>,
+) -> bool {
     match ty {
         Type::Int
         | Type::String
@@ -1120,17 +1130,61 @@ fn is_deep_value_taxon(ty: &Type) -> bool {
         | Type::Unit
         | Type::Unknown
         | Type::Const(_) => true,
-        Type::List(inner) | Type::Dict(inner) | Type::Option(inner) => is_deep_value_taxon(inner),
-        Type::Result(ok, err) => is_deep_value_taxon(ok) && is_deep_value_taxon(err),
-        Type::Tuple(members) => members.iter().all(is_deep_value_taxon),
+        Type::List(inner) | Type::Dict(inner) | Type::Option(inner) => {
+            is_deep_value_taxon(inner, struct_signatures, enum_signatures, active)
+        }
+        Type::Result(ok, err) => {
+            is_deep_value_taxon(ok, struct_signatures, enum_signatures, active)
+                && is_deep_value_taxon(err, struct_signatures, enum_signatures, active)
+        }
+        Type::Tuple(members) => members
+            .iter()
+            .all(|member| is_deep_value_taxon(member, struct_signatures, enum_signatures, active)),
         // Channels, tasks, and cancel tokens are handle taxa — a const
         // handle would be a resource created before the program runs and
         // never deterministically closed.
         Type::Channel(_) | Type::Task(_) | Type::CancelToken => false,
         Type::Opaque(_) => false,
-        Type::Struct(_) | Type::Enum(_) => true,
         Type::Function(_, _) => false,
         Type::Protocol(_) | Type::TypeParam(_) | Type::SelfType => false,
+        // User composites recurse: GOF3175 must see through a struct
+        // field or an enum payload carrying a handle type.
+        Type::Struct(name) => {
+            if !active.insert(name.clone()) {
+                // Self-referential member position: the type is legal,
+                // and the recursion already validated the shared shape.
+                return true;
+            }
+            let deep = struct_signatures
+                .get(name)
+                .map(|signature| {
+                    signature.fields.iter().all(|field| {
+                        is_deep_value_taxon(&field.ty, struct_signatures, enum_signatures, active)
+                    })
+                })
+                .unwrap_or(true);
+            active.remove(name);
+            deep
+        }
+        Type::Enum(name) => {
+            if !active.insert(name.clone()) {
+                return true;
+            }
+            let deep = enum_signatures
+                .get(name)
+                .map(|signature| {
+                    signature
+                        .variants
+                        .iter()
+                        .flat_map(|variant| variant.fields.iter().map(|field| field.ty.clone()))
+                        .all(|field| {
+                            is_deep_value_taxon(&field, struct_signatures, enum_signatures, active)
+                        })
+                })
+                .unwrap_or(true);
+            active.remove(name);
+            deep
+        }
     }
 }
 

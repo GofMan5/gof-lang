@@ -1,0 +1,7 @@
+struct Wire:
+    ch: channel[int]
+
+const W: Wire = Wire(channel(1))
+
+fn main() -> int:
+    return 0
