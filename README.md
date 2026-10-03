@@ -57,6 +57,8 @@ After installation, open a new shell and use `gof` directly. Rust is not require
 gof run examples/geometry.gof          # run a program
 gof run --watch examples/geometry.gof  # rerun on edits
 gof check examples/geometry.gof        # compile-only validation
+gof run examples/const_walkthrough.gof        # consts: compose, read, iterate
+gof run examples/visibility_walkthrough.gof  # module: export blocks
 gof test examples/testing_baseline     # run language-level tests
 gof test --list examples/testing_baseline
 gof test --shuffle --seed 17 examples/testing_baseline

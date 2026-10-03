@@ -1,0 +1,27 @@
+module:
+    square
+    double
+    combined
+
+# The `module:` block above declares this file's public surface. Names
+# NOT listed stay private to this file once strict filtering lands
+# (per the RFC's phasing amendment); today the block is validated and
+# documents the contract.
+
+fn square(value: int) -> int:
+    return value * value
+
+fn double(value: int) -> int:
+    return value * 2
+
+fn combined(value: int) -> int:
+    # Private helper composition: `combined` is public, its parts are
+    # what the export block says they are.
+    return square(double(value))
+
+fn main() -> int:
+    assert(square(3) == 9, "exported function callable")
+    assert(double(4) == 8, "second export callable")
+    assert(combined(2) == 16, "exports compose")
+    print(combined(3))
+    return 0
