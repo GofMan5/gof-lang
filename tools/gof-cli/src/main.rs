@@ -49,6 +49,11 @@ struct FileInput {
     input: PathBuf,
     #[arg(short = 'w', long)]
     watch: bool,
+    /// Execute through the native machine-code backend (Cranelift JIT)
+    /// instead of the bootstrap evaluator. v1 covers int/bool programs;
+    /// unsupported constructs fail with GOF3180.
+    #[arg(long = "native-run", conflicts_with = "watch")]
+    native_run: bool,
     #[arg(long, default_value_t = 150)]
     debounce_ms: u64,
     #[arg(last = true)]
@@ -318,8 +323,23 @@ fn run_file(args: FileInput) -> Result<()> {
         }
         return watch::run_watch_loop(target, args.args, args.debounce_ms);
     }
+    if args.native_run {
+        return execute_run_target_native(&target);
+    }
 
     execute_run_target(&target, &args.args)
+}
+
+/// Phase 2 slice 2: the `--native-run` execution path — Cranelift JIT
+/// machine code, no evaluator. The machine-computed `main` return
+/// value is printed (the same surface the interpreted path gives).
+fn execute_run_target_native(target: &RunTarget) -> Result<()> {
+    ensure_package_lockfile(&target.entry_path, "run")?;
+    let source = SourceFile::from_path(&target.entry_path)?;
+    let value = gof_compiler::pipeline::run_module_machine_code(&source)
+        .map_err(|error| render_error(&source, error))?;
+    println!("{value}");
+    Ok(())
 }
 
 fn format_file(args: FmtArgs) -> Result<()> {
@@ -363,7 +383,10 @@ fn export_module_surface(args: ModExportArgs) -> Result<()> {
             .map(|function| function.name.clone()),
     );
     if names.is_empty() {
-        println!("# {} has no top-level declarations to export", path.display());
+        println!(
+            "# {} has no top-level declarations to export",
+            path.display()
+        );
         return Ok(());
     }
     let mut block = String::from("module:");

@@ -163,6 +163,57 @@ pub fn run_module_with_output(source: &SourceFile) -> Result<ExecutionResult, Di
     run_interpreter_on_big_stack(move || run_interpreter_with_output(&ast))
 }
 
+/// Phase 2 slice 2: the machine-code execution surface. Compiles the
+/// source through the full pipeline, lowers SSA to the backend IR
+/// (ADR 0006), materializes the parameter binding the IR defers to
+/// the codegen slice, JIT-compiles through Cranelift (ADR 0004 dev
+/// profile), and runs `fn main() -> int` as REAL machine code — no
+/// evaluator. Codegen gaps surface as GOF3180 diagnostics naming the
+/// rejected type or construct; the interpreted run paths are
+/// untouched.
+pub fn run_module_machine_code(source: &SourceFile) -> Result<i64, Diagnostics> {
+    let compiled = compile_source(source, CompileMode::Executable)?;
+    // The v1 IR carries parameter value ids but not their names (the
+    // linkage `IrFunction::params` defers to the codegen slice); the
+    // SSA layer still has them, in the same function order.
+    let param_names: Vec<Vec<String>> = compiled
+        .ssa
+        .functions
+        .iter()
+        .map(|function| function.params.clone())
+        .collect();
+    let ir = crate::backend_ir::lower(&compiled.ssa);
+    let bound = crate::backend_codegen::bind_function_params(&ir, &param_names)
+        .map_err(|error| native_execution_diagnostic(source, &error))?;
+    crate::backend_codegen::execute(&bound)
+        .map_err(|error| native_execution_diagnostic(source, &error))
+}
+
+/// GOF3180: a program shape the v1 machine-code backend rejects. The
+/// note carries the exact [`crate::backend_codegen::CodegenError`]
+/// text, which names the construct or type.
+fn native_execution_diagnostic(
+    source: &SourceFile,
+    error: &crate::backend_codegen::CodegenError,
+) -> Diagnostics {
+    let message = match error {
+        crate::backend_codegen::CodegenError::MissingMain => {
+            "native execution requires a `fn main` entry point"
+        }
+        _ => "native execution does not yet support this construct",
+    };
+    Diagnostics(vec![
+        Diagnostic::error(
+            "GOF3180",
+            message,
+            format!("machine-code backend v1: {error}"),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it("run without --native-run to execute through the bootstrap evaluator")
+        .with_source_path(source.path().to_path_buf()),
+    ])
+}
+
 pub fn run_module_with_output_and_args(
     source: &SourceFile,
     program_args: &[String],
