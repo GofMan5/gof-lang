@@ -1,8 +1,10 @@
 //! Backend codegen v1 (ADR 0004 dev profile): lowers
 //! [`crate::backend_ir::IrModule`] to Cranelift and executes `main` as
 //! REAL machine code through the JIT (`cranelift-jit`) — the first
-//! artifact produced from the backend IR. Object emission + linking is
-//! the next slice; the evaluator stays the conformance oracle and the
+//! artifact produced from the backend IR. The object-emission +
+//! linking slice ([`crate::backend_object`]) drives the SAME lowering
+//! through [`compile_module`] into an on-disk object and a linked
+//! static binary; the evaluator stays the conformance oracle and the
 //! execution surface for everything this slice defers.
 //!
 //! # v1 scope (honest — no silent gaps)
@@ -56,8 +58,9 @@
 //! it compiles to an unreachable-code trap, so a broken invariant
 //! fails loudly instead of silently returning 0.
 //!
-//! Layering (ADR 0002): this module imports `backend_ir` only;
-//! `pipeline` is its only caller.
+//! Layering (ADR 0002): this module imports `backend_ir` only; its
+//! callers are `pipeline` (JIT execution + parameter binding) and
+//! `backend_object` (the shared lowering via [`compile_module`]).
 
 use crate::backend_ir::{
     IrBinaryOp, IrFunction, IrInst, IrInstKind, IrModule, IrSymbol, IrTerminator, IrTypeTag,
@@ -90,7 +93,9 @@ const UNREACHABLE_DEFERRAL: &str = "unreachable terminator (for-loop header / se
 const DEAD_IMPLICIT_RETURN_TRAP: TrapCode = TrapCode::unwrap_user(1);
 
 /// Codegen failure. Every variant names what it rejected — honest
-/// diagnostics, never silent wrongness.
+/// diagnostics, never silent wrongness. This is the ONE error type
+/// for both machine-code backends (JIT execution and object emission
+/// + linking): the pipeline maps it to diagnostics uniformly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodegenError {
     /// A function whose return type is outside the v1 machine-code
@@ -101,9 +106,19 @@ pub enum CodegenError {
     UnsupportedConstruct { construct: String },
     /// The module has no callable `fn main() -> int` entry point.
     MissingMain,
-    /// Cranelift JIT compilation or IR-shape failure (malformed input
-    /// or a broken lowering invariant), reported with detail.
-    JitError(String),
+    /// Cranelift compilation or IR-shape failure (malformed input or a
+    /// broken lowering invariant), reported with detail. Shared by the
+    /// JIT and object backends — the lowering is one code path.
+    BackendError(String),
+    /// No usable linker exists on this machine for the object-emission
+    /// path (GOF3181). Carries every probed location and why each was
+    /// rejected. Produced by `backend_object`.
+    NoLinker { probed: String },
+    /// The link step failed (GOF3182): the linker ran and rejected the
+    /// object (its stderr is the detail), the object could not be
+    /// written, or the linker reported success without producing the
+    /// executable. Produced by `backend_object`.
+    LinkFailed { detail: String },
 }
 
 impl std::fmt::Display for CodegenError {
@@ -123,7 +138,13 @@ impl std::fmt::Display for CodegenError {
                     "native execution requires a `fn main() -> int` entry point"
                 )
             }
-            Self::JitError(detail) => write!(f, "native codegen JIT failure: {detail}"),
+            Self::BackendError(detail) => {
+                write!(f, "native codegen backend failure: {detail}")
+            }
+            Self::NoLinker { probed } => {
+                write!(f, "no linker found for the native object build: {probed}")
+            }
+            Self::LinkFailed { detail } => write!(f, "native link failed: {detail}"),
         }
     }
 }
@@ -152,7 +173,7 @@ pub fn bind_function_params(
     param_names: &[Vec<String>],
 ) -> Result<IrModule, CodegenError> {
     if param_names.len() != ir.functions.len() {
-        return Err(CodegenError::JitError(format!(
+        return Err(CodegenError::BackendError(format!(
             "parameter binding mismatch: the module declares {} functions but {} parameter-name \
              lists were supplied",
             ir.functions.len(),
@@ -178,7 +199,7 @@ pub fn bind_function_params(
                     .get(function.name as usize)
                     .map(String::as_str)
                     .unwrap_or("?");
-                return Err(CodegenError::JitError(format!(
+                return Err(CodegenError::BackendError(format!(
                     "parameter binding mismatch for `{function_name}`: the IR declares {} \
                      parameters, {} names were supplied",
                     function.params.len(),
@@ -187,7 +208,7 @@ pub fn bind_function_params(
             }
             let mut bound = function.clone();
             if bound.blocks.is_empty() {
-                return Err(CodegenError::JitError(format!(
+                return Err(CodegenError::BackendError(format!(
                     "malformed IR: function `{}` has no blocks",
                     strings
                         .get(function.name as usize)
@@ -238,6 +259,42 @@ pub fn bind_function_params(
 /// involved. See the module docs for the v1 scope and the named
 /// deferrals.
 pub fn execute(ir: &IrModule) -> Result<i64, CodegenError> {
+    let builder = JITBuilder::new(cranelift_module::default_libcall_names())
+        .map_err(|error| CodegenError::BackendError(error.to_string()))?;
+    let mut module = JITModule::new(builder);
+
+    let main_id = compile_module(ir, &mut module)?;
+
+    // Backend-specific finalization: the JIT resolves relocations,
+    // materializes the code pointers, and hands `main` back as a
+    // callable address.
+    module
+        .finalize_definitions()
+        .map_err(|error| CodegenError::BackendError(error.to_string()))?;
+    let code = module.get_finalized_function(main_id);
+    // SAFETY: `main` was declared and defined with the fixed
+    // ()->i64 signature (enforced in `compile_module`); the returned
+    // code pointer is executable and stays valid while `module` is
+    // alive.
+    let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
+    Ok(main_fn())
+}
+
+/// The gof→Cranelift compilation shared by EVERY machine-code backend
+/// (ADR 0004: the profiles differ in the backend, never in the
+/// lowering): validates the `main` entry contract, declares every
+/// module function, and defines every body. Generic over the
+/// `cranelift_module::Module` trait so the JIT (`JITModule`) and the
+/// object writer (`cranelift_object::ObjectModule`) drive the exact
+/// same code; only the backend-specific finalization stays with each
+/// caller (JIT: `finalize_definitions` + code pointers; object: the
+/// entry shim + `finish` + `emit`).
+///
+/// Returns the `main` function's `FuncId`.
+pub(crate) fn compile_module<M: Module>(
+    ir: &IrModule,
+    module: &mut M,
+) -> Result<FuncId, CodegenError> {
     let main_index = ir
         .functions
         .iter()
@@ -256,10 +313,6 @@ pub fn execute(ir: &IrModule) -> Result<i64, CodegenError> {
                 .to_string(),
         });
     }
-
-    let builder = JITBuilder::new(cranelift_module::default_libcall_names())
-        .map_err(|error| CodegenError::JitError(error.to_string()))?;
-    let mut module = JITModule::new(builder);
 
     // Pass 1: declare every function — direct calls need the ids and
     // signatures before any body is defined.
@@ -284,7 +337,7 @@ pub fn execute(ir: &IrModule) -> Result<i64, CodegenError> {
         }
         let id = module
             .declare_function(name, Linkage::Export, &signature)
-            .map_err(|error| CodegenError::JitError(error.to_string()))?;
+            .map_err(|error| CodegenError::BackendError(error.to_string()))?;
         signatures.push(signature);
         func_ids.push(id);
         declared.insert(function.name, id);
@@ -306,19 +359,10 @@ pub fn execute(ir: &IrModule) -> Result<i64, CodegenError> {
         define_function(ir, function, name, &mut context, &func_refs)?;
         module
             .define_function(func_ids[index], &mut context)
-            .map_err(|error| CodegenError::JitError(error.to_string()))?;
+            .map_err(|error| CodegenError::BackendError(error.to_string()))?;
     }
 
-    module
-        .finalize_definitions()
-        .map_err(|error| CodegenError::JitError(error.to_string()))?;
-
-    let code = module.get_finalized_function(func_ids[main_index]);
-    // SAFETY: `main` was declared and defined with the fixed
-    // ()->i64 signature (enforced above); the returned code pointer
-    // is executable and stays valid while `module` is alive.
-    let main_fn: extern "C" fn() -> i64 = unsafe { std::mem::transmute(code) };
-    Ok(main_fn())
+    Ok(func_ids[main_index])
 }
 
 /// Resolves a symbol to its string-table text; an out-of-range index
@@ -328,7 +372,7 @@ fn symbol_text<'a>(ir: &'a IrModule, sym: IrSymbol) -> Result<&'a str, CodegenEr
         .get(sym as usize)
         .map(String::as_str)
         .ok_or_else(|| {
-            CodegenError::JitError(format!(
+            CodegenError::BackendError(format!(
                 "malformed IR: symbol {sym} is out of range (string table holds {} entries)",
                 ir.strings.len()
             ))
@@ -417,7 +461,7 @@ impl<'a> FnState<'a> {
     /// machine value, so using one is a broken program shape).
     fn value(&self, id: IrValueId) -> Result<Value, CodegenError> {
         self.values.get(&id).copied().ok_or_else(|| {
-            CodegenError::JitError(format!(
+            CodegenError::BackendError(format!(
                 "value v{id} in `{}` was used but never lowered to a machine value (calls to \
                  unit-returning functions produce no value)",
                 self.function_name
@@ -431,7 +475,7 @@ impl<'a> FnState<'a> {
             .get(sym as usize)
             .map(String::as_str)
             .ok_or_else(|| {
-                CodegenError::JitError(format!(
+                CodegenError::BackendError(format!(
                     "malformed IR: symbol {sym} is out of range (string table holds {} entries)",
                     strings.len()
                 ))
@@ -440,7 +484,7 @@ impl<'a> FnState<'a> {
 
     fn block(&self, id: u32) -> Result<Block, CodegenError> {
         self.blocks.get(id as usize).copied().ok_or_else(|| {
-            CodegenError::JitError(format!(
+            CodegenError::BackendError(format!(
                 "malformed IR: branch target {id} is out of range ({} blocks)",
                 self.blocks.len()
             ))
@@ -462,7 +506,7 @@ impl<'a> FnState<'a> {
             });
         }
         self.locals.get(&sym).copied().ok_or_else(|| {
-            CodegenError::JitError(format!(
+            CodegenError::BackendError(format!(
                 "internal: local `{}` in `{}` is marked defined but has no Variable",
                 self.symbol_text(sym).unwrap_or("?"),
                 self.function_name
@@ -1030,10 +1074,10 @@ mod tests {
         let ir = backend_ir::lower(&ssa);
         let mismatched = vec![vec!["a".to_string(), "b".to_string()]];
         match bind_function_params(&ir, &mismatched) {
-            Err(CodegenError::JitError(detail)) => {
+            Err(CodegenError::BackendError(detail)) => {
                 assert!(detail.contains("mismatch"), "got: {detail}");
             }
-            other => panic!("expected a JitError mismatch, got {other:?}"),
+            other => panic!("expected a BackendError mismatch, got {other:?}"),
         }
     }
 

@@ -19,6 +19,7 @@ use crate::source::{
 use crate::ssa::{SsaModule, lower as lower_ssa};
 use crate::typed_hir::{TypedModule, lower as lower_typed};
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompileMode {
@@ -214,6 +215,132 @@ fn native_execution_diagnostic(
     ])
 }
 
+// ---------------------------------------------------------------------------
+// Static native build (Phase 2 slice 3: object emission + linking)
+// ---------------------------------------------------------------------------
+
+/// The native object build outcome: where the object artifact landed
+/// and which linker produced the executable.
+#[derive(Debug, Clone)]
+pub struct NativeExecutableBuild {
+    /// The emitted object file — machine code on disk, kept after
+    /// linking as a first-class v1 artifact.
+    pub object_path: PathBuf,
+    /// The display name of the linker that produced the executable
+    /// ("lld-link", "rust-lld", "link.exe", or "gcc").
+    pub linker: String,
+}
+
+/// Phase 2 slice 3: the static-binary build surface. Compiles the
+/// source through the full pipeline, lowers SSA to the backend IR
+/// (ADR 0006), materializes the parameter binding, emits a REAL
+/// object file through the shared Cranelift lowering
+/// (`backend_object::emit_object`), and links a standalone
+/// exit-code executable with the first usable linker on the machine
+/// (GOF3181 when none exists; the object file is still written).
+/// Codegen gaps surface as GOF3180 diagnostics — the same deferral
+/// contract as `run_module_machine_code`, because the lowering is one
+/// code path. Returns the build outcome plus the compile-time
+/// warnings (warnings never fail the build).
+pub fn build_module_native_executable(
+    source: &SourceFile,
+    output_path: &Path,
+) -> Result<(NativeExecutableBuild, Diagnostics), Diagnostics> {
+    build_module_native_executable_with_probe(
+        source,
+        output_path,
+        crate::backend_object::probe_linkers(),
+    )
+}
+
+/// The build path with an explicit linker probe — the seam the
+/// GOF3181 (no linker) tests use; the public entry always probes the
+/// real machine.
+pub(crate) fn build_module_native_executable_with_probe(
+    source: &SourceFile,
+    output_path: &Path,
+    probe: crate::backend_object::LinkerProbe,
+) -> Result<(NativeExecutableBuild, Diagnostics), Diagnostics> {
+    let compiled = compile_source(source, CompileMode::Executable)?;
+    // The v1 IR carries parameter value ids but not their names (the
+    // linkage `IrFunction::params` defers to the codegen slice); the
+    // SSA layer still has them, in the same function order.
+    let param_names: Vec<Vec<String>> = compiled
+        .ssa
+        .functions
+        .iter()
+        .map(|function| function.params.clone())
+        .collect();
+    let ir = crate::backend_ir::lower(&compiled.ssa);
+    let bound = crate::backend_codegen::bind_function_params(&ir, &param_names)
+        .map_err(|error| native_build_diagnostic(source, &error))?;
+    let object_bytes = crate::backend_object::emit_object(&bound)
+        .map_err(|error| native_build_diagnostic(source, &error))?;
+    let linker = crate::backend_object::link_with_probe(probe, &object_bytes, output_path)
+        .map_err(|error| native_build_diagnostic(source, &error))?;
+    Ok((
+        NativeExecutableBuild {
+            object_path: crate::backend_object::object_path_for(output_path),
+            linker,
+        },
+        compiled.warnings,
+    ))
+}
+
+/// GOF3180/GOF3181/GOF3182: the native build's diagnostic surface.
+/// GOF3180 keeps the machine-code-backend gap family shared with
+/// `--native-run` (one lowering, one deferral contract); GOF3181 is
+/// the no-linker contract; GOF3182 is a link failure (the linker's
+/// own report is the note).
+fn native_build_diagnostic(
+    source: &SourceFile,
+    error: &crate::backend_codegen::CodegenError,
+) -> Diagnostics {
+    use crate::backend_codegen::CodegenError;
+    let diagnostic = match error {
+        CodegenError::MissingMain => Diagnostic::error(
+            "GOF3180",
+            "native build requires a `fn main` entry point",
+            format!("machine-code backend v1: {error}"),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it("add a `fn main() -> int` entry point, or build without `--native-object`"),
+        CodegenError::NoLinker { probed } => Diagnostic::error(
+            "GOF3181",
+            "no linker found for the native object build",
+            format!("probed: {probed}"),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it(
+            "install the MSVC Build Tools with the Windows SDK, a Rust toolchain (rust-lld), \
+             or MinGW gcc, then rebuild",
+        ),
+        CodegenError::LinkFailed { detail } => Diagnostic::error(
+            "GOF3182",
+            "the native link step failed",
+            detail.clone(),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it(
+            "inspect the linker report above; the object file was still written beside the \
+             output",
+        ),
+        _ => Diagnostic::error(
+            "GOF3180",
+            "native build does not yet support this construct",
+            format!("machine-code backend v1: {error}"),
+            crate::source::Span::new(1, 1, 1),
+        )
+        .with_fix_it(
+            "build without `--native-object` to emit the IR artifact, or run through the \
+             bootstrap evaluator",
+        ),
+    };
+    Diagnostics(vec![
+        diagnostic.with_source_path(source.path().to_path_buf()),
+    ])
+}
+
 pub fn run_module_with_output_and_args(
     source: &SourceFile,
     program_args: &[String],
@@ -318,7 +445,8 @@ fn package_bundle_diagnostic(bundle: &EmbeddedSourceBundle, error: std::io::Erro
 #[cfg(test)]
 mod tests {
     use super::{
-        CompileMode, build_embedded_source_bundle, compile_source, run_embedded_bundle_with_output,
+        CompileMode, build_embedded_source_bundle, build_module_native_executable,
+        build_module_native_executable_with_probe, compile_source, run_embedded_bundle_with_output,
     };
     use crate::source::SourceFile;
     use crate::ssa::SsaInstruction;
@@ -1955,6 +2083,113 @@ mod tests {
                 .any(|source| source.path().ends_with("stdlib\\http.gof")
                     || source.path().ends_with("stdlib/http.gof")),
             "embedded source bundle should preserve reserved stdlib imports",
+        );
+    }
+
+    // -- the native object build surface (Phase 2 slice 3) ---------------------
+
+    /// The end-to-end static-binary proof through the REAL pipeline:
+    /// source → compile → IR → object → linked .exe → process exit
+    /// code. Skips loudly on machines with no usable linker (that
+    /// contract is covered by the GOF3181 test below).
+    #[test]
+    #[cfg(windows)]
+    fn pipeline_build_module_native_executable_produces_a_running_static_binary() {
+        let source = SourceFile::new(
+            "pipeline_native_object.gof",
+            "fn main() -> int:\n    return 42\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let executable = directory.path().join("pipeline-native.exe");
+        let build = match build_module_native_executable(&source, &executable) {
+            Ok((build, warnings)) => {
+                assert!(
+                    warnings.0.is_empty(),
+                    "the smoke program should compile without warnings"
+                );
+                build
+            }
+            Err(diagnostics) if diagnostics.0[0].code == "GOF3181" => {
+                eprintln!(
+                    "SKIP: no usable linker on this machine: {}",
+                    diagnostics.0[0].note
+                );
+                return;
+            }
+            Err(other) => panic!("the native build should succeed: {other:?}"),
+        };
+        assert!(
+            build.object_path.is_file(),
+            "the object artifact must be on disk"
+        );
+        assert!(executable.is_file(), "the executable must be on disk");
+        assert!(!build.linker.is_empty(), "the outcome names the linker");
+        let status = std::process::Command::new(&executable)
+            .status()
+            .expect("the static binary should run");
+        assert_eq!(
+            status.code(),
+            Some(42),
+            "the static binary's exit code must be the machine-computed value"
+        );
+    }
+
+    #[test]
+    fn pipeline_build_module_native_executable_maps_gaps_to_gof3180() {
+        let source = SourceFile::new(
+            "pipeline_native_match.gof",
+            "enum Status:\n    Ready\n    Busy\n\nfn score(status: Status) -> int:\n    match status:\n        Status.Ready:\n            return 10\n        Status.Busy:\n            return 20\n\nfn main() -> int:\n    status: Status = Status.Busy\n    return score(status)\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let executable = directory.path().join("pipeline-native-match.exe");
+        let diagnostics = build_module_native_executable(&source, &executable)
+            .expect_err("match programs must surface a GOF3180 diagnostic");
+        assert_eq!(diagnostics.0.len(), 1);
+        let diagnostic = &diagnostics.0[0];
+        assert_eq!(diagnostic.code, "GOF3180");
+        assert_eq!(
+            diagnostic.message,
+            "native build does not yet support this construct"
+        );
+        assert!(
+            diagnostic.note.contains("match dispatch"),
+            "the note must name the construct: {}",
+            diagnostic.note
+        );
+    }
+
+    #[test]
+    fn pipeline_build_module_native_executable_reports_no_linker_as_gof3181() {
+        // The no-linker contract through the probe seam: GOF3181 with
+        // every probed location, and the machine-code object STILL
+        // lands on disk.
+        let source = SourceFile::new(
+            "pipeline_native_nolink.gof",
+            "fn main() -> int:\n    return 1\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let executable = directory.path().join("pipeline-native-nolink.exe");
+        let probe = crate::backend_object::LinkerProbe {
+            linker: None,
+            probed: vec!["pipeline test: no linker".to_string()],
+        };
+        let diagnostics = build_module_native_executable_with_probe(&source, &executable, probe)
+            .expect_err("a machine with no linker must surface GOF3181");
+        let diagnostic = &diagnostics.0[0];
+        assert_eq!(diagnostic.code, "GOF3181");
+        assert_eq!(
+            diagnostic.message,
+            "no linker found for the native object build"
+        );
+        assert!(
+            diagnostic.note.contains("pipeline test: no linker"),
+            "the note lists every probed location: {}",
+            diagnostic.note
+        );
+        let object_path = crate::backend_object::object_path_for(&executable);
+        assert!(
+            object_path.is_file(),
+            "the object artifact must survive a missing linker"
         );
     }
 }
