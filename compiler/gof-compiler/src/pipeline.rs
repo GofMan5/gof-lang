@@ -127,9 +127,40 @@ pub fn run_module(source: &SourceFile) -> Result<Value, Diagnostics> {
     Ok(run_module_with_output(source)?.value)
 }
 
+/// Interpreted execution runs on a dedicated big-stack thread: the
+/// evaluator's per-gof-frame native cost (debug frames ≈100KB+) makes
+/// the 1 MB default main thread overflow after a handful of recursive
+/// gof frames — a shipped crash (0xC00000FD) on valid recursive
+/// programs. 256 MB gives deep gof recursion headroom in both debug
+/// and release; the limit is a documented spec contract.
+const INTERPRETER_STACK_BYTES: usize = 256 * 1024 * 1024;
+
+fn run_interpreter_on_big_stack<F, T>(run: F) -> Result<T, Diagnostics>
+where
+    F: FnOnce() -> Result<T, Diagnostics> + Send + 'static,
+    T: Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .stack_size(INTERPRETER_STACK_BYTES)
+        .spawn(run)
+        .map_err(|error| {
+            Diagnostics(vec![Diagnostic::error(
+                "GOF3178",
+                "failed to start the interpreter thread",
+                format!("the big-stack execution thread could not spawn: {error}"),
+                crate::source::Span::new(1, 1, 1),
+            )])
+        })?;
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
 pub fn run_module_with_output(source: &SourceFile) -> Result<ExecutionResult, Diagnostics> {
     let compiled = compile_source(source, CompileMode::Executable)?;
-    run_interpreter_with_output(&compiled.ast)
+    let ast = compiled.ast;
+    run_interpreter_on_big_stack(move || run_interpreter_with_output(&ast))
 }
 
 pub fn run_module_with_output_and_args(
@@ -137,7 +168,9 @@ pub fn run_module_with_output_and_args(
     program_args: &[String],
 ) -> Result<ExecutionResult, Diagnostics> {
     let compiled = compile_source(source, CompileMode::Executable)?;
-    run_interpreter_with_output_with_args(&compiled.ast, program_args.to_vec())
+    let ast = compiled.ast;
+    let args = program_args.to_vec();
+    run_interpreter_on_big_stack(move || run_interpreter_with_output_with_args(&ast, args))
 }
 
 /// `gof run` surface: execution result plus the compile-time warnings —
@@ -147,7 +180,10 @@ pub fn run_module_with_output_and_args_and_warnings(
     program_args: &[String],
 ) -> Result<(ExecutionResult, Diagnostics), Diagnostics> {
     let compiled = compile_source(source, CompileMode::Executable)?;
-    let result = run_interpreter_with_output_with_args(&compiled.ast, program_args.to_vec())?;
+    let ast = compiled.ast;
+    let args = program_args.to_vec();
+    let result =
+        run_interpreter_on_big_stack(move || run_interpreter_with_output_with_args(&ast, args))?;
     Ok((result, compiled.warnings))
 }
 

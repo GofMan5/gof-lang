@@ -178,3 +178,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3175`: const declared with a non-value taxon type (handle types like channel/task/streams and opaque runtime types never cross into compile-time values)
 - `GOF3176`: const initializer does not match the declared type annotation
 - `GOF3177`: const evaluation fault (the value is fixed at declaration, so runtime faults like division by a literal zero are promoted to compile time)
+- `GOF3178`: the interpreter's dedicated execution thread failed to spawn (the big-stack run/test path could not start)

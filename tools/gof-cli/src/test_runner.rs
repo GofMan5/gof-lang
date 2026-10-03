@@ -99,6 +99,24 @@ pub(crate) const TEST_FAILURE_EXIT_CODE: i32 = 10;
 pub(crate) const TEST_HARNESS_FAILURE_EXIT_CODE: i32 = 11;
 
 pub(crate) fn run(args: TestArgs) -> Result<()> {
+    // Interpreted test execution runs on a dedicated big-stack thread
+    // (mirroring the `gof run` pipeline path): deep gof recursion inside
+    // a test body or doctest would otherwise overflow the 1 MB default
+    // main thread — a native crash (0xC00000FD) on valid programs.
+    let stack_bytes = 256 * 1024 * 1024;
+    let handle = std::thread::Builder::new()
+        .stack_size(stack_bytes)
+        .spawn(move || run_inner(args))
+        .map_err(|error| {
+            anyhow::anyhow!("failed to start the test runner thread: {error}")
+        })?;
+    match handle.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
+}
+
+fn run_inner(args: TestArgs) -> Result<()> {
     if args.json {
         return run_machine_report(args, MachineReportFormat::Json);
     }

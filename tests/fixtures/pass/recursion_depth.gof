@@ -1,0 +1,25 @@
+# RFC 0047 regression (interpreter stack budget): recursive gof
+# functions must complete on the run path — the evaluator executes on
+# a dedicated big-stack thread, so valid recursion never hits a native
+# stack overflow.
+fn depth(n: int) -> int:
+    if n == 0:
+        return 0
+    else:
+        return depth(n - 1) + 1
+
+fn sum_to(n: int) -> int:
+    if n == 0:
+        return 0
+    else:
+        return n + sum_to(n - 1)
+
+fn main() -> int:
+    assert(depth(50) == 50, "50-deep recursion completes")
+    assert(sum_to(60) == 1830, "60-deep accumulation recursion completes")
+    mut total = 0
+    for _ in range(10):
+        total = total + depth(25)
+    assert(total == 250, "recursion inside a loop completes repeatedly")
+    print(depth(50))
+    return 0
