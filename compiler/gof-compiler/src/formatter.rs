@@ -1,11 +1,18 @@
 use crate::ast::{
-    BinaryOp, BindingPattern, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr, Function,
-    FunctionKind, ImplDecl, Import, MatchPattern, Module, Param, PatternLiteral, ProtocolDecl,
-    SelectArmKind, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
+    BinaryOp, BindingPattern, ConstDecl, DictEntry, EnumDecl, EnumVariant, EnumVariantField, Expr,
+    Function, FunctionKind, ImplDecl, Import, MatchPattern, Module, ModuleExport, Param,
+    PatternLiteral, ProtocolDecl, SelectArmKind, Stmt, StructDecl, StructField, TypeRef, UnaryOp,
 };
 
 pub fn format_module(module: &Module) -> String {
     let mut sections = Vec::new();
+
+    // RFC 0053: the `module:` export block is the FIRST top-level
+    // declaration — the formatter preserves that position (fmt must
+    // never reorder declarations, only normalize them).
+    if !module.exports.is_empty() {
+        sections.push(format_module_exports(&module.exports));
+    }
 
     if !module.imports.is_empty() {
         sections.push(
@@ -13,6 +20,20 @@ pub fn format_module(module: &Module) -> String {
                 .imports
                 .iter()
                 .map(format_import)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+
+    // RFC 0054: consts render between imports and type declarations —
+    // the documented fixture order. Dropping them (like dropping any
+    // declaration) is round-trip data loss.
+    if !module.consts.is_empty() {
+        sections.push(
+            module
+                .consts
+                .iter()
+                .map(format_const)
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
@@ -78,6 +99,26 @@ pub fn format_module(module: &Module) -> String {
 
 fn format_import(import: &Import) -> String {
     format!("import {}", import.module)
+}
+
+/// RFC 0053: `module:` header + one bare identifier per line.
+fn format_module_exports(exports: &[ModuleExport]) -> String {
+    let mut rendered = String::from("module:");
+    for export in exports {
+        rendered.push_str("\n    ");
+        rendered.push_str(&export.name);
+    }
+    rendered
+}
+
+/// RFC 0054: `const NAME: Type = expr` on one line.
+fn format_const(decl: &ConstDecl) -> String {
+    format!(
+        "const {}: {} = {}",
+        decl.name,
+        format_type_ref(&decl.ty),
+        format_expr_at(&decl.value, 0)
+    )
 }
 
 /// RFC 0044 protocol declaration: requirements are signature-only lines
@@ -484,6 +525,51 @@ pub(crate) fn format_expr(expr: &Expr) -> String {
     format_expr_at(expr, 0)
 }
 
+/// Multi-line-aware element join for call arguments and container
+/// elements (RFC 0047): when an element is a closure literal, the
+/// FOLLOWING separator moves to its own line at the enclosing indent so
+/// the output re-parses (the parser accepts separators at statement
+/// indent after a block's dedent). The marker is structural — only a
+/// closure literal ends in a dedent; nested containers end in glued
+/// closers and must NOT trigger newline separators.
+fn join_elements(rendered: &[(String, bool)], indent_level: usize) -> String {
+    let indent = "    ".repeat(indent_level);
+    let mut out = String::new();
+    for (index, (element, _)) in rendered.iter().enumerate() {
+        if index > 0 {
+            if rendered[index - 1].1 {
+                out.push('\n');
+                out.push_str(&indent);
+                out.push_str(", ");
+            } else {
+                out.push_str(", ");
+            }
+        }
+        out.push_str(element);
+    }
+    out
+}
+
+/// Container closer placement: only when the LAST element is a closure
+/// literal (its render ends with a dedented body line) does the closer
+/// go on its own line at the enclosing indent — the parser accepts a
+/// newline-closer directly after a block dedent, not after glued
+/// container closers. Otherwise the closer glues.
+fn closer_after(rendered: &[(String, bool)], closer: &str, indent_level: usize) -> String {
+    match rendered.last() {
+        Some((_, true)) => format!("\n{}{}", "    ".repeat(indent_level), closer),
+        _ => closer.to_string(),
+    }
+}
+
+/// Render an expression with its structural block marker: true iff the
+/// expression is a closure literal whose rendering ends with a dedent.
+fn format_expr_marked(expr: &Expr, indent_level: usize) -> (String, bool) {
+    let rendered = format_expr_at(expr, indent_level);
+    let is_open_block = matches!(expr, Expr::Closure { .. });
+    (rendered, is_open_block)
+}
+
 /// Indent-aware expression rendering: closure bodies are indented blocks
 /// nested inside the expression (RFC 0047), so every recursive render
 /// carries the enclosing indent level.
@@ -493,29 +579,34 @@ fn format_expr_at(expr: &Expr, indent_level: usize) -> String {
         Expr::String(value, _) => format!("{value:?}"),
         Expr::Bool(value, _) => value.to_string(),
         Expr::Ident(value, _) => value.clone(),
-        Expr::List { items, .. } => format!(
-            "[{}]",
-            items
+        Expr::List { items, .. } => {
+            let rendered = items
                 .iter()
-                .map(|item| format_expr_at(item, indent_level))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Expr::Dict { entries, .. } => format!(
-            "{{{}}}",
-            entries
+                .map(|item| format_expr_marked(item, indent_level))
+                .collect::<Vec<_>>();
+            let joined = join_elements(&rendered, indent_level);
+            format!("[{}{}", joined, closer_after(&rendered, "]", indent_level))
+        }
+        Expr::Dict { entries, .. } => {
+            let rendered = entries
                 .iter()
-                .map(|entry| format_dict_entry(entry, indent_level))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-        Expr::Call { callee, args, .. } => format!(
-            "{callee}({})",
-            args.iter()
-                .map(|arg| format_expr_at(arg, indent_level))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .map(|entry| format_dict_entry_marked(entry, indent_level))
+                .collect::<Vec<_>>();
+            let joined = join_elements(&rendered, indent_level);
+            format!("{{{}{}", joined, closer_after(&rendered, "}", indent_level))
+        }
+        Expr::Call { callee, args, .. } => {
+            let rendered = args
+                .iter()
+                .map(|arg| format_expr_marked(arg, indent_level))
+                .collect::<Vec<_>>();
+            let joined = join_elements(&rendered, indent_level);
+            format!(
+                "{callee}({}{}",
+                joined,
+                closer_after(&rendered, ")", indent_level)
+            )
+        }
         Expr::Field { target, field, .. } => {
             format!("{}.{}", format_expr_at(target, indent_level), field)
         }
@@ -524,14 +615,19 @@ fn format_expr_at(expr: &Expr, indent_level: usize) -> String {
             method,
             args,
             ..
-        } => format!(
-            "{}.{method}({})",
-            format_expr_at(target, indent_level),
-            args.iter()
-                .map(|arg| format_expr_at(arg, indent_level))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        } => {
+            let rendered = args
+                .iter()
+                .map(|arg| format_expr_marked(arg, indent_level))
+                .collect::<Vec<_>>();
+            let joined = join_elements(&rendered, indent_level);
+            format!(
+                "{}.{method}({}{}",
+                format_expr_at(target, indent_level),
+                joined,
+                closer_after(&rendered, ")", indent_level)
+            )
+        }
         Expr::Index { target, index, .. } => {
             format!(
                 "{}[{}]",
@@ -552,14 +648,14 @@ fn format_expr_at(expr: &Expr, indent_level: usize) -> String {
             format_op(*op),
             format_expr_at(rhs, indent_level)
         ),
-        Expr::Tuple { items, .. } => format!(
-            "({})",
-            items
+        Expr::Tuple { items, .. } => {
+            let rendered = items
                 .iter()
-                .map(|item| format_expr_at(item, indent_level))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+                .map(|item| format_expr_marked(item, indent_level))
+                .collect::<Vec<_>>();
+            let joined = join_elements(&rendered, indent_level);
+            format!("({}{}", joined, closer_after(&rendered, ")", indent_level))
+        }
         Expr::TupleIndex { target, index, .. } => {
             format!("{}.{index}", format_expr_at(target, indent_level))
         }
@@ -589,12 +685,16 @@ fn format_expr_at(expr: &Expr, indent_level: usize) -> String {
     }
 }
 
-fn format_dict_entry(entry: &DictEntry, indent_level: usize) -> String {
-    format!(
+fn format_dict_entry_marked(entry: &DictEntry, indent_level: usize) -> (String, bool) {
+    let rendered = format!(
         "{}: {}",
         format_expr_at(&entry.key, indent_level),
         format_expr_at(&entry.value, indent_level)
-    )
+    );
+    // The entry's block-ness is its VALUE's: a closure value renders
+    // with a trailing dedent.
+    let is_open_block = matches!(entry.value, Expr::Closure { .. });
+    (rendered, is_open_block)
 }
 
 fn format_op(op: BinaryOp) -> &'static str {
@@ -619,6 +719,75 @@ fn format_op(op: BinaryOp) -> &'static str {
 mod tests {
     use crate::format_source;
     use crate::source::SourceFile;
+
+    #[test]
+    fn formatter_round_trips_closures_in_container_positions() {
+        // RFC 0047 regression: a closure literal as a call argument
+        // (first and last), list element, and nested call — the rendered
+        // output must re-parse (the closers must not glue onto the
+        // closure's body lines) and be idempotent.
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn twice(f: fn(int) -> int, value: int) -> int:\n    return f(value)\n\nfn main() -> int:\n    print(twice(fn (x: int) -> int:\n        return x * 3\n    , 4))\n    handlers = [fn (x: int) -> int:\n        return x + 1\n    , fn (x: int) -> int:\n        return x + 10\n    ]\n    first = handlers[0]\n    print(first(2))\n    print(twice(fn (x: int) -> int:\n        return x * 100\n    , 1))\n    return 0\n",
+        );
+        let once = format_source(&source).expect("formatting should succeed");
+        // The formatted output re-parses: format_source itself parses, so
+        // round-trip through it again and demand byte equality.
+        let twice =
+            format_source(&SourceFile::new("fmt.gof", &once)).expect("reparse should succeed");
+        assert_eq!(
+            once, twice,
+            "formatted closure containers must be idempotent"
+        );
+        // The multi-line shapes are present: separators and the list
+        // closer live on their own lines at the enclosing indent.
+        assert!(
+            once.contains("\n    , 4))"),
+            "call separator after a closure must move to its own line"
+        );
+        assert!(
+            once.contains("\n    ]"),
+            "list closer after a closure element must move to its own line"
+        );
+    }
+
+    #[test]
+    fn formatter_round_trips_closures_as_last_argument() {
+        let source = SourceFile::new(
+            "fmt.gof",
+            "fn apply(value: int, f: fn(int) -> int) -> int:\n    return f(value)\n\nfn main() -> int:\n    print(apply(4, fn (x: int) -> int:\n        return x * 5\n    ))\n    return 0\n",
+        );
+        let once = format_source(&source).expect("formatting should succeed");
+        let twice =
+            format_source(&SourceFile::new("fmt.gof", &once)).expect("reparse should succeed");
+        assert_eq!(once, twice);
+        assert!(
+            once.contains("\n    ))"),
+            "call closer after a trailing closure must move to its own line"
+        );
+    }
+
+    #[test]
+    fn formatter_renders_consts_and_module_exports() {
+        // RFC 0053/0054 regression: fmt must never drop the `module:`
+        // export block or const declarations (round-trip data loss).
+        let source = SourceFile::new(
+            "fmt.gof",
+            "module:\n    square\n\nconst MAX: int = 10\nconst NAME: string = \"gof\"\n\nfn square(value: int) -> int:\n    return value * value\n",
+        );
+        let once = format_source(&source).expect("formatting should succeed");
+        assert!(
+            once.starts_with("module:\n    square\n"),
+            "export block must render first: {once:?}"
+        );
+        assert!(
+            once.contains("const MAX: int = 10\n"),
+            "const declarations must render: {once:?}"
+        );
+        let twice =
+            format_source(&SourceFile::new("fmt.gof", &once)).expect("reparse should succeed");
+        assert_eq!(once, twice);
+    }
 
     #[test]
     fn formatter_is_deterministic() {

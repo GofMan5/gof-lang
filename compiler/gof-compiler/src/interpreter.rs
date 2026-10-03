@@ -3389,20 +3389,24 @@ fn eval_function(
         ]));
     }
 
-    // RFC 0054: consts enter as the ROOT scope frame ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â parameters and
-    // locals shadow them (local-first), and no mutation path exists
-    // (immutable bindings, and the move checker treats them as reads).
+    // RFC 0054: consts enter as the OUTERMOST scope frame, BELOW the
+    // parameters — params and locals shadow consts (local-first), and
+    // no mutation path exists (immutable bindings, and the move checker
+    // treats them as reads).
     let mut scopes = ScopeStack::new(&function.params, args);
-    scopes.push();
-    for (name, value) in consts {
-        scopes.define_current(
-            name.clone(),
-            Binding {
-                mutable: false,
-                value: value.clone(),
-            },
-        );
-    }
+    let const_frame = consts
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.clone(),
+                Binding {
+                    mutable: false,
+                    value: value.clone(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    scopes.scopes.insert(0, const_frame);
     let outcome = match eval_block(
         &function.body,
         &mut scopes,
@@ -3420,7 +3424,6 @@ fn eval_function(
         Err(EvalSignal::Diagnostics(diagnostics)) => return Err(diagnostics),
         Err(EvalSignal::Propagate(value)) => EvalOutcome::Return(value),
     };
-    scopes.pop();
 
     match outcome {
         EvalOutcome::Next => Ok(Value::Unit),
@@ -3474,7 +3477,22 @@ fn eval_test_function(
         ]));
     }
 
+    // RFC 0054: test bodies read consts like any function body — the
+    // outermost-frame seeding mirrors eval_function (params shadow).
     let mut scopes = ScopeStack::new(&function.params, args);
+    let const_frame = consts
+        .iter()
+        .map(|(name, value)| {
+            (
+                name.clone(),
+                Binding {
+                    mutable: false,
+                    value: value.clone(),
+                },
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    scopes.scopes.insert(0, const_frame);
     let outcome = match eval_block(
         &function.body,
         &mut scopes,

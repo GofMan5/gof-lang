@@ -1,0 +1,27 @@
+# RFC 0046: `unsafe:` is a block statement valid in every statement
+# position — nested inside while/for/match arms and in test functions.
+enum Step:
+    Keep
+    Reset
+
+fn main() -> int:
+    mut total = 0
+    while total < 3:
+        unsafe:
+            total = total + 1
+
+    for value in [1, 2, 3]:
+        unsafe:
+            total = total + value
+
+    match Step.Keep:
+        Step.Keep:
+            unsafe:
+                total = total * 1
+        Step.Reset:
+            unsafe:
+                total = 0
+
+    assert(total == 9, "unsafe blocks in loop and match positions work")
+    print(total)
+    return 0
