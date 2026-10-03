@@ -340,14 +340,12 @@ fn format_file(args: FmtArgs) -> Result<()> {
 }
 
 /// RFC 0053 `gof mod export`: print the `module:` block a file needs —
-/// every top-level declaration name (structs, enums, protocols, free
-/// functions; test/fixture functions are never exported). A human
+/// every top-level declaration name (structs, enums, protocols, consts,
+/// free functions; test/fixture functions are never exported). A human
 /// prunes the private names before pasting the block at the top of the
 /// file.
 fn export_module_surface(args: ModExportArgs) -> Result<()> {
     let path = resolve_source_input_path(&args.file)?;
-    let text = fs::read_to_string(&path)
-        .map_err(|error| anyhow!("failed to read {}: {error}", path.display()))?;
     let source = SourceFile::from_path(&path)?;
     let module = gof_compiler::module_graph::parse_single_source(&source)
         .map_err(|diagnostics| render_error(&source, diagnostics))?;
@@ -355,6 +353,7 @@ fn export_module_surface(args: ModExportArgs) -> Result<()> {
     names.extend(module.structs.iter().map(|decl| decl.name.clone()));
     names.extend(module.enums.iter().map(|decl| decl.name.clone()));
     names.extend(module.protocols.iter().map(|decl| decl.name.clone()));
+    names.extend(module.consts.iter().map(|decl| decl.name.clone()));
     names.extend(
         module
             .functions

@@ -982,7 +982,7 @@ fn run_const_pass(
             &Type::Unknown,
             &decl.source_path,
         );
-        check_const_grammar(&typed_value, diagnostics);
+        check_const_grammar(&typed_value, &decl.source_path, diagnostics);
         // GOF3176: the initializer's type must match the annotation.
         if !types_compatible(&ty, &typed_value.ty) {
             diagnostics.push(
@@ -1191,38 +1191,38 @@ fn is_deep_value_taxon(
 /// RFC 0054 GOF3174: validate a typed initializer against the const
 /// grammar — literals, operators, list/dict literals, enum/struct/Result
 /// construction, len over const operands, and const references.
-fn check_const_grammar(expr: &TypedExpr, diagnostics: &mut Diagnostics) {
+fn check_const_grammar(expr: &TypedExpr, source_path: &Path, diagnostics: &mut Diagnostics) {
     match &expr.kind {
         TypedExprKind::Int(_) | TypedExprKind::String(_) | TypedExprKind::Bool(_) => {}
         TypedExprKind::Const(_) => {}
         TypedExprKind::List { items } => {
             for item in items {
-                check_const_grammar(item, diagnostics);
+                check_const_grammar(item, source_path, diagnostics);
             }
         }
         TypedExprKind::Dict { entries } => {
             for entry in entries {
-                check_const_grammar(&entry.key, diagnostics);
-                check_const_grammar(&entry.value, diagnostics);
+                check_const_grammar(&entry.key, source_path, diagnostics);
+                check_const_grammar(&entry.value, source_path, diagnostics);
             }
         }
-        TypedExprKind::Unary { value, .. } => check_const_grammar(value, diagnostics),
+        TypedExprKind::Unary { value, .. } => check_const_grammar(value, source_path, diagnostics),
         TypedExprKind::Binary { lhs, rhs, .. } => {
-            check_const_grammar(lhs, diagnostics);
-            check_const_grammar(rhs, diagnostics);
+            check_const_grammar(lhs, source_path, diagnostics);
+            check_const_grammar(rhs, source_path, diagnostics);
         }
         TypedExprKind::Tuple { items } => {
             for item in items {
-                check_const_grammar(item, diagnostics);
+                check_const_grammar(item, source_path, diagnostics);
             }
         }
         TypedExprKind::StructInit { args, .. } | TypedExprKind::EnumVariant { args, .. } => {
             for arg in args {
-                check_const_grammar(arg, diagnostics);
+                check_const_grammar(arg, source_path, diagnostics);
             }
         }
         TypedExprKind::Call { callee, args } if callee == "len" && args.len() == 1 => {
-            check_const_grammar(&args[0], diagnostics);
+            check_const_grammar(&args[0], source_path, diagnostics);
         }
         other => {
             diagnostics.push(
@@ -1233,7 +1233,7 @@ fn check_const_grammar(expr: &TypedExpr, diagnostics: &mut Diagnostics) {
                     expr.span,
                 )
                 .with_fix_it("compute the value in a function instead, or reduce the initializer to the const grammar")
-                .with_source_path(PathBuf::new()),
+                .with_source_path(source_path.to_path_buf()),
             );
             let _ = other;
         }

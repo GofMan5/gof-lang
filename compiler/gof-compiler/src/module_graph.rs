@@ -338,7 +338,6 @@ where
         // imports warn (GOF3172). Strict per-module filtering and
         // GOF3169 land with the phasing amendment's re-entry criteria.
         let root_path = root_path.to_path_buf();
-        let _ = &direct_imports;
         let mut name_origin: HashMap<String, PathBuf> = HashMap::new();
 
         for path in &self.load_order {
@@ -373,6 +372,11 @@ where
                             .map(|function| function.name.clone()),
                     )
                     .chain(module.protocols.iter().map(|decl| decl.name.clone()))
+                    // RFC 0054 × RFC 0053: consts are top-level
+                    // declarations and export like any other —
+                    // otherwise the v1 freeze would make cross-module
+                    // consts unexportable.
+                    .chain(module.consts.iter().map(|decl| decl.name.clone()))
                     .collect();
                 let mut set = HashMap::new();
                 for export in &module.exports {
@@ -386,7 +390,7 @@ where
                                     "export entry `{}` does not name a top-level declaration of this module",
                                     export.name
                                 ),
-                                "entries name this file's own structs, enums, functions, and protocols; test/fixture functions and imported names cannot be exported",
+                                "entries name this file's own structs, enums, functions, protocols, and consts; test/fixture functions and imported names cannot be exported",
                                 export.span,
                             )
                             .with_fix_it(format!(
@@ -411,6 +415,7 @@ where
                 let has_top_level_surface = !module.structs.is_empty()
                     || !module.enums.is_empty()
                     || !module.protocols.is_empty()
+                    || !module.consts.is_empty()
                     || module
                         .functions
                         .iter()
@@ -1545,9 +1550,6 @@ const BUILTIN_RECEIVER_TYPE_NAMES: &[&str] = &[
     "PropertyContext",
 ];
 
-/// RFC 0053 GOF3171: two direct imports contributing the same name —
-/// the error belongs to the importer's choices, reported at the import
-/// entry that completes the collision.
 /// RFC 0053 GOF3171: two direct imports contributing the same name —
 /// the error belongs to the importer's choices, reported at the IMPORT
 /// ENTRY that brought the second contribution in, with notes pointing

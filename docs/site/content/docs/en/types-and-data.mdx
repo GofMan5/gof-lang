@@ -357,6 +357,11 @@ fn main() -> int:
     return 0
 ```
 
+- every type and ownership check applies inside `unsafe:` exactly as outside — it is a permission region, not an escape hatch
+- no unsafe operation exists in v1, so every block is inert and reports a warning (GOF3141); warnings never fail compilation
+- `unsafe:` blocks are not valid inside closure bodies; unsafe work goes through a named wrapper function
+- `unsafe` is never a modifier: `unsafe fn` is a syntax error
+
 ## Const expressions
 
 Top-level consts are named values fixed once, before any function runs.
@@ -385,11 +390,6 @@ handle types never cross into compile-time values. Function calls and
 propagations in initializers report GOF3174; type mismatches report
 GOF3176. Consts are immutable everywhere: reassignment reports the
 ordinary GOF3003 immutable-binding diagnostic.
-
-- every type and ownership check applies inside `unsafe:` exactly as outside — it is a permission region, not an escape hatch
-- no unsafe operation exists in v1, so every block is inert and reports a warning (GOF3141); warnings never fail compilation
-- `unsafe:` blocks are not valid inside closure bodies; unsafe work goes through a named wrapper function
-- `unsafe` is never a modifier: `unsafe fn` is a syntax error
 
 ## Methods
 

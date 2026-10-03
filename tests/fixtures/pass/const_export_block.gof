@@ -1,0 +1,16 @@
+# Single-file positive: a const entry validates against the module's
+# own const declarations (GOF3168 own-names include consts). The
+# cross-module reading lives in the interpreter's import path.
+module:
+    BASE
+
+const BASE: int = 20
+
+fn scale(value: int) -> int:
+    return value * BASE
+
+fn main() -> int:
+    assert(scale(2) == 40, "const exports compose into functions")
+    assert(BASE == 20, "the exported const reads directly")
+    print(scale(2))
+    return 0

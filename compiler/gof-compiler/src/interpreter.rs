@@ -138,7 +138,12 @@ pub enum Value {
     /// captured bindings snapshotted at creation. Value-taxon captures
     /// duplicated at creation; handle captures share the underlying
     /// resource through `Value`'s reference-backed variants.
-    Closure(ClosureValue),
+    /// BOXED: an unboxed ClosureValue made this the enum's largest
+    /// variant and grew `Value` from 72 to 168 bytes, roughly doubling
+    /// the interpreter's per-frame stack cost and crashing `gof run` on
+    /// deep stdlib chains (stack overflow, bisected to the closures
+    /// commit). The box keeps `Value` small; closures are heap values.
+    Closure(Box<ClosureValue>),
     Unit,
 }
 
@@ -4903,12 +4908,12 @@ fn eval_expr(
                     captures.insert(name.clone(), binding.value.clone());
                 }
             }
-            Ok(Value::Closure(ClosureValue {
+            Ok(Value::Closure(Box::new(ClosureValue {
                 params: params.clone(),
                 return_type: return_type.clone(),
                 body: body.clone(),
                 captures,
-            }))
+            })))
         }
         Expr::List { items, .. } => {
             let values = items
@@ -6838,7 +6843,7 @@ fn spawn_task(
     let methods = Arc::clone(methods);
     let structs = Arc::clone(structs);
     // RFC 0054: the const table crosses the thread boundary as an owned
-    // clone (value data â€” cheap, CoW-backed values inside).
+    // clone (value data — cheap, CoW-backed values inside).
     let consts = consts.clone();
     let enums = Arc::clone(enums);
     let output = output.clone();
@@ -6893,7 +6898,7 @@ fn spawn_closure_task(
     let enums = Arc::clone(enums);
     let output = output.clone();
     // RFC 0054: the const table crosses the thread boundary as an owned
-    // clone (value data â€” cheap, CoW-backed values inside).
+    // clone (value data — cheap, CoW-backed values inside).
     let consts = consts.clone();
     let source_path = source_path.to_path_buf();
 
