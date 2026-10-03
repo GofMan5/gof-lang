@@ -1,3 +1,10 @@
+module:
+    sample_generics
+    describe
+
+const MAX_SIZE: int = 10
+const GREETING: string = "hello"
+
 import bytes
 import io
 import time

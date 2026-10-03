@@ -1,0 +1,26 @@
+const MAX_SIZE: int = 10
+const GREETING: string = "hello"
+const PREFIX: string = GREETING + " world"
+const LIMITS: list[int] = [MAX_SIZE, 20, 30]
+
+fn scale(value: int) -> int:
+    return value * MAX_SIZE
+
+fn main() -> int:
+    # Consts compose at declaration time and read as immutable values
+    # anywhere below their declaration.
+    assert(PREFIX == "hello world", "const-into-const composition")
+    assert(LIMITS[0] == 10, "const lists reference other consts")
+    assert(scale(4) == 40, "function bodies read consts")
+
+    # Consts are immutable everywhere: reassignment reports GOF3003
+    # (the same discipline as any non-mut binding).
+
+    mut total = 0
+    for limit in LIMITS:
+        total = total + limit
+    assert(total == 60, "const lists iterate")
+
+    print(PREFIX)
+    print(len(LIMITS))
+    return 0

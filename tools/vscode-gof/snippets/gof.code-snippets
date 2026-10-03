@@ -262,5 +262,23 @@
       "${4:port} = json_int(json_get(${1:config}, \"port\")?)?"
     ],
     "description": "Parse YAML config text through the bootstrap json bridge"
+  },
+  "Export Block": {
+    "prefix": "gofmodule",
+    "body": [
+      "module:",
+      "    ${1:name}",
+      "",
+      "${2:fn exported() -> int:}",
+      "    ${3:return 0}"
+    ],
+    "description": "Declare a module's public surface with a `module:` export block (RFC 0053)"
+  },
+  "Const": {
+    "prefix": "gofconst",
+    "body": [
+      "const ${1:MAX_SIZE}: ${2:int} = ${3:10}"
+    ],
+    "description": "Declare a top-level const with a mandatory annotation (RFC 0054)"
   }
 }

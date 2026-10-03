@@ -15,6 +15,9 @@
       "include": "#moduleDeclaration"
     },
     {
+      "include": "#constDeclaration"
+    },
+    {
       "include": "#importDeclaration"
     },
     {
@@ -102,6 +105,37 @@
             },
             "2": {
               "name": "entity.name.namespace.gof"
+            }
+          }
+        },
+        {
+          "name": "meta.declaration.exports.gof",
+          "match": "^\\s*(module)\\s*(:)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.exports.gof"
+            },
+            "2": {
+              "name": "punctuation.separator.exports.gof"
+            }
+          }
+        }
+      ]
+    },
+    "constDeclaration": {
+      "patterns": [
+        {
+          "name": "meta.declaration.const.gof",
+          "match": "\\b(const)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b\\s*(:)",
+          "captures": {
+            "1": {
+              "name": "keyword.declaration.const.gof"
+            },
+            "2": {
+              "name": "entity.name.constant.gof"
+            },
+            "3": {
+              "name": "punctuation.separator.annotation.gof"
             }
           }
         }
