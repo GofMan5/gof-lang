@@ -46,7 +46,12 @@
 //! operands are already-evaluated SSA values). `sdiv`/`srem` trap the
 //! process on divide-by-zero — machine code v1 has no gof-level trap
 //! handler, so the evaluator remains the surface for diagnosed
-//! arithmetic faults. `Return` with no value in an int function only
+//! arithmetic faults. INTEGER OVERFLOW diverges today (known v1
+//! divergence, resolved by a future overflow-semantics spec decision):
+//! the native path wraps (2's-complement machine behavior) while the
+//! evaluator's Rust-checked arithmetic panics on the assertion — the
+//! gof spec is currently silent on overflow. `Return` with no value in
+//! an int function only
 //! occurs in dead blocks (the unreachable join after early returns);
 //! it compiles to an unreachable-code trap, so a broken invariant
 //! fails loudly instead of silently returning 0.
