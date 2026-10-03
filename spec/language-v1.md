@@ -100,6 +100,7 @@ The bootstrap compiler in this repository currently supports:
 - protocol names currently cannot appear as value types — conformance is generics-only; `v1` conformance covers user-declared structs in the declaring module, with flat method sets and no associated types, protocol inheritance, or default bodies
 - `unsafe:` block statements open permission regions: valid wherever a statement is, they scope bindings like ordinary blocks, apply every type and ownership check unchanged, and are not valid inside closure bodies in v1
 - every `unsafe:` block is currently inert (no explicitly-unsafe operation exists in v1) and reports a warning; `unsafe` is never a declaration or statement modifier
+- `async` is reserved: it cannot decorate function declarations (`async fn` and friends report GOF3158), form blocks (`async:` reports GOF3159), or appear in any expression, operand, or type position (GOF3160); v1 concurrency is `go` + `await` + `await_result` and no function coloring exists
 - field access through `value.field`
 - method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`

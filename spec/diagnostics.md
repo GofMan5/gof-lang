@@ -166,3 +166,6 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3139`: an `unsafe:` block header inside a closure body (closures are mobile values; unsafe work goes through a named wrapper function)
 - `GOF3140`: `unsafe` used as a declaration or statement modifier (`unsafe fn`, `unsafe struct`, `unsafe` prefixing a statement)
 - `GOF3141`: warning — an `unsafe:` block is inert (in v1 every unsafe block is inert because no explicitly-unsafe operation exists; warnings never fail compilation)
+- `GOF3158`: reserved `async` modifier on a function-shaped declaration (`async fn`, `async test fn`, `async fixture(scope) fn`, `async fn Type.method`) — v1 concurrency is `go` + `await` / `await_result`
+- `GOF3159`: reserved `async:` block prefix in statement position — there are no async blocks; the fix-it suggests the spawn-and-join equivalent
+- `GOF3160`: reserved `async` in any other position (expression, operand, type annotation, identifier, or spawn target)

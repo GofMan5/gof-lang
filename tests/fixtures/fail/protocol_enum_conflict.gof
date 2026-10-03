@@ -1,0 +1,9 @@
+protocol Shape:
+    fn area(self: Self) -> int
+
+enum Shape:
+    Small
+    Large
+
+fn main() -> int:
+    return 0

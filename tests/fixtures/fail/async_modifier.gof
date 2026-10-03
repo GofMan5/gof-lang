@@ -1,0 +1,5 @@
+async fn guarded(value: int) -> int:
+    return value
+
+fn main() -> int:
+    return 0

@@ -487,6 +487,24 @@ impl<'a> Parser<'a> {
                     .with_fix_it("remove the `unsafe` modifier, leaving the valid declaration")
                     .with_source_path(PathBuf::new()),
                 );
+            } else if self.check(TokenDiscriminant::Async) {
+                // RFC 0051 GOF3158: `async fn`, `async test fn`, `async
+                // fixture(scope) fn`, and `async fn Type.method` are
+                // reserved-modifier misuses. Report, skip the modifier,
+                // and parse the underlying declaration so body
+                // diagnostics stay reachable.
+                self.advance();
+                let span = self.previous().span;
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3158",
+                        "`async` is reserved and cannot decorate function declarations",
+                        "v1 concurrency is `go` + `await` / `await_result`: every function can already spawn, join, and block, so there is no restriction for `async fn` to lift; when the spawn-and-join intent applies, write `t = go f(...)` then `await t`",
+                        span,
+                    )
+                    .with_fix_it("remove the `async` modifier, leaving the valid declaration")
+                    .with_source_path(PathBuf::new()),
+                );
             } else {
                 functions.push(self.parse_function());
             }
@@ -1316,6 +1334,42 @@ impl<'a> Parser<'a> {
             return self.parse_stmt();
         }
 
+        // RFC 0051 GOF3159: `async:` in statement position (the `unsafe:`
+        // shape). There are no async blocks in gof; the fix-it suggests
+        // the spawn-and-join equivalent.
+        if self.matches(TokenDiscriminant::Async) {
+            let span = self.previous().span;
+            if self.check(TokenDiscriminant::Colon) {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3159",
+                        "`async:` blocks do not exist in gof",
+                        "v1 concurrency is `go` + `await`: spawn the block's body as a named function and join with `await`",
+                        span,
+                    )
+                    .with_fix_it("move the body into a named function and spawn it with `go f(...)`")
+                    .with_source_path(PathBuf::new()),
+                );
+                // Recover: parse the block so its own diagnostics stay
+                // reachable, then discard it.
+                self.advance();
+                let _ = self.parse_block("expected an indented block after `async:`");
+                return Stmt::Expr(Expr::Bool(false, span), span);
+            }
+            // GOF3160: `async` in any other statement position.
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3160",
+                    "`async` is reserved and does not name a statement, expression, or type",
+                    "`async` is reserved for a possible future suspension model; v1 concurrency is `go` + `await` / `await_result`",
+                    span,
+                )
+                .with_fix_it("remove `async`, or use `go f(...)` + `await t` for the spawn-and-join intent")
+                .with_source_path(PathBuf::new()),
+            );
+            return Stmt::Expr(Expr::Bool(false, span), span);
+        }
+
         if self.matches(TokenDiscriminant::Match) {
             let span = self.previous().span;
             let value = self.parse_expr();
@@ -1876,6 +1930,21 @@ impl<'a> Parser<'a> {
             TokenKind::StringLiteral(value) => Expr::String(value, token.span),
             TokenKind::True => Expr::Bool(true, token.span),
             TokenKind::False => Expr::Bool(false, token.span),
+            // RFC 0051 GOF3160: `async` in expression position. The
+            // reserved keyword never forms an expression operand.
+            TokenKind::Async => {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3160",
+                        "`async` is reserved and does not name an expression, operand, or type",
+                        "`async` is reserved for a possible future suspension model; v1 concurrency is `go` + `await` / `await_result`",
+                        token.span,
+                    )
+                    .with_fix_it("remove `async`, or use `go f(...)` + `await t` for the spawn-and-join intent")
+                    .with_source_path(PathBuf::new()),
+                );
+                Expr::Ident("_error".to_string(), token.span)
+            }
             TokenKind::Ident(value) => Expr::Ident(value, token.span),
             TokenKind::LParen => {
                 // RFC 0050: the comma decides. `()` and `(x,)` are the
@@ -2890,6 +2959,7 @@ enum TokenDiscriminant {
     Select,
     Default,
     Go,
+    Async,
     Await,
     And,
     Or,
@@ -2950,6 +3020,7 @@ impl TokenDiscriminant {
                 | (Self::Select, TokenKind::Select)
                 | (Self::Default, TokenKind::Default)
                 | (Self::Go, TokenKind::Go)
+                | (Self::Async, TokenKind::Async)
                 | (Self::Await, TokenKind::Await)
                 | (Self::And, TokenKind::And)
                 | (Self::Or, TokenKind::Or)
@@ -3008,6 +3079,7 @@ impl TokenDiscriminant {
             Self::Select => "`select`",
             Self::Default => "`default`",
             Self::Go => "`go`",
+            Self::Async => "`async`",
             Self::Await => "`await`",
             Self::And => "`and`",
             Self::Or => "`or`",

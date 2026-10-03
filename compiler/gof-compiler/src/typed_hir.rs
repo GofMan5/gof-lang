@@ -1036,26 +1036,25 @@ pub fn lower(module: &HirModule) -> Result<(TypedModule, Diagnostics), Diagnosti
                         );
                     }
                 }
+                // RFC 0044: the unused-parameter contract reads "value
+                // parameter annotation" — return-position-only usage
+                // does not keep a type parameter alive.
                 let used = param_types
                     .iter()
-                    .any(|ty| type_contains(ty, &Type::TypeParam(type_param.name.clone())))
-                    || declared_return_type
-                        .as_ref()
-                        .map(|ty| type_contains(ty, &Type::TypeParam(type_param.name.clone())))
-                        .unwrap_or(false);
+                    .any(|ty| type_contains(ty, &Type::TypeParam(type_param.name.clone())));
                 if !used {
                     diagnostics.push(
                         Diagnostic::error(
                             "GOF3132",
                             format!(
-                                "type parameter `{}` appears in no value parameter annotation or return type",
+                                "type parameter `{}` appears in no value parameter annotation",
                                 type_param.name
                             ),
                             "a type parameter that binds nothing cannot be checked at call sites; its bounds would be dead",
                             type_param.span,
                         )
                         .with_fix_it(format!(
-                            "annotate a parameter or the return type with `{}`, or remove the type parameter",
+                            "annotate a parameter with `{}`, or remove the type parameter",
                             type_param.name
                         ))
                         .with_source_path(function.source_path.clone()),
@@ -13384,6 +13383,48 @@ mod tests {
             parse(&CstModule::new(tokens)).expect_err("unsafe cannot decorate a function");
 
         assert!(diagnostics.codes().contains(&"GOF3140"));
+    }
+
+    #[test]
+    fn rejects_async_function_modifier_with_recovery() {
+        // GOF3158 fires in the parser; recovery skips the modifier and
+        // parses the underlying declaration, so the body stays
+        // typecheckable (the declaration itself has no further error).
+        let source = SourceFile::new(
+            "typed.gof",
+            "async fn guarded(value: int) -> int:\n    return value\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let diagnostics = parse(&CstModule::new(tokens))
+            .expect_err("async cannot decorate a function declaration");
+
+        assert!(diagnostics.codes().contains(&"GOF3158"));
+    }
+
+    #[test]
+    fn rejects_async_block_prefix() {
+        let source = SourceFile::new(
+            "typed.gof",
+            "fn work() -> int:\n    async:\n        return 5\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let diagnostics = parse(&CstModule::new(tokens)).expect_err("async blocks do not exist");
+
+        assert!(diagnostics.codes().contains(&"GOF3159"));
+    }
+
+    #[test]
+    fn rejects_async_in_expression_position() {
+        // GOF3160 fires in the primary-expression PARSER; the statement
+        // machinery recovers into a binding of the error placeholder.
+        let source = SourceFile::new(
+            "typed.gof",
+            "fn main() -> int:\n    x = async\n    return 0\n",
+        );
+        let tokens = lex(&source).expect("lexing should succeed");
+        let diagnostics = parse(&CstModule::new(tokens)).expect_err("async is not an expression");
+
+        assert!(diagnostics.codes().contains(&"GOF3160"));
     }
 
     fn compile_typed_source(

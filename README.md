@@ -80,6 +80,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | Closures `fn (x: int) -> int:` with immutable snapshot captures, `fn(T) -> T` types, `go closure(args)`, defer value-capture | stable |
 | Protocols `protocol Name:` with `Self`-annotated requirements, explicit `impl Struct: Protocol` conformance checking, generic functions `fn f[T: Proto](x: T)` with call-site bound inference | stable |
 | `unsafe:` permission blocks (checks unchanged, inert in v1 with a warning), closure-body ban, modifier rejection | stable |
+| Reserved `async` diagnostics (GOF3158–3160): every use fails with the spawn-and-join guidance; no function coloring in v1 | stable |
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, `defer`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |

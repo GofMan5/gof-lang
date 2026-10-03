@@ -1,0 +1,6 @@
+fn work() -> int:
+    async:
+        return 5
+
+fn main() -> int:
+    return 0
