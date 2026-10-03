@@ -33,6 +33,11 @@ fn compute(value: int) -> int:
     else:
         return 0
 
+fn find_first(items: list[int]) -> Option[int]:
+    if len(items) > 0:
+        return Option.Some(items[0])
+    return Option.None
+
 fn load_config(path: string) -> Result[json, RuntimeError]:
     lines = read_lines(path)?
     text = join(lines, "\n")
@@ -135,3 +140,12 @@ fixture(module) fn shared_total() -> int:
 
 fixture(test) fn scratch_dir(t: TestContext) -> TempDir:
     return t.temp_dir()
+
+fn main() -> int:
+    first = find_first([7, 8, 9])
+    match first:
+        Option.Some(value):
+            assert(value == 7, "expected the first list element")
+        Option.None:
+            return 1
+    return 0

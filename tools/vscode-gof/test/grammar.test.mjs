@@ -119,50 +119,50 @@ test("highlights core gof syntax constructs", async () => {
   expectScope(lines, tokenLines, 31, "and", "keyword.operator.logical.gof");
   expectScope(lines, tokenLines, 31, "not", "keyword.operator.logical.gof");
   expectScope(lines, tokenLines, 31, "false", "constant.language.boolean.gof");
-  expectScope(lines, tokenLines, 37, "read_lines", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 38, "join", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 39, "toml_parse", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 42, "csv_stringify", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 45, "# syntax smoke", "comment.line.number-sign.gof");
-  expectScope(lines, tokenLines, 48, "run_process", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 51, "template_render", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 54, "read_stdin", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 55, "read_stdin_lines", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 60, "unix_seconds", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 61, "unix_millis", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 66, "yaml_parse", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 71, "base64_encode", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 72, "base64_decode", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 77, "http_request", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 82, "NetDeadline", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 82, "deadline_after", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 83, "Bytes", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 83, "bytes_from_string", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 84, "WriteStream", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 84, "open_write_stream", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 89, "ReadStream", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 89, "open_read_stream", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 92, "TcpListener", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 92, "listen_tcp", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 93, "SocketAddr", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 94, "DuplexStream", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 94, "connect_tcp", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 95, "bytes_len", "support.function.builtin.gof");
-  expectScope(lines, tokenLines, 127, "import", "keyword.control.import.gof");
-  expectScope(lines, tokenLines, 127, "testing", "entity.name.namespace.gof");
-  expectScope(lines, tokenLines, 129, "test", "keyword.declaration.test.gof");
-  expectScope(lines, tokenLines, 129, "fn", "keyword.declaration.function.gof");
-  expectScope(lines, tokenLines, 129, "smoke_test", "entity.name.function.gof");
-  expectScope(lines, tokenLines, 129, "TestContext", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 133, "fixture", "keyword.declaration.fixture.gof");
-  expectScope(lines, tokenLines, 133, "module", "keyword.other.fixture-scope.gof");
-  expectScope(lines, tokenLines, 133, "fn", "keyword.declaration.function.gof");
-  expectScope(lines, tokenLines, 133, "shared_total", "entity.name.function.gof");
-  expectScope(lines, tokenLines, 136, "fixture", "keyword.declaration.fixture.gof");
-  expectScope(lines, tokenLines, 136, "test", "keyword.other.fixture-scope.gof");
-  expectScope(lines, tokenLines, 136, "scratch_dir", "entity.name.function.gof");
-  expectScope(lines, tokenLines, 136, "TestContext", "support.type.builtin.gof");
-  expectScope(lines, tokenLines, 136, "TempDir", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 42, "read_lines", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 43, "join", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 44, "toml_parse", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 47, "csv_stringify", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 50, "# syntax smoke", "comment.line.number-sign.gof");
+  expectScope(lines, tokenLines, 53, "run_process", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 56, "template_render", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 59, "read_stdin", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 60, "read_stdin_lines", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 65, "unix_seconds", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 66, "unix_millis", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 71, "yaml_parse", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 76, "base64_encode", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 77, "base64_decode", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 82, "http_request", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 87, "NetDeadline", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 87, "deadline_after", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 88, "Bytes", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 88, "bytes_from_string", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 89, "WriteStream", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 89, "open_write_stream", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 94, "ReadStream", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 94, "open_read_stream", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 97, "TcpListener", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 97, "listen_tcp", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 98, "SocketAddr", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 99, "DuplexStream", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 99, "connect_tcp", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 100, "bytes_len", "support.function.builtin.gof");
+  expectScope(lines, tokenLines, 132, "import", "keyword.control.import.gof");
+  expectScope(lines, tokenLines, 132, "testing", "entity.name.namespace.gof");
+  expectScope(lines, tokenLines, 134, "test", "keyword.declaration.test.gof");
+  expectScope(lines, tokenLines, 134, "fn", "keyword.declaration.function.gof");
+  expectScope(lines, tokenLines, 134, "smoke_test", "entity.name.function.gof");
+  expectScope(lines, tokenLines, 134, "TestContext", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 138, "fixture", "keyword.declaration.fixture.gof");
+  expectScope(lines, tokenLines, 138, "module", "keyword.other.fixture-scope.gof");
+  expectScope(lines, tokenLines, 138, "fn", "keyword.declaration.function.gof");
+  expectScope(lines, tokenLines, 138, "shared_total", "entity.name.function.gof");
+  expectScope(lines, tokenLines, 141, "fixture", "keyword.declaration.fixture.gof");
+  expectScope(lines, tokenLines, 141, "test", "keyword.other.fixture-scope.gof");
+  expectScope(lines, tokenLines, 141, "scratch_dir", "entity.name.function.gof");
+  expectScope(lines, tokenLines, 141, "TestContext", "support.type.builtin.gof");
+  expectScope(lines, tokenLines, 141, "TempDir", "support.type.builtin.gof");
 });
 
 test("highlights tuple syntax constructs", async () => {
@@ -171,9 +171,9 @@ test("highlights tuple syntax constructs", async () => {
   // Tuple annotations and literals: the member types scope as builtin
   // types and the literal members as decimal integers (plain
   // identifiers carry no dedicated scope in this grammar).
-  expectScope(lines, tokenLines, 97, "int", "support.type.builtin.gof", 0);
-  expectScope(lines, tokenLines, 98, "3", "constant.numeric.integer.decimal.gof");
-  expectScope(lines, tokenLines, 98, "4", "constant.numeric.integer.decimal.gof");
+  expectScope(lines, tokenLines, 102, "int", "support.type.builtin.gof", 0);
+  expectScope(lines, tokenLines, 103, "3", "constant.numeric.integer.decimal.gof");
+  expectScope(lines, tokenLines, 103, "4", "constant.numeric.integer.decimal.gof");
 });
 
 test("highlights closure syntax constructs", async () => {
@@ -182,10 +182,10 @@ test("highlights closure syntax constructs", async () => {
   // RFC 0047: the anonymous `fn (` expression keyword scopes as the
   // function declaration keyword; the `fn(int)` type annotation scopes
   // as a builtin type.
-  expectScope(lines, tokenLines, 103, "fn", "keyword.declaration.function.gof", 0);
-  expectScope(lines, tokenLines, 103, "int", "support.type.builtin.gof", 1);
-  expectScope(lines, tokenLines, 105, "fn", "support.type.builtin.gof", 0);
-  expectScope(lines, tokenLines, 105, "fn", "keyword.declaration.function.gof", 1);
+  expectScope(lines, tokenLines, 108, "fn", "keyword.declaration.function.gof", 0);
+  expectScope(lines, tokenLines, 108, "int", "support.type.builtin.gof", 1);
+  expectScope(lines, tokenLines, 110, "fn", "support.type.builtin.gof", 0);
+  expectScope(lines, tokenLines, 110, "fn", "keyword.declaration.function.gof", 1);
 });
 
 test("highlights protocol and unsafe syntax constructs", async () => {
@@ -193,12 +193,12 @@ test("highlights protocol and unsafe syntax constructs", async () => {
 
   // RFC 0044: `protocol Name:` scopes as declaration + type; `impl` as
   // the storage modifier; the generic bracket form keeps the fn keyword.
-  expectScope(lines, tokenLines, 109, "protocol", "storage.type.declaration.gof", 0);
-  expectScope(lines, tokenLines, 109, "Shape", "entity.name.type.gof", 0);
-  expectScope(lines, tokenLines, 118, "impl", "storage.modifier.gof", 0);
-  expectScope(lines, tokenLines, 124, "fn", "keyword.declaration.function.gof", 0);
+  expectScope(lines, tokenLines, 114, "protocol", "storage.type.declaration.gof", 0);
+  expectScope(lines, tokenLines, 114, "Shape", "entity.name.type.gof", 0);
+  expectScope(lines, tokenLines, 123, "impl", "storage.modifier.gof", 0);
+  expectScope(lines, tokenLines, 129, "fn", "keyword.declaration.function.gof", 0);
   // RFC 0046: `unsafe` scopes as the storage modifier alongside mut/defer.
-  expectScope(lines, tokenLines, 121, "unsafe", "storage.modifier.gof", 0);
+  expectScope(lines, tokenLines, 126, "unsafe", "storage.modifier.gof", 0);
 });
 
 test("highlights module export and const syntax constructs", async () => {
@@ -206,6 +206,8 @@ test("highlights module export and const syntax constructs", async () => {
 
   // RFC 0053: the `module:` export block header scopes as a declaration.
   expectScope(lines, tokenLines, 1, "module", "keyword.declaration.exports.gof", 0);
+  // RFC 0049: Option scopes as a builtin type in annotations.
+  expectScope(lines, tokenLines, 36, "Option", "support.type.builtin.gof", 0);
   // RFC 0054: `const NAME:` scopes as declaration + named constant.
   expectScope(lines, tokenLines, 5, "const", "keyword.declaration.const.gof", 0);
   expectScope(lines, tokenLines, 5, "MAX_SIZE", "entity.name.constant.gof", 0);

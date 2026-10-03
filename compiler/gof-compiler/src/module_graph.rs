@@ -1400,6 +1400,37 @@ mod tests {
     }
 
     #[test]
+    fn rejects_import_name_collisions_across_direct_imports() {
+        // RFC 0053 GOF3171: two direct imports both contributing the
+        // same plain-function name report at the import that completes
+        // the collision.
+        let temp = tempdir().expect("tempdir should exist");
+        let alpha_path = temp.path().join("alpha.gof");
+        let beta_path = temp.path().join("beta.gof");
+        let main_path = temp.path().join("main.gof");
+
+        fs::write(&alpha_path, "fn collide() -> int:\n    return 1\n")
+            .expect("alpha module should be written");
+        fs::write(&beta_path, "fn collide() -> int:\n    return 2\n")
+            .expect("beta module should be written");
+        fs::write(
+            &main_path,
+            "import alpha\nimport beta\n\nfn main() -> int:\n    return collide()\n",
+        )
+        .expect("main module should be written");
+
+        let diagnostics =
+            load_module_graph(&SourceFile::from_path(&main_path).expect("main should load"))
+                .expect_err("import name collisions should fail");
+
+        assert!(
+            diagnostics.codes().contains(&"GOF3171"),
+            "expected GOF3171 in {:?}",
+            diagnostics.codes()
+        );
+    }
+
+    #[test]
     fn rejects_invalid_package_manifests() {
         let temp = tempdir().expect("tempdir should exist");
         let source_root = temp.path().join("src");

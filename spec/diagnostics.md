@@ -154,7 +154,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3165`: match guard contract violation (non-bool guard, or `?`/`await`/`go` inside a guard)
 - `GOF3166`: duplicate match arm with an identical literal-containing arm skeleton
 - `GOF3167`: unreachable match arm (an arm after an unguarded all-irrefutable arm for the same variant)
-- `GOF3142`: closure parameter without an explicit type annotation
+- `GOF3142`: malformed closure declaration (parameter without an explicit type annotation, duplicate parameter names, or a `self` receiver — closures take no receivers)
 - `GOF3143`: closure call contract violation (non-closure value called, wrong arity, or incompatible argument type)
 - `GOF3144`: closure reference to an enclosing mutable binding (reads, calls, and assignments)
 - `GOF3145`: owned-taxa capture without an explicit `clone` at the capture site (dormant until owned taxa land)
@@ -165,8 +165,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3131`: mut-receiver requirement called through a non-`mut` generic parameter (the parameter-side instantiation rule of RFC 0044)
 - `GOF3139`: an `unsafe:` block header inside a closure body (closures are mobile values; unsafe work goes through a named wrapper function)
 - `GOF3140`: `unsafe` used as a declaration or statement modifier (`unsafe fn`, `unsafe struct`, `unsafe` prefixing a statement)
-- `GOF3141`: warning — an `unsafe:` block is inert (in v1 every unsafe block is inert because no explicitly-unsafe operation exists; warnings never fail compilation)
-- `GOF3158`: reserved `async` modifier on a function-shaped declaration (`async fn`, `async test fn`, `async fixture(scope) fn`, `async fn Type.method`) — v1 concurrency is `go` + `await` / `await_result`
+- `GOF3141`: warning — an `unsafe:` block is inert (in v1 every unsafe block is inert because no explicitly-unsafe operation exists; warnings never fail compilation)- `GOF3158`: reserved `async` modifier on a function-shaped declaration (`async fn`, `async test fn`, `async fixture(scope) fn`, `async fn Type.method`) — v1 concurrency is `go` + `await` / `await_result`
 - `GOF3159`: reserved `async:` block prefix in statement position — there are no async blocks; the fix-it suggests the spawn-and-join equivalent
 - `GOF3160`: reserved `async` in any other position (expression, operand, type annotation, identifier, or spawn target)
 - `GOF3168`: invalid `module:` export declaration (late or second block, empty block, non-identifier entries, duplicate entries, or entries naming unknown/imported/test/fixture names)

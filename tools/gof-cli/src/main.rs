@@ -896,6 +896,37 @@ pub(crate) fn run_fixture_report(path: &Path, update_expected_artifacts: bool) -
                 }
             }
         }
+        // LegacyPass fixtures EXECUTE after compiling: a pass fixture
+        // asserts runtime behavior (25+ carry `assert(...)` calls), and
+        // compile-only reporting turned real runtime crashes into "ok"
+        // (freeze-audit MAJOR). Warnings render directly to stderr
+        // (never fail the fixture); only runtime errors fail it.
+        Ok(_) if harness == FixtureHarnessKind::LegacyPass => {
+            match run_module_with_output_and_args_and_warnings(&source, &[]) {
+                Ok((result, warnings)) => {
+                    if !warnings.is_empty() {
+                        render_warnings(&source, &warnings);
+                    }
+                    FixtureRunReport {
+                        stdout: render_execution_stdout(&result),
+                        stderr: String::new(),
+                        diagnostics: Vec::new(),
+                        failure_message: None,
+                    }
+                }
+                Err(error) => {
+                    let stderr = render_error(&source, error).to_string();
+                    FixtureRunReport {
+                        stdout: String::new(),
+                        stderr: stderr.clone(),
+                        diagnostics: Vec::new(),
+                        failure_message: Some(format!(
+                            "fixture compiled but failed at runtime:\n{stderr}"
+                        )),
+                    }
+                }
+            }
+        }
         Ok(_) => FixtureRunReport {
             stdout: String::new(),
             stderr: String::new(),

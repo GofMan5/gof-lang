@@ -262,6 +262,16 @@ handle. The restriction lifts only through an RFC that extends witness
 tables with taxon operations and specifies the erased capture
 representation.
 
+**Implementation phasing note (freeze-audit adjudicated).** The v1
+implementation does not yet enforce this restriction: the typed layer
+accepts `T`-typed captures and type-parameter closure annotations
+inside generic declarations (they compile and run through the
+evaluator's dynamic dispatch). The rejection trigger (`GOF3146`'s
+capture clause, per RFC 0048's amendment) stays reserved, and
+enforcement lands with the native backend's witness-table work —
+the same re-entry criteria as RFC 0048 Phase B. Until then the
+restriction above is the specified contract, not the enforced one.
+
 **No self-recursion in v1.** An anonymous function has no name, and the
 binding being initialized is not in scope inside its own initializer, so
 the body cannot reference the closure it defines (existing `GOF3002`).

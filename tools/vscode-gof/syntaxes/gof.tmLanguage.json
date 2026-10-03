@@ -320,7 +320,7 @@
       "patterns": [
         {
           "name": "support.type.builtin.gof",
-          "match": "\\b(?:int|string|bool|unit|json|cancel_token|list|dict|channel|task|Result|RuntimeError|Bytes|ReadStream|WriteStream|DuplexStream|TcpListener|SocketAddr|NetDeadline|TestContext|TempDir|TempFile)\\b"
+          "match": "\\b(?:int|string|bool|unit|json|cancel_token|list|dict|channel|task|Result|Option|RuntimeError|Bytes|ReadStream|WriteStream|DuplexStream|TcpListener|SocketAddr|NetDeadline|TestContext|TempDir|TempFile)\\b"
         },
         {
           "comment": "RFC 0047 closure type annotation: `fn(params) -> ret`.",
