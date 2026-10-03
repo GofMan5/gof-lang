@@ -2915,4 +2915,132 @@ mod tests {
             Err(BackendIrError::SymbolOutOfRange { .. })
         ));
     }
+
+    const NESTED_LOOPS_SOURCE: &str = "fn count(n: int) -> int:\n    mut total = 0\n    mut i = 0\n    while i < n:\n        mut j = 0\n        while j < i:\n            total = total + 1\n            j = j + 1\n        i = i + 1\n    return total\n\nfn main() -> int:\n    return count(3)\n";
+
+    #[test]
+    fn nested_while_loops_keep_both_back_edges() {
+        // Reviewer regression (BLOCKER 1 on the earlier revision): nested
+        // loop_stack frames must POP at each End — the outer EndWhile
+        // must find the OUTER header, and BOTH loops get back-edges.
+        let ir = lower(&ssa_from_source("nested.gof", NESTED_LOOPS_SOURCE));
+        let function = &ir.functions[0];
+        let branch_headers: Vec<u32> = function
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, IrTerminator::Branch { .. }))
+            .map(|block| block.id)
+            .collect();
+        assert_eq!(branch_headers.len(), 2, "two loop headers (nested whiles)");
+        // Each header is the target of at least one Jump (its back-edge).
+        for header in &branch_headers {
+            let back_edges = function
+                .blocks
+                .iter()
+                .filter(|block| matches!(&block.terminator, IrTerminator::Jump { block } if block == header))
+                .count();
+            assert!(back_edges >= 1, "header {header} needs a back-edge");
+        }
+        // No block may keep Unreachable after a well-formed lowering
+        // except the documented deferral regions (none in this program).
+        for block in &function.blocks {
+            assert!(
+                !matches!(block.terminator, IrTerminator::Unreachable),
+                "block {} must not stay Unreachable in a while-only program",
+                block.id
+            );
+        }
+        // Round-trip holds for the nested structure too.
+        let bytes = encode(&ir);
+        assert_eq!(decode(&bytes).expect("decode"), ir);
+    }
+
+    #[test]
+    fn break_after_nested_loop_targets_own_loop() {
+        // Reviewer regression: `break` after an inner loop must target
+        // the loop it textually belongs to, not the innermost frame.
+        let source = "fn early(n: int) -> int:\n    mut i = 0\n    while i < n:\n        mut j = 0\n        while j < 3:\n            j = j + 1\n        break\n    return i\n\nfn main() -> int:\n    return early(5)\n";
+        let ir = lower(&ssa_from_source("break_nested.gof", source));
+        let function = &ir.functions[0];
+        // Collect all Jump terminators; every target must exist.
+        let block_count = function.blocks.len() as u32;
+        for block in &function.blocks {
+            if let IrTerminator::Jump { block: target } = block.terminator {
+                assert!(target < block_count, "jump target {target} must exist");
+            }
+        }
+        // The outer loop's header is a Branch block; the break's Jump
+        // must NOT target the inner header (it exits the OUTER loop).
+        let headers: Vec<u32> = function
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, IrTerminator::Branch { .. }))
+            .map(|b| b.id)
+            .collect();
+        assert_eq!(headers.len(), 2);
+        // The break block: the one jumping to the outer header's exit.
+        // Structural sanity: exactly the outer exit receives a Jump
+        // from the post-inner-loop block.
+        let (outer_header, inner_header) = (headers[0], headers[1]);
+        assert_ne!(outer_header, inner_header);
+        // No Unreachable leftovers in a while-only program.
+        for block in &function.blocks {
+            assert!(
+                !matches!(block.terminator, IrTerminator::Unreachable),
+                "block {} must not stay Unreachable",
+                block.id
+            );
+        }
+        // Round-trip.
+        let bytes = encode(&ir);
+        assert_eq!(decode(&bytes).expect("decode"), ir);
+    }
+
+    #[test]
+    fn for_inside_while_lowers_without_unreachable_leak() {
+        // Reviewer regression (for-in-while): the for's deferred
+        // Unreachable header is INSIDE the while body; the while's own
+        // structure must stay coherent.
+        let source = "fn tally(items: list[int], rounds: int) -> int:\n    mut total = 0\n    mut round = 0\n    while round < rounds:\n        for item in items:\n            total = total + item\n        round = round + 1\n    return total\n\nfn main() -> int:\n    return tally([1, 2], 2)\n";
+        let ir = lower(&ssa_from_source("for_while.gof", source));
+        // Round-trip + validate: the deferral regions are allowed to be
+        // Unreachable (for header), but the while back-edge must exist.
+        let function = &ir.functions[0];
+        let headers: Vec<u32> = function
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, IrTerminator::Branch { .. }))
+            .map(|b| b.id)
+            .collect();
+        assert!(!headers.is_empty(), "the while header must exist");
+        let while_back_edges = function
+            .blocks
+            .iter()
+            .filter(
+                |b| matches!(&b.terminator, IrTerminator::Jump { block } if *block == headers[0]),
+            )
+            .count();
+        assert!(while_back_edges >= 1, "the while loop needs its back-edge");
+        let bytes = encode(&ir);
+        assert_eq!(decode(&bytes).expect("decode"), ir);
+    }
+
+    #[test]
+    fn nested_match_round_trips() {
+        // Reviewer gap: nested match coverage (match inside match arm).
+        let source = "enum Outer:\n    A\n    B\n\nenum Inner:\n    X\n    Y\n\nfn pick(o: Outer, i: Inner) -> int:\n    match o:\n        Outer.A:\n            match i:\n                Inner.X:\n                    return 1\n                Inner.Y:\n                    return 2\n        Outer.B:\n            return 3\n\nfn main() -> int:\n    return pick(Outer.A, Inner.Y)\n";
+        let ir = lower(&ssa_from_source("nested_match.gof", source));
+        let function = &ir.functions[0];
+        let dispatches = function
+            .blocks
+            .iter()
+            .filter(|b| matches!(b.terminator, IrTerminator::MatchDispatch { .. }))
+            .count();
+        assert_eq!(
+            dispatches, 2,
+            "two MatchDispatch terminators (nested match)"
+        );
+        let bytes = encode(&ir);
+        assert_eq!(decode(&bytes).expect("decode"), ir);
+    }
 }

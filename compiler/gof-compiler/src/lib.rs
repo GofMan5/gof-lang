@@ -1,5 +1,6 @@
 pub mod ast;
 pub mod backend;
+pub mod backend_codegen;
 pub mod backend_ir;
 pub mod cst;
 pub mod diagnostics;
