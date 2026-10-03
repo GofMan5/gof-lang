@@ -1,0 +1,6 @@
+fn compute(value: int) -> int:
+    return value * 2
+
+fn main() -> int:
+    t = go async
+    return await t

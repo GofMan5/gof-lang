@@ -551,23 +551,42 @@ impl<'a> Parser<'a> {
                     .with_source_path(PathBuf::new()),
                 );
             } else if self.check(TokenDiscriminant::Async) {
-                // RFC 0051 GOF3158: `async fn`, `async test fn`, `async
+                // RFC 0051: `async fn`, `async test fn`, `async
                 // fixture(scope) fn`, and `async fn Type.method` are
-                // reserved-modifier misuses. Report, skip the modifier,
-                // and parse the underlying declaration so body
-                // diagnostics stay reachable.
+                // reserved-modifier misuses (GOF3158). Report, skip the
+                // modifier, and parse the underlying declaration so body
+                // diagnostics stay reachable. A NON-function-shaped
+                // declaration (`async struct`, `async enum`, ...) is the
+                // generic reserved-position misuse — GOF3160.
                 self.advance();
                 let span = self.previous().span;
-                self.diagnostics.push(
-                    Diagnostic::error(
-                        "GOF3158",
-                        "`async` is reserved and cannot decorate function declarations",
-                        "v1 concurrency is `go` + `await` / `await_result`: every function can already spawn, join, and block, so there is no restriction for `async fn` to lift; when the spawn-and-join intent applies, write `t = go f(...)` then `await t`",
-                        span,
-                    )
-                    .with_fix_it("remove the `async` modifier, leaving the valid declaration")
-                    .with_source_path(PathBuf::new()),
-                );
+                let next_is_function = self.check(TokenDiscriminant::Fn)
+                    || self.check(TokenDiscriminant::Test)
+                    || (self.check(TokenDiscriminant::Fixture)
+                        && self.peek_ahead_is(TokenDiscriminant::LParen));
+                if next_is_function {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3158",
+                            "`async` is reserved and cannot decorate function declarations",
+                            "v1 concurrency is `go` + `await` / `await_result`: every function can already spawn, join, and block, so there is no restriction for `async fn` to lift; when the spawn-and-join intent applies, write `t = go f(...)` then `await t`",
+                            span,
+                        )
+                        .with_fix_it("remove the `async` modifier, leaving the valid declaration")
+                        .with_source_path(PathBuf::new()),
+                    );
+                } else {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3160",
+                            "`async` is reserved and cannot decorate this declaration",
+                            "v1 concurrency is `go` + `await` / `await_result`: there is no async-flavored form of this declaration; spawn with `t = go f(...)` and join with `await t` instead",
+                            span,
+                        )
+                        .with_fix_it("remove the `async` modifier, leaving the valid declaration")
+                        .with_source_path(PathBuf::new()),
+                    );
+                }
             } else {
                 functions.push(self.parse_function());
             }
@@ -2286,6 +2305,27 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_type_ref(&mut self, message: &'static str) -> TypeRef {
+        // RFC 0051 GOF3160: `async` in a type-annotation position is the
+        // reserved-keyword misuse — report it here instead of falling
+        // through to the generic expected-a-type-name error.
+        if self.check(TokenDiscriminant::Async) {
+            let span = self.advance().span;
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3160",
+                    "`async` is reserved and is not a type",
+                    "v1 concurrency is `go` + `await` / `await_result`: task values come from spawning, so no async-typed annotation exists; write `t = go f(...)`, then `t` holds the task",
+                    span,
+                )
+                .with_fix_it("replace `async` with the value's actual type, or spawn a task for the result")
+                .with_source_path(PathBuf::new()),
+            );
+            return TypeRef {
+                name: "unit".to_string(),
+                args: Vec::new(),
+                span,
+            };
+        }
         // RFC 0047 closure types: `fn(ParamType, ...) -> RetType`. The
         // return type is mandatory — `fn` is a keyword, so it can never
         // collide with a user type name, and the form is purely additive.

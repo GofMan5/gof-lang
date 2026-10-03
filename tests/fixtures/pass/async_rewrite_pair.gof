@@ -1,0 +1,12 @@
+# RFC 0051 fail→rewritten-pass pair: the spawn-and-join rewrite the
+# GOF3158 fix-it teaches. This is the PASS side — `async fn guarded`
+# became `fn guarded` + `go guarded()` + `await task`.
+fn fetch() -> int:
+    return 7
+
+fn guarded() -> int:
+    return fetch()
+
+fn main() -> int:
+    task = go guarded()
+    return await task

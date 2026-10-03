@@ -1,0 +1,6 @@
+fn compute(value: int) -> int:
+    return value * 2
+
+async test fn async_spelled_test(t: TestContext):
+    case = t.case("never runs")
+    case.equal(1, 1, "the async modifier is rejected before the test exists")
