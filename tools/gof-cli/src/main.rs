@@ -86,6 +86,18 @@ struct BuildArgs {
         conflicts_with_all = ["native", "output"]
     )]
     native_object: Option<PathBuf>,
+    /// Opt-in incremental build cache for `--native-object` (Phase 2
+    /// slice 4): the second build of an unchanged source skips the
+    /// frontend-to-IR pipeline (parse → typed HIR → MIR → SSA →
+    /// backend IR) — the cached IR, keyed by the whole module graph's
+    /// content plus the IR format version, decodes and feeds codegen
+    /// directly, and the linked artifact is byte-identical to an
+    /// uncached build. The cache is best-effort: any cache failure
+    /// silently falls back to full compilation, and it lives in a
+    /// `.gof-ir-cache` directory beside the output (deleting it is
+    /// always safe). Default behavior without the flag is unchanged.
+    #[arg(long, requires = "native_object")]
+    cache: bool,
 }
 
 #[derive(Args)]
@@ -241,6 +253,35 @@ fn build(args: BuildArgs) -> Result<()> {
     if let Some(output) = args.native_object {
         if let Some(parent) = output.parent() {
             fs::create_dir_all(parent)?;
+        }
+        // Phase 2 slice 4: the opt-in incremental route. Same
+        // artifact, same diagnostics — on a cache HIT the
+        // frontend-to-IR pipeline is skipped (the cache lives beside
+        // the output, never in the source tree).
+        if args.cache {
+            let cache = gof_compiler::backend_cache::IrCache::beside_output(&output);
+            let (built, warnings, outcome) =
+                gof_compiler::pipeline::build_module_native_executable_cached(
+                    &source, &output, &cache,
+                )
+                .map_err(|error| render_error(&source, error))?;
+            render_warnings(&source, &warnings);
+            println!(
+                "ir cache: {}",
+                match outcome {
+                    gof_compiler::pipeline::CacheOutcome::Hit =>
+                        "hit (frontend-to-IR pipeline skipped)",
+                    gof_compiler::pipeline::CacheOutcome::Miss =>
+                        "miss (compiled through the pipeline)",
+                }
+            );
+            println!("wrote object {}", built.object_path.display());
+            println!(
+                "linked native executable {} with {}",
+                output.display(),
+                built.linker
+            );
+            return Ok(());
         }
         let (built, warnings) =
             gof_compiler::pipeline::build_module_native_executable(&source, &output)

@@ -127,12 +127,18 @@ pub fn value_name(id: IrValueId) -> String {
     format!("v{id}")
 }
 
+/// The IR binary format version (ADR 0006): the value the wire header
+/// carries and [`decode`] enforces. Public so the incremental cache
+/// (`backend_cache`) can fold it into its key derivation — a format
+/// bump must invalidate every cache entry.
+pub const FORMAT_VERSION: u16 = 1;
+
 /// Wire-format constants. The tag values are the stable binary
 /// contract: additive growth appends new tags; renumbering is a
 /// layout change and bumps the format version.
 mod wire {
     pub const MAGIC: &[u8; 5] = b"GOFIR";
-    pub const VERSION: u16 = 1;
+    pub const VERSION: u16 = super::FORMAT_VERSION;
 
     // instruction tags
     pub const CONST_INT: u8 = 1;

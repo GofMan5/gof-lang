@@ -59,6 +59,21 @@ where
     Provider: SourceProvider,
 {
     let loaded_graph = load_module_graph_with_provider(source, provider)?;
+    compile_loaded_graph(source, mode, loaded_graph)
+}
+
+/// The compile pipeline from an ALREADY-LOADED module graph: the
+/// post-graph stages (entry CST, HIR, typed HIR, MIR, SSA, backend
+/// artifact). [`compile_source_with_provider`] is the public wrapper
+/// that loads the graph first; the cached native-build path (slice 4)
+/// reuses this helper so a cache MISS compiles exactly what the
+/// uncached build compiles — the same stages over the same graph —
+/// and the cache never changes what the pipeline computes.
+fn compile_loaded_graph(
+    source: &SourceFile,
+    mode: CompileMode,
+    loaded_graph: crate::module_graph::LoadedModuleGraph,
+) -> Result<CompiledModule, Diagnostics> {
     let ast = loaded_graph.module;
     let graph_warnings = loaded_graph.warnings;
     let cst = CstModule::new(
@@ -287,6 +302,139 @@ pub(crate) fn build_module_native_executable_with_probe(
     ))
 }
 
+// ---------------------------------------------------------------------------
+// Incremental native build (Phase 2 slice 4: the backend-IR cache)
+// ---------------------------------------------------------------------------
+
+/// Whether a cached build used the incremental path. The visible seam
+/// the cache contract is tested through: a [`CacheOutcome::Hit`] is
+/// the proof that the frontend-to-IR pipeline (parse → typed HIR →
+/// MIR → SSA → IR lowering) was skipped and the decoded cache entry
+/// fed codegen directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheOutcome {
+    /// No usable entry: the full pipeline ran and the param-bound IR
+    /// was (best-effort) stored for the next build.
+    Miss,
+    /// A cache entry decoded and fed codegen directly; the
+    /// frontend-to-IR pipeline was skipped.
+    Hit,
+}
+
+/// Phase 2 slice 4: the opt-in incremental native build (`gof build
+/// --cache`). Same contract as [`build_module_native_executable`] —
+/// same object artifact, same linking, same diagnostics — with one
+/// difference: on a cache HIT the serialized backend IR (ADR 0006's
+/// cache boundary) decodes and feeds codegen directly, skipping the
+/// frontend-to-IR pipeline.
+///
+/// The cache key covers the whole module graph (the entry plus every
+/// import, by content), so the graph load (lex + parse per file — the
+/// cheap end of the pipeline) still runs on every build: import
+/// resolution errors stay real, and a changed import correctly
+/// invalidates the entry. Everything after the graph load — CST, HIR,
+/// typed HIR, MIR, SSA, IR lowering, parameter binding — is skipped
+/// on a HIT.
+///
+/// What is cached is the IR *after* `bind_function_params` (see
+/// `backend_cache`'s docs for why), so a HIT starts at object
+/// emission. Cache failures of every kind are misses, never errors:
+/// an unreadable or corrupt entry is dropped and the full pipeline
+/// runs. A HIT does not re-derive compile-time warnings (the frontend
+/// did not run); they were rendered on the MISS build that stored the
+/// entry.
+pub fn build_module_native_executable_cached(
+    source: &SourceFile,
+    output_path: &Path,
+    cache: &crate::backend_cache::IrCache,
+) -> Result<(NativeExecutableBuild, Diagnostics, CacheOutcome), Diagnostics> {
+    build_module_native_executable_cached_with_probe(
+        source,
+        output_path,
+        cache,
+        crate::backend_object::probe_linkers(),
+    )
+}
+
+/// The cached build path with an explicit linker probe — the seam the
+/// tests use, mirroring [`build_module_native_executable_with_probe`].
+pub(crate) fn build_module_native_executable_cached_with_probe(
+    source: &SourceFile,
+    output_path: &Path,
+    cache: &crate::backend_cache::IrCache,
+    probe: crate::backend_object::LinkerProbe,
+) -> Result<(NativeExecutableBuild, Diagnostics, CacheOutcome), Diagnostics> {
+    // The key needs the whole graph (one compiled module covers the
+    // entry AND its imports), so the graph load always runs. Import
+    // errors therefore stay real on every build, cached or not.
+    let loaded_graph = load_module_graph_with_provider(source, &FileSystemSourceProvider)?;
+    let sources: Vec<crate::backend_cache::CacheSource<'_>> = loaded_graph
+        .sources
+        .iter()
+        .map(|graph_source| crate::backend_cache::CacheSource {
+            path: graph_source.path(),
+            bytes: graph_source.text().as_bytes(),
+        })
+        .collect();
+    let key = crate::backend_cache::cache_key(&sources);
+
+    // HIT: the decoded entry is the param-bound module, so codegen
+    // runs directly.
+    if let Some(bound) = cache.lookup(&key) {
+        if let Ok(object_bytes) = crate::backend_object::emit_object(&bound) {
+            let linker = crate::backend_object::link_with_probe(probe, &object_bytes, output_path)
+                .map_err(|error| native_build_diagnostic(source, &error))?;
+            return Ok((
+                NativeExecutableBuild {
+                    object_path: crate::backend_object::object_path_for(output_path),
+                    linker,
+                },
+                // Warnings are a frontend product; a HIT does not
+                // re-derive them (the documented cache contract).
+                Diagnostics::default(),
+                CacheOutcome::Hit,
+            ));
+        }
+        // Self-heal: a stored entry today's codegen rejects is stale
+        // (a pipeline change the key salt failed to capture). Drop it
+        // and fall through to a full rebuild, which either succeeds
+        // on fresh IR or reports the honest current diagnostic.
+        cache.invalidate(&key);
+    }
+
+    // MISS: compile exactly what the uncached build compiles — the
+    // same stages over the already-loaded graph.
+    let compiled = compile_loaded_graph(source, CompileMode::Executable, loaded_graph)?;
+    // The v1 IR carries parameter value ids but not their names (the
+    // linkage `IrFunction::params` defers to the codegen slice); the
+    // SSA layer still has them, in the same function order.
+    let param_names: Vec<Vec<String>> = compiled
+        .ssa
+        .functions
+        .iter()
+        .map(|function| function.params.clone())
+        .collect();
+    let ir = crate::backend_ir::lower(&compiled.ssa);
+    let bound = crate::backend_codegen::bind_function_params(&ir, &param_names)
+        .map_err(|error| native_build_diagnostic(source, &error))?;
+    let object_bytes = crate::backend_object::emit_object(&bound)
+        .map_err(|error| native_build_diagnostic(source, &error))?;
+    // Store only after codegen ACCEPTS the IR (that is the entry's
+    // validity condition); linking is machine state, not source
+    // state, so a no-linker machine still populates the cache.
+    cache.store(&key, &bound);
+    let linker = crate::backend_object::link_with_probe(probe, &object_bytes, output_path)
+        .map_err(|error| native_build_diagnostic(source, &error))?;
+    Ok((
+        NativeExecutableBuild {
+            object_path: crate::backend_object::object_path_for(output_path),
+            linker,
+        },
+        compiled.warnings,
+        CacheOutcome::Miss,
+    ))
+}
+
 /// GOF3180/GOF3181/GOF3182: the native build's diagnostic surface.
 /// GOF3180 keeps the machine-code-backend gap family shared with
 /// `--native-run` (one lowering, one deferral contract); GOF3181 is
@@ -445,13 +593,16 @@ fn package_bundle_diagnostic(bundle: &EmbeddedSourceBundle, error: std::io::Erro
 #[cfg(test)]
 mod tests {
     use super::{
-        CompileMode, build_embedded_source_bundle, build_module_native_executable,
-        build_module_native_executable_with_probe, compile_source, run_embedded_bundle_with_output,
+        CacheOutcome, CompileMode, Diagnostics, NativeExecutableBuild,
+        build_embedded_source_bundle, build_module_native_executable,
+        build_module_native_executable_cached, build_module_native_executable_with_probe,
+        compile_source, run_embedded_bundle_with_output,
     };
     use crate::source::SourceFile;
     use crate::ssa::SsaInstruction;
     use crate::typed_hir::Type;
     use std::fs;
+    use std::path::Path;
     use tempfile::tempdir;
 
     #[test]
@@ -2191,5 +2342,366 @@ mod tests {
             object_path.is_file(),
             "the object artifact must survive a missing linker"
         );
+    }
+
+    // -- the incremental cache surface (Phase 2 slice 4) -----------------------
+
+    use crate::backend_cache::{IrCache, cache_key, cache_key_with_salt};
+
+    /// Runs one UNCACHED native build, skipping the test on machines
+    /// with no usable linker (the same GOF3181 contract the uncached
+    /// native test above uses).
+    fn try_uncached_build(source: &SourceFile, output: &Path) -> Option<NativeExecutableBuild> {
+        match build_module_native_executable(source, output) {
+            Ok((build, _warnings)) => Some(build),
+            Err(diagnostics) if diagnostics.0[0].code == "GOF3181" => {
+                eprintln!(
+                    "SKIP: no usable linker on this machine: {}",
+                    diagnostics.0[0].note
+                );
+                None
+            }
+            Err(other) => panic!("the uncached native build should succeed: {other:?}"),
+        }
+    }
+
+    /// Runs one CACHED native build, skipping the test on machines
+    /// with no usable linker. Returns the full outcome so tests can
+    /// assert the Hit/Miss marker AND the warnings channel.
+    fn try_cached_build(
+        source: &SourceFile,
+        output: &Path,
+        cache: &IrCache,
+    ) -> Option<(NativeExecutableBuild, Diagnostics, CacheOutcome)> {
+        match build_module_native_executable_cached(source, output, cache) {
+            Ok(built) => Some(built),
+            Err(diagnostics) if diagnostics.0[0].code == "GOF3181" => {
+                eprintln!(
+                    "SKIP: no usable linker on this machine: {}",
+                    diagnostics.0[0].note
+                );
+                None
+            }
+            Err(other) => panic!("the cached native build should succeed: {other:?}"),
+        }
+    }
+
+    fn run_exit_code(executable: &Path) -> Option<i32> {
+        std::process::Command::new(executable)
+            .status()
+            .expect("the built binary should run")
+            .code()
+    }
+
+    /// The module-graph sources for a source file, in the exact shape
+    /// the cached build derives its key from (the test recomputes the
+    /// key the build used).
+    fn key_for_source(source: &SourceFile) -> String {
+        let graph = crate::module_graph::load_module_graph_with_provider(
+            source,
+            &crate::source::FileSystemSourceProvider,
+        )
+        .expect("the module graph should load");
+        let sources: Vec<crate::backend_cache::CacheSource<'_>> = graph
+            .sources
+            .iter()
+            .map(|graph_source| crate::backend_cache::CacheSource {
+                path: graph_source.path(),
+                bytes: graph_source.text().as_bytes(),
+            })
+            .collect();
+        cache_key(&sources)
+    }
+
+    #[test]
+    fn pipeline_cached_build_misses_then_hits() {
+        let source = SourceFile::new(
+            "pipeline_cache_miss_hit.gof",
+            "fn main() -> int:\n    return 42\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let cache = IrCache::new(directory.path().join("cache"));
+        let executable = directory.path().join("cached-miss-hit.exe");
+
+        let Some((build, warnings, outcome)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(outcome, CacheOutcome::Miss, "a fresh cache must miss");
+        assert!(
+            warnings.0.is_empty(),
+            "the smoke program compiles without warnings"
+        );
+        assert!(build.object_path.is_file(), "the object lands on disk");
+        assert!(executable.is_file(), "the executable lands on disk");
+
+        let Some((_build, _warnings, outcome)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(
+            outcome,
+            CacheOutcome::Hit,
+            "the second build of the same source must hit"
+        );
+        assert_eq!(
+            run_exit_code(&executable),
+            Some(42),
+            "the HIT binary still computes the machine-code exit code"
+        );
+    }
+
+    #[test]
+    fn pipeline_cached_build_hit_object_is_byte_identical_to_uncached() {
+        // THE determinism proof: the artifact built from a HIT is
+        // byte-identical to the artifact the untouched uncached path
+        // produces (decode round-trips the IR exactly and emission is
+        // deterministic — see backend_object's contract).
+        let source = SourceFile::new(
+            "pipeline_cache_det.gof",
+            "fn helper() -> int:\n    return 3\n\nfn main() -> int:\n    return helper() * 14\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let cache = IrCache::new(directory.path().join("cache"));
+        let uncached_executable = directory.path().join("det-uncached.exe");
+        let miss_executable = directory.path().join("det-miss.exe");
+        let hit_executable = directory.path().join("det-hit.exe");
+
+        let Some(_uncached) = try_uncached_build(&source, &uncached_executable) else {
+            return;
+        };
+        let Some((_build, _warnings, miss)) = try_cached_build(&source, &miss_executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(miss, CacheOutcome::Miss);
+        let Some((_build, _warnings, hit)) = try_cached_build(&source, &hit_executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(hit, CacheOutcome::Hit);
+
+        let read = |output: &Path| {
+            fs::read(crate::backend_object::object_path_for(output))
+                .expect("the object artifact should be readable")
+        };
+        let uncached_object = read(&uncached_executable);
+        let miss_object = read(&miss_executable);
+        let hit_object = read(&hit_executable);
+        assert_eq!(
+            miss_object, uncached_object,
+            "a MISS build emits the same object as the uncached build"
+        );
+        assert_eq!(
+            hit_object, uncached_object,
+            "a HIT build emits a byte-identical object to the uncached build"
+        );
+        assert_eq!(
+            run_exit_code(&hit_executable),
+            run_exit_code(&uncached_executable),
+            "the HIT binary and the uncached binary agree on the exit code"
+        );
+    }
+
+    #[test]
+    fn pipeline_cached_build_invalidates_on_a_source_edit() {
+        let directory = tempdir().expect("tempdir should exist");
+        let source_path = directory.path().join("edited.gof");
+        fs::write(&source_path, "fn main() -> int:\n    return 42\n")
+            .expect("source should be written");
+        let source = SourceFile::from_path(&source_path).expect("source should load");
+        let cache = IrCache::new(directory.path().join("cache"));
+        let executable = directory.path().join("edited.exe");
+
+        let Some((_build, _warnings, first)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(first, CacheOutcome::Miss);
+
+        // One character: 42 -> 43.
+        fs::write(&source_path, "fn main() -> int:\n    return 43\n")
+            .expect("edited source should be written");
+        let edited = SourceFile::from_path(&source_path).expect("edited source should load");
+        let Some((_build, _warnings, second)) = try_cached_build(&edited, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(
+            second,
+            CacheOutcome::Miss,
+            "an edited source must recompile (a new key)"
+        );
+        assert_eq!(
+            run_exit_code(&executable),
+            Some(43),
+            "the rebuilt binary reflects the edited source"
+        );
+    }
+
+    #[test]
+    fn pipeline_cached_build_invalidates_when_an_import_changes() {
+        // The whole-graph key property: one compiled module covers the
+        // entry AND its imports, so an edited import must invalidate
+        // the entry even though the entry file is byte-identical.
+        let directory = tempdir().expect("tempdir should exist");
+        let helper_path = directory.path().join("cache_helper.gof");
+        let main_path = directory.path().join("cache_main.gof");
+        fs::write(&helper_path, "fn helper() -> int:\n    return 1\n")
+            .expect("helper should be written");
+        fs::write(
+            &main_path,
+            "import cache_helper\n\nfn main() -> int:\n    return helper() + 41\n",
+        )
+        .expect("main should be written");
+        let source = SourceFile::from_path(&main_path).expect("source should load");
+        let cache = IrCache::new(directory.path().join("cache"));
+        let executable = directory.path().join("cache-app.exe");
+
+        let Some((_build, _warnings, first)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(first, CacheOutcome::Miss);
+        assert_eq!(run_exit_code(&executable), Some(42));
+
+        // Edit the IMPORT only; the entry source stays untouched.
+        fs::write(&helper_path, "fn helper() -> int:\n    return 2\n")
+            .expect("edited helper should be written");
+        let Some((_build, _warnings, second)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(
+            second,
+            CacheOutcome::Miss,
+            "an edited import must invalidate the entry (the key covers the whole graph)"
+        );
+        assert_eq!(
+            run_exit_code(&executable),
+            Some(43),
+            "the rebuilt binary reflects the edited import — never a stale HIT"
+        );
+    }
+
+    #[test]
+    fn pipeline_cached_build_treats_a_corrupt_entry_as_a_miss() {
+        let source = SourceFile::new(
+            "pipeline_cache_corrupt.gof",
+            "fn main() -> int:\n    return 42\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let cache = IrCache::new(directory.path().join("cache"));
+        let executable = directory.path().join("corrupt.exe");
+
+        let Some((_build, _warnings, outcome)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(outcome, CacheOutcome::Miss);
+
+        // Corrupt the stored entry with garbage.
+        let key = key_for_source(&source);
+        let entry = cache.entry_path(&key);
+        assert!(entry.is_file(), "the MISS build stored an entry");
+        fs::write(&entry, b"garbage-not-gofir").expect("garbage should be written");
+
+        let Some((build, warnings, outcome)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(
+            outcome,
+            CacheOutcome::Miss,
+            "a corrupt entry is a MISS, never an error"
+        );
+        assert!(
+            warnings.0.is_empty(),
+            "the rebuild succeeds through the full pipeline"
+        );
+        assert!(build.object_path.is_file(), "the rebuild emits the object");
+
+        // And the rebuild repaired the entry: the next build hits.
+        let Some((_build, _warnings, outcome)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(outcome, CacheOutcome::Hit, "the repaired entry hits again");
+    }
+
+    #[test]
+    fn pipeline_cached_build_ignores_entries_under_a_bumped_salt() {
+        // Version-bump simulation: entries stored under the CURRENT
+        // salt are invisible to a compiler that derives keys with a
+        // future salt (and vice versa) — a salt bump is a full cache
+        // invalidation.
+        let source = SourceFile::new(
+            "pipeline_cache_salt.gof",
+            "fn main() -> int:\n    return 42\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let cache = IrCache::new(directory.path().join("cache"));
+        let executable = directory.path().join("salt.exe");
+
+        let Some((_build, _warnings, outcome)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(outcome, CacheOutcome::Miss);
+
+        let key = key_for_source(&source);
+        assert!(
+            cache.lookup(&key).is_some(),
+            "the MISS build stored a decodable entry under the current-salt key"
+        );
+        let bumped = cache_key_with_salt(
+            &[crate::backend_cache::CacheSource {
+                path: source.path(),
+                bytes: source.text().as_bytes(),
+            }],
+            "gof-ir-cache-key-v2",
+        );
+        assert_ne!(key, bumped, "the salt participates in the key");
+        assert!(
+            cache.lookup(&bumped).is_none(),
+            "a future salt sees no old entries"
+        );
+    }
+
+    #[test]
+    fn pipeline_cached_build_hit_does_not_recompute_warnings() {
+        // The documented contract: warnings are a frontend product;
+        // the HIT path skips the frontend, so warnings are not
+        // re-derived (they were rendered on the MISS that stored the
+        // entry).
+        let source = SourceFile::new(
+            "pipeline_cache_warning.gof",
+            "fn main() -> int:\n    mut result = 7\n    unsafe:\n        result = result * 2\n    return result\n",
+        );
+        let directory = tempdir().expect("tempdir should exist");
+        let cache = IrCache::new(directory.path().join("cache"));
+        let executable = directory.path().join("warning.exe");
+
+        let Some((_build, miss_warnings, miss)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(miss, CacheOutcome::Miss);
+        assert!(
+            miss_warnings.codes().contains(&"GOF3141"),
+            "the MISS build renders the inert-unsafe-block warning: {:?}",
+            miss_warnings.codes()
+        );
+
+        let Some((_build, hit_warnings, hit)) = try_cached_build(&source, &executable, &cache)
+        else {
+            return;
+        };
+        assert_eq!(hit, CacheOutcome::Hit);
+        assert!(
+            hit_warnings.0.is_empty(),
+            "the HIT build does not re-derive frontend warnings"
+        );
+        assert_eq!(run_exit_code(&executable), Some(14));
     }
 }
