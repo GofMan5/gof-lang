@@ -470,8 +470,8 @@ fn native_build_diagnostic(
             crate::source::Span::new(1, 1, 1),
         )
         .with_fix_it(
-            "inspect the linker report above; the object file was still written beside the \
-             output",
+            "inspect the linker report above; when the failure is the link itself (not the \
+             object write), the object file is still beside the output for inspection",
         ),
         _ => Diagnostic::error(
             "GOF3180",
