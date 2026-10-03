@@ -107,6 +107,7 @@ The bootstrap compiler in this repository currently supports:
 - integer overflow semantics are UNDECIDED in v1 (a recorded divergence): the native machine-code path wraps (2's-complement), while interpreted execution currently aborts on the evaluator's checked arithmetic — a future spec decision (wrap with a diagnostic, or trap on both surfaces) will align them
 - native execution (`gof run --native-run`) compiles int/bool programs through the full pipeline to Cranelift machine code (ADR 0004 dev profile); unsupported constructs report GOF3180 naming the deferred slice, and divide-by-zero traps the process (the evaluator stays the surface for diagnosed arithmetic faults)
 - native object build (`gof build <file> --native-object <out.exe>`) lowers the same backend IR through Cranelift object emission into a real COFF `.obj` beside the output and links a standalone exit-code executable: the gof `main` return value becomes the process exit code (truncated to the low 32 bits; the compiler-owned `__gof_start` entry shim calls `ExitProcess`, so the binary imports only kernel32 and no C runtime). v1 linking probes `lld-link`, rust-lld, MSVC `link.exe`, and MinGW gcc — a machine with none reports GOF3181 (the object is still emitted), a failed link GOF3182, and codegen gaps GOF3180; stdio and non-int values are future slices, so the artifact is an exit-code binary
+- `and`/`or` evaluation order DIVERGES in native v1 (a recorded divergence, to be resolved by a Branch-based short-circuit IR form before side-effecting operands land): the spec's short-circuit guarantee (the `and`/`or` bullet below) holds in interpreted execution, but both native surfaces (JIT and static binary) currently evaluate the operands STRICTLY — a legal program whose discarded operand traps (`flag = false` then `flag and 1 / 0 == 0`) succeeds in the evaluator and traps natively. Values are never wrong (strict `band`/`bor` on 0/1 agrees with short-circuit for bool operands); the divergence is evaluation of the discarded operand only
 - field access through `value.field`
 - method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`
@@ -214,7 +215,7 @@ The bootstrap compiler in this repository currently supports:
 - method declarations currently require a known struct receiver type
 - the first method parameter currently must resolve to the same struct type as the declared receiver
 - method calls currently require a struct receiver value and a known method on that struct
-- `and` and `or` currently require boolean operands and preserve short-circuit evaluation
+- `and` and `or` currently require boolean operands and preserve short-circuit evaluation in INTERPRETED execution; the native machine-code path (v1) evaluates both operands strictly — a recorded divergence, see the native-execution divergence notes above
 - `not` currently requires a boolean operand
 - unary `-` currently requires an `int` operand
 - `+`, `-`, `*`, `/`, and `%` currently operate on `int`

@@ -45,7 +45,13 @@
 //!
 //! Semantics notes: `and`/`or` compile as strict (non-short-circuit)
 //! `band`/`bor`, exactly what the IR's `Binary` algebra says (both
-//! operands are already-evaluated SSA values). `sdiv`/`srem` trap the
+//! operands are already-evaluated SSA values) — a RECORDED DIVERGENCE
+//! from the spec's short-circuit guarantee (the evaluator
+//! short-circuits): a trapping discarded operand succeeds interpreted
+//! and traps natively; values agree for bool operands. Reconciling
+//! this needs a Branch-based short-circuit IR form (must land before
+//! side-effecting operands — calls, print — enter native code).
+//! `sdiv`/`srem` trap the
 //! process on divide-by-zero — machine code v1 has no gof-level trap
 //! handler, so the evaluator remains the surface for diagnosed
 //! arithmetic faults. INTEGER OVERFLOW diverges today (known v1
