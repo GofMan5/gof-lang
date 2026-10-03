@@ -74,6 +74,18 @@ struct BuildArgs {
     output: Option<PathBuf>,
     #[arg(long)]
     native: bool,
+    /// Build a native executable from backend-IR machine code
+    /// (Cranelift object emission + the platform linker): emits the
+    /// object file beside the output and links a standalone
+    /// exit-code binary. v1 covers int/bool programs; unsupported
+    /// constructs fail with GOF3180; a missing linker fails with
+    /// GOF3181.
+    #[arg(
+        long = "native-object",
+        value_name = "OUTPUT",
+        conflicts_with_all = ["native", "output"]
+    )]
+    native_object: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -223,6 +235,26 @@ fn build(args: BuildArgs) -> Result<()> {
     let resolved_input = resolve_source_input_path(&args.input)?;
     ensure_package_lockfile(&resolved_input, "build")?;
     let source = SourceFile::from_path(&resolved_input)?;
+
+    // Phase 2 slice 3: the static-binary route — compile → IR →
+    // object emission → link. The pipeline owns the whole path.
+    if let Some(output) = args.native_object {
+        if let Some(parent) = output.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let (built, warnings) =
+            gof_compiler::pipeline::build_module_native_executable(&source, &output)
+                .map_err(|error| render_error(&source, error))?;
+        render_warnings(&source, &warnings);
+        println!("wrote object {}", built.object_path.display());
+        println!(
+            "linked native executable {} with {}",
+            output.display(),
+            built.linker
+        );
+        return Ok(());
+    }
+
     let compiled = compile_source(&source, CompileMode::Executable)
         .map_err(|error| render_error(&source, error))?;
     render_warnings(&source, &compiled.warnings);
