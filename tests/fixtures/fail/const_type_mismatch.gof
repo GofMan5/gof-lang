@@ -1,0 +1,4 @@
+const LIMIT: int = "too big"
+
+fn main() -> int:
+    return 0

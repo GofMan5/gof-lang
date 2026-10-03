@@ -87,6 +87,39 @@ where
         .get(&root_path)
         .map(|module| module.exports.clone())
         .unwrap_or_default();
+    // RFC 0054: consts merge across the graph like other top-level
+    // declarations (duplicate names report GOF3173 in the typed pass,
+    // which owns the const contract).
+    let mut root_consts: Vec<crate::ast::ConstDecl> = Vec::new();
+    let mut seen_consts: HashMap<String, (PathBuf, crate::source::Span)> = HashMap::new();
+    for path in &resolver.load_order {
+        let module = resolver
+            .modules
+            .get(path)
+            .expect("loaded module should exist in resolver cache");
+        for decl in &module.consts {
+            if let Some((original_path, original_span)) = seen_consts.get(&decl.name).cloned() {
+                diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3173",
+                        format!("duplicate const `{}` in module graph", decl.name),
+                        format!(
+                            "first declared at {}:{}:{}",
+                            original_path.display(),
+                            original_span.line,
+                            original_span.column
+                        ),
+                        decl.span,
+                    )
+                    .with_fix_it("rename one of the consts or remove the conflicting import")
+                    .with_source_path(path.clone()),
+                );
+                continue;
+            }
+            seen_consts.insert(decl.name.clone(), (path.clone(), decl.span));
+            root_consts.push(decl.clone());
+        }
+    }
     // RFC 0053: resolve the root's direct imports (path → import span)
     // while the resolver is still mutable, before the shared collection
     // pass.
@@ -122,6 +155,7 @@ where
             protocols,
             impls,
             exports: root_exports,
+            consts: root_consts,
         },
         sources,
         // RFC 0053 GOF3172 grandfather-window warnings never fail the

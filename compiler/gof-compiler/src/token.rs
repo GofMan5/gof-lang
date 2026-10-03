@@ -21,6 +21,7 @@ pub enum TokenKind {
     Enum,
     Protocol,
     Impl,
+    Const,
     Match,
     Async,
     Await,

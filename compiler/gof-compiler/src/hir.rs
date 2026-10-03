@@ -17,6 +17,17 @@ pub struct HirModule {
     /// RFC 0044 explicit conformance declarations, mirroring
     /// `ast::ImplDecl`.
     pub impls: Vec<HirImplDecl>,
+    /// RFC 0054 const declarations, mirroring `ast::ConstDecl`.
+    pub consts: Vec<HirConstDecl>,
+}
+
+/// RFC 0054: a top-level const declaration, HIR form.
+#[derive(Debug, Clone, Serialize)]
+pub struct HirConstDecl {
+    pub name: String,
+    pub ty: HirTypeRef,
+    pub value: HirExpr,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -358,6 +369,17 @@ pub fn lower(module: &Module) -> HirModule {
             .collect(),
         protocols: module.protocols.iter().map(lower_protocol).collect(),
         impls: module.impls.iter().map(lower_impl).collect(),
+        consts: module.consts.iter().map(lower_const).collect(),
+    }
+}
+
+/// RFC 0054: lower a const declaration.
+fn lower_const(decl: &crate::ast::ConstDecl) -> HirConstDecl {
+    HirConstDecl {
+        name: decl.name.clone(),
+        ty: lower_type_ref(&decl.ty),
+        value: lower_expr(&decl.value),
+        span: decl.span,
     }
 }
 

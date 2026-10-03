@@ -102,6 +102,7 @@ The bootstrap compiler in this repository currently supports:
 - every `unsafe:` block is currently inert (no explicitly-unsafe operation exists in v1) and reports a warning; `unsafe` is never a declaration or statement modifier
 - `async` is reserved: it cannot decorate function declarations (`async fn` and friends report GOF3158), form blocks (`async:` reports GOF3159), or appear in any expression, operand, or type position (GOF3160); v1 concurrency is `go` + `await` + `await_result` and no function coloring exists
 - `module:` export blocks declare a file's public surface: first top-level position only, at most one per file, one bare identifier per line naming a top-level declaration of the same file (GOF3168); methods require their receiver struct in the same file (GOF3170), imports of blockless modules warn (GOF3172), and import name collisions report (GOF3171) — strict private-name filtering lands with per-module body views per the RFC's phasing amendment
+- top-level consts: `const NAME: Type = expr` with a mandatory annotation and initializer (GOF3173–3177), deeply value-taxon types only, a const-expression grammar (literals, operators, list/dict literals, enum/struct/Result construction, `len` over consts, const references), evaluation once in declaration order, immutable reads from any function body, and locals shadowing per the local-first discipline
 - field access through `value.field`
 - method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`

@@ -193,7 +193,7 @@ impl PartialEq for Value {
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
             // RFC 0050: tuple equality is pairwise and recursive.
             (Self::Tuple(lhs), Self::Tuple(rhs)) => lhs == rhs,
-            // RFC 0047: closures do not participate in equality — the
+            // RFC 0047: closures do not participate in equality ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
             // same posture as channel and task values.
             (Self::Closure(_), Self::Closure(_)) => false,
             (Self::Unit, Self::Unit) => true,
@@ -2539,6 +2539,10 @@ struct ScopeStack {
     scopes: Vec<HashMap<String, Binding>>,
 }
 
+/// RFC 0054: the module's memoized const values (name ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ value),
+/// threaded through the eval family exactly like `output`.
+type ConstTable = HashMap<String, Value>;
+
 impl ScopeStack {
     fn new(params: &[Param], args: &[Value]) -> Self {
         let root = params
@@ -2609,6 +2613,59 @@ pub fn run_with_output_with_args(
     run_with_output_with_args_and_optional_stdin(module, program_args, None)
 }
 
+/// RFC 0054: evaluate a module's top-level consts once, in declaration
+/// order, with previously evaluated consts visible through the seeding
+/// scope (const initializers may reference earlier consts). Returns the
+/// memoized table threaded through the eval family; `eval_function`
+/// seeds its root scope from it so consts read like immutable bindings
+/// and locals shadow them per the local-first discipline.
+fn evaluate_consts(
+    module: &Module,
+    functions: &FunctionTable,
+    methods: &MethodTable,
+    structs: &StructTable,
+    enums: &EnumTable,
+    output: &OutputBuffer,
+) -> Result<ConstTable, Diagnostics> {
+    let mut table: ConstTable = HashMap::new();
+    let mut seeds = ScopeStack::new(&[], &[]);
+    for decl in &module.consts {
+        let value = match eval_expr(
+            &decl.value,
+            &seeds,
+            functions,
+            methods,
+            structs,
+            enums,
+            output,
+            &HashMap::new(),
+            &Path::new("const.gof"),
+        ) {
+            Ok(value) => value,
+            Err(EvalSignal::Diagnostics(diagnostics)) => return Err(diagnostics),
+            Err(EvalSignal::Propagate(_)) => {
+                // Const initializers are grammar-checked (GOF3174):
+                // propagation cannot appear in accepted modules.
+                return Err(Diagnostics(vec![Diagnostic::error(
+                    "GOF3174",
+                    "const initializer is not a const expression",
+                    "the typed pass already rejects propagations in const initializers; this is an internal consistency guard",
+                    decl.span,
+                )]));
+            }
+        };
+        seeds.define_current(
+            decl.name.clone(),
+            Binding {
+                mutable: false,
+                value: value.clone(),
+            },
+        );
+        table.insert(decl.name.clone(), value);
+    }
+    Ok(table)
+}
+
 pub fn run_test_function_with_output(
     module: &Module,
     typed_module: &TypedModule,
@@ -2655,6 +2712,7 @@ pub fn run_test_function_with_output(
     enum_table.extend(builtin_enum_table());
     let enums = Arc::new(enum_table);
     let output = OutputBuffer::new(options.program_args.clone());
+    let consts = evaluate_consts(module, &functions, &methods, &structs, &enums, &output)?;
     let typed_functions = typed_module
         .functions
         .iter()
@@ -2710,6 +2768,7 @@ pub fn run_test_function_with_output(
                             &structs,
                             &enums,
                             &output,
+                            &consts,
                             &options,
                             &mut test_context,
                             module_state,
@@ -2731,7 +2790,7 @@ pub fn run_test_function_with_output(
             match resolution_failure {
                 Some(outcome) => outcome,
                 None => match eval_test_function(
-                    &function, &resolved, &functions, &methods, &structs, &enums, &output,
+                    &function, &resolved, &functions, &methods, &structs, &enums, &output, &consts,
                 ) {
                     Ok(outcome) => outcome,
                     Err(diagnostics) => TestExecutionOutcome::FailedDiagnostics(diagnostics),
@@ -2749,6 +2808,7 @@ pub fn run_test_function_with_output(
         &structs,
         &enums,
         &output,
+        &consts,
     );
 
     if let Some(context) = test_context {
@@ -2807,6 +2867,10 @@ pub fn cleanup_test_module_fixtures_with_output(
     enum_table.extend(builtin_enum_table());
     let enums = Arc::new(enum_table);
     let output = OutputBuffer::new(Vec::new());
+    // RFC 0054: const failures were rejected by the typed pass; a
+    // re-evaluation failure here degrades to the empty table.
+    let consts = evaluate_consts(module, &functions, &methods, &structs, &enums, &output)
+        .unwrap_or_default();
 
     let cleanup_errors = cleanup_fixture_cache(
         &mut module_state.module_fixture_order,
@@ -2816,6 +2880,7 @@ pub fn cleanup_test_module_fixtures_with_output(
         &structs,
         &enums,
         &output,
+        &consts,
     );
 
     FixtureCleanupResult {
@@ -2883,6 +2948,7 @@ fn resolve_fixture(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     options: &TestRuntimeOptions,
     test_context: &mut Option<TestContextValue>,
     module_state: &mut TestModuleState,
@@ -2938,6 +3004,7 @@ fn resolve_fixture(
                 structs,
                 enums,
                 output,
+                consts,
                 options,
                 test_context,
                 module_state,
@@ -2949,7 +3016,9 @@ fn resolve_fixture(
         }
     }
 
-    let result = match eval_function(&function, &args, functions, methods, structs, enums, output) {
+    let result = match eval_function(
+        &function, &args, functions, methods, structs, enums, output, consts,
+    ) {
         Ok(value) => unwrap_fixture_value(spec, value).map_err(TestExecutionOutcome::Failed),
         Err(diagnostics) => Err(test_outcome_from_diagnostics(diagnostics)),
     };
@@ -3016,15 +3085,16 @@ fn cleanup_fixture_cache(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     while let Some(name) = fixture_order.pop() {
         let Some(value) = fixture_values.remove(&name) else {
             continue;
         };
-        if let Err(error) =
-            run_fixture_cleanup_hook(&name, &value, functions, methods, structs, enums, output)
-        {
+        if let Err(error) = run_fixture_cleanup_hook(
+            &name, &value, functions, methods, structs, enums, output, consts,
+        ) {
             errors.push(error);
         }
     }
@@ -3039,6 +3109,7 @@ fn run_fixture_cleanup_hook(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
 ) -> Result<(), String> {
     let Some(receiver_name) = fixture_cleanup_receiver_name(value) else {
         return Ok(());
@@ -3058,6 +3129,7 @@ fn run_fixture_cleanup_hook(
         structs,
         enums,
         output,
+        consts,
     )
     .map_err(|diagnostics| render_fixture_cleanup_diagnostics(&function, diagnostics))?;
     validate_fixture_cleanup_result(fixture_name, result)
@@ -3168,6 +3240,7 @@ fn run_with_output_with_args_and_optional_stdin(
         Some(stdin) => OutputBuffer::new_with_stdin(program_args, stdin),
         None => OutputBuffer::new(program_args),
     };
+    let consts = evaluate_consts(module, &functions, &methods, &structs, &enums, &output)?;
 
     let main = functions.get("main").cloned().ok_or_else(|| {
         Diagnostics(vec![
@@ -3193,7 +3266,16 @@ fn run_with_output_with_args_and_optional_stdin(
         ]));
     }
 
-    let value = eval_function(&main, &[], &functions, &methods, &structs, &enums, &output)?;
+    let value = eval_function(
+        &main,
+        &[],
+        &functions,
+        &methods,
+        &structs,
+        &enums,
+        &output,
+        &consts,
+    )?;
     Ok(ExecutionResult {
         value,
         stdout: output.snapshot(),
@@ -3213,6 +3295,7 @@ fn call_closure_value(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if closure.params.len() != args.len() {
@@ -3251,6 +3334,7 @@ fn call_closure_value(
         structs,
         enums,
         output,
+        consts,
         0,
         false,
         source_path,
@@ -3287,6 +3371,7 @@ fn eval_function(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
 ) -> Result<Value, Diagnostics> {
     if function.params.len() != args.len() {
         return Err(Diagnostics(vec![
@@ -3304,7 +3389,20 @@ fn eval_function(
         ]));
     }
 
+    // RFC 0054: consts enter as the ROOT scope frame ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â parameters and
+    // locals shadow them (local-first), and no mutation path exists
+    // (immutable bindings, and the move checker treats them as reads).
     let mut scopes = ScopeStack::new(&function.params, args);
+    scopes.push();
+    for (name, value) in consts {
+        scopes.define_current(
+            name.clone(),
+            Binding {
+                mutable: false,
+                value: value.clone(),
+            },
+        );
+    }
     let outcome = match eval_block(
         &function.body,
         &mut scopes,
@@ -3313,6 +3411,7 @@ fn eval_function(
         structs,
         enums,
         output,
+        consts,
         0,
         false,
         &function.source_path,
@@ -3321,6 +3420,7 @@ fn eval_function(
         Err(EvalSignal::Diagnostics(diagnostics)) => return Err(diagnostics),
         Err(EvalSignal::Propagate(value)) => EvalOutcome::Return(value),
     };
+    scopes.pop();
 
     match outcome {
         EvalOutcome::Next => Ok(Value::Unit),
@@ -3356,6 +3456,7 @@ fn eval_test_function(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
 ) -> Result<TestExecutionOutcome, Diagnostics> {
     if function.params.len() != args.len() {
         return Err(Diagnostics(vec![
@@ -3382,6 +3483,7 @@ fn eval_test_function(
         structs,
         enums,
         output,
+        consts,
         0,
         false,
         &function.source_path,
@@ -3499,6 +3601,7 @@ fn flush_deferred(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> Option<Diagnostics> {
     let mut failures: Vec<Diagnostic> = Vec::new();
@@ -3525,6 +3628,7 @@ fn flush_deferred(
             structs,
             enums,
             output,
+            consts,
             source_path,
         );
         scopes.pop();
@@ -3574,6 +3678,7 @@ fn eval_block(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     loop_depth: usize,
     nested_scope: bool,
     source_path: &Path,
@@ -3597,6 +3702,7 @@ fn eval_block(
                 structs,
                 enums,
                 output,
+                consts,
                 loop_depth,
                 source_path,
                 &mut deferred,
@@ -3609,8 +3715,8 @@ fn eval_block(
     })();
 
     // Flush pending defers LIFO on every exit path (RFC 0045): deferred
-    // calls execute at scope exit — before the block's values leave scope
-    // — and failures are collected, never swallowed (GOF3138).
+    // calls execute at scope exit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â before the block's values leave scope
+    // ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and failures are collected, never swallowed (GOF3138).
     let defer_failures = flush_deferred(
         &mut deferred,
         scopes,
@@ -3619,6 +3725,7 @@ fn eval_block(
         structs,
         enums,
         output,
+        consts,
         source_path,
     );
 
@@ -3670,6 +3777,7 @@ fn eval_stmt(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     loop_depth: usize,
     source_path: &Path,
     deferred: &mut Vec<DeferRecord>,
@@ -3683,6 +3791,7 @@ fn eval_stmt(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ) {
             Ok(value) => Ok(EvalOutcome::Return(value)),
@@ -3704,12 +3813,13 @@ fn eval_stmt(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             // RFC 0050 destructuring: tuple patterns split the value
             // across the leaves; single names keep today's semantics.
             // RFC 0052: `_` discards the value (binding nothing); a
-            // literal leaf is refutable and rejected (GOF3163 backstop —
+            // literal leaf is refutable and rejected (GOF3163 backstop ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
             // the typed layer owns the check).
             match pattern {
                 crate::ast::BindingPattern::Name(name, _) => {
@@ -3801,6 +3911,7 @@ fn eval_stmt(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             if let Some(existing) = scopes.get_mut(name) {
@@ -3884,6 +3995,7 @@ fn eval_stmt(
                             structs,
                             enums,
                             output,
+                            consts,
                             source_path,
                         )?;
                         let slot = format!("__defer_arg_{index}");
@@ -3892,7 +4004,7 @@ fn eval_stmt(
                     }
                     // RFC 0047 defer target capture: when the callee
                     // resolves to a local closure binding, the defer
-                    // record captures the closure VALUE at registration —
+                    // record captures the closure VALUE at registration ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
                     // `mut c = f; defer c(); c = g` must call f at exit.
                     // Plain function names stay by-name (the function
                     // tables are immutable, so name resolution at flush
@@ -3929,6 +4041,7 @@ fn eval_stmt(
                         structs,
                         enums,
                         output,
+                        consts,
                         source_path,
                     )?;
                     let mut values = vec![("__defer_recv".to_string(), receiver)];
@@ -3942,6 +4055,7 @@ fn eval_stmt(
                             structs,
                             enums,
                             output,
+                            consts,
                             source_path,
                         )?;
                         let slot = format!("__defer_arg_{index}");
@@ -3997,6 +4111,7 @@ fn eval_stmt(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             match condition {
@@ -4008,6 +4123,7 @@ fn eval_stmt(
                     structs,
                     enums,
                     output,
+                    consts,
                     loop_depth,
                     true,
                     source_path,
@@ -4020,6 +4136,7 @@ fn eval_stmt(
                     structs,
                     enums,
                     output,
+                    consts,
                     loop_depth,
                     true,
                     source_path,
@@ -4038,7 +4155,7 @@ fn eval_stmt(
             }
         }
         // RFC 0046: an `unsafe:` block executes as an ordinary scoped
-        // block — rule 2 (no check relaxations) and rule 4 (lexical
+        // block ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â rule 2 (no check relaxations) and rule 4 (lexical
         // context only) make it semantically identical to a plain block
         // in v1.
         Stmt::Unsafe(body, _) => eval_block(
@@ -4049,6 +4166,7 @@ fn eval_stmt(
             structs,
             enums,
             output,
+            consts,
             loop_depth,
             true,
             source_path,
@@ -4065,6 +4183,7 @@ fn eval_stmt(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 match value {
@@ -4077,6 +4196,7 @@ fn eval_stmt(
                             structs,
                             enums,
                             output,
+                            consts,
                             loop_depth + 1,
                             true,
                             source_path,
@@ -4123,6 +4243,7 @@ fn eval_stmt(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             let items = iter_values_from_iterable(&iterable, *span, source_path)?;
@@ -4141,7 +4262,7 @@ fn eval_stmt(
                     }
                     // RFC 0052: `_` iterates without binding anything.
                     crate::ast::BindingPattern::Wildcard(_) => {}
-                    // GOF3163 backstop — the typed layer owns the check.
+                    // GOF3163 backstop ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the typed layer owns the check.
                     crate::ast::BindingPattern::Literal(_, literal_span) => {
                         scopes.pop();
                         return Err(refutable_pattern_signal(
@@ -4209,6 +4330,7 @@ fn eval_stmt(
                     structs,
                     enums,
                     output,
+                    consts,
                     loop_depth + 1,
                     false,
                     source_path,
@@ -4241,6 +4363,7 @@ fn eval_stmt(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             let Value::Enum(target_enum) = target else {
@@ -4362,8 +4485,8 @@ fn eval_stmt(
             // and first match wins. Within an arm: the pattern test runs
             // first (literal payload leaves compare by value, wildcards
             // match anything, tuples recurse), then the arm's bindings
-            // are created, then the guard — evaluated in the arm scope
-            // with the bindings visible — and a `false` guard falls
+            // are created, then the guard ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â evaluated in the arm scope
+            // with the bindings visible ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and a `false` guard falls
             // through to the next arm.
             for (pattern, arm) in resolved_arms {
                 if pattern.enum_name != target_enum.name || pattern.variant != target_enum.variant {
@@ -4439,6 +4562,7 @@ fn eval_stmt(
                         structs,
                         enums,
                         output,
+                        consts,
                         source_path,
                     )?;
                     match guard_value {
@@ -4472,6 +4596,7 @@ fn eval_stmt(
                     structs,
                     enums,
                     output,
+                    consts,
                     loop_depth,
                     false,
                     source_path,
@@ -4511,6 +4636,7 @@ fn eval_stmt(
                             structs,
                             enums,
                             output,
+                            consts,
                             source_path,
                         )?,
                     )),
@@ -4544,6 +4670,7 @@ fn eval_stmt(
                         structs,
                         enums,
                         output,
+                        consts,
                         loop_depth,
                         source_path,
                     );
@@ -4571,6 +4698,7 @@ fn eval_stmt(
                             structs,
                             enums,
                             output,
+                            consts,
                             loop_depth,
                             source_path,
                         );
@@ -4587,6 +4715,7 @@ fn eval_stmt(
                         structs,
                         enums,
                         output,
+                        consts,
                         loop_depth,
                         source_path,
                     );
@@ -4611,6 +4740,7 @@ fn eval_stmt(
                             structs,
                             enums,
                             output,
+                            consts,
                             loop_depth,
                             source_path,
                         );
@@ -4631,6 +4761,7 @@ fn eval_stmt(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             ) {
                 Ok(_) => {}
@@ -4652,6 +4783,7 @@ fn eval_expr(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     match expr {
@@ -4687,7 +4819,7 @@ fn eval_expr(
             let values = items
                 .iter()
                 .map(|item| {
-                    eval_expr(item, scopes, functions, methods, structs, enums, output, source_path)
+                    eval_expr(item, scopes, functions, methods, structs, enums, output, consts, source_path)
                 })
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Value::List(values))
@@ -4703,6 +4835,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 let Value::String(key) = key else {
@@ -4726,6 +4859,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 dict = dict.insert(key, value);
@@ -4773,22 +4907,24 @@ fn eval_expr(
                                 structs,
                                 enums,
                                 output,
+                                consts,
                                 source_path,
                             )
                         })
                         .collect::<EvalResult<Vec<_>>>()?;
-                    return call_closure_value(closure, &values, *span, functions, methods, structs, enums, output, source_path);
+                    return call_closure_value(closure, &values, *span, functions, methods, structs, enums, output, consts, source_path);
                 }
             }
             if let Some(function) = functions.get(callee).cloned() {
                 let values = args
                     .iter()
                     .map(|arg| {
-                        eval_expr(arg, scopes, functions, methods, structs, enums, output, source_path)
+                        eval_expr(arg, scopes, functions, methods, structs, enums, output, consts, source_path)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 return Ok(eval_function(
                     &function, &values, functions, methods, structs, enums, output,
+                    consts,
                 )?);
             }
 
@@ -4802,6 +4938,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4816,6 +4953,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4830,6 +4968,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4844,6 +4983,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4858,6 +4998,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4872,6 +5013,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4886,6 +5028,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4900,6 +5043,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4914,6 +5058,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4928,6 +5073,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4942,6 +5088,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4956,6 +5103,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4970,6 +5118,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4984,6 +5133,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -4998,6 +5148,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5012,6 +5163,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5026,6 +5178,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5040,6 +5193,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5054,6 +5208,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5068,6 +5223,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5082,21 +5238,22 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
             }
 
             if callee == "argv" {
-                return eval_argv_builtin(args, output, source_path, *span);
+                return eval_argv_builtin(args, output, consts, source_path, *span);
             }
 
             if callee == "read_stdin" {
-                return eval_read_stdin_builtin(args, output, source_path, *span);
+                return eval_read_stdin_builtin(args, output, consts, source_path, *span);
             }
 
             if callee == "read_stdin_lines" {
-                return eval_read_stdin_lines_builtin(args, output, source_path, *span);
+                return eval_read_stdin_lines_builtin(args, output, consts, source_path, *span);
             }
 
             if callee == "unix_seconds" {
@@ -5116,6 +5273,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5134,6 +5292,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5148,6 +5307,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5162,6 +5322,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5176,6 +5337,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5190,6 +5352,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5204,6 +5367,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5218,6 +5382,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5232,6 +5397,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5246,6 +5412,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5260,6 +5427,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5274,6 +5442,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5288,6 +5457,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5302,6 +5472,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5320,6 +5491,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5334,6 +5506,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5348,6 +5521,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5362,6 +5536,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 )?);
@@ -5376,6 +5551,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5390,6 +5566,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5404,6 +5581,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5422,6 +5600,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5436,6 +5615,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5450,6 +5630,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5464,6 +5645,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5478,6 +5660,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5492,6 +5675,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5506,6 +5690,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5520,6 +5705,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5534,6 +5720,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5548,6 +5735,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5562,6 +5750,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5576,6 +5765,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5590,6 +5780,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5604,6 +5795,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5618,6 +5810,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5632,6 +5825,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5646,6 +5840,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5660,6 +5855,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5674,6 +5870,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5688,6 +5885,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5702,6 +5900,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5716,6 +5915,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5730,6 +5930,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     *span,
                 );
@@ -5739,7 +5940,7 @@ fn eval_expr(
                 let values = args
                     .iter()
                     .map(|arg| {
-                        eval_expr(arg, scopes, functions, methods, structs, enums, output, source_path)
+                        eval_expr(arg, scopes, functions, methods, structs, enums, output, consts, source_path)
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 return eval_struct_constructor(decl, values, *span, source_path);
@@ -5790,7 +5991,7 @@ fn eval_expr(
                 }
             }
             let target =
-                eval_expr(target, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(target, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             Ok(eval_field_access(target, field, *span, source_path)?)
         }
         Expr::MethodCall {
@@ -5813,6 +6014,7 @@ fn eval_expr(
                                     structs,
                                     enums,
                                     output,
+                                    consts,
                                     source_path,
                                 )
                             })
@@ -5831,6 +6033,7 @@ fn eval_expr(
                                     structs,
                                     enums,
                                     output,
+                                    consts,
                                     source_path,
                                 )
                             })
@@ -5866,6 +6069,7 @@ fn eval_expr(
                                     structs,
                                     enums,
                                     output,
+                                    consts,
                                     source_path,
                                 )
                             })
@@ -5876,7 +6080,7 @@ fn eval_expr(
             }
 
             let receiver =
-                eval_expr(target, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(target, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             if let Value::Enum(enum_value) = &receiver {
                 if enum_value.name == "Option" {
                     let mut helper_args = Vec::with_capacity(args.len());
@@ -5889,6 +6093,7 @@ fn eval_expr(
                             structs,
                             enums,
                             output,
+                            consts,
                             source_path,
                         )?);
                     }
@@ -5931,11 +6136,11 @@ fn eval_expr(
             values.extend(
                 args.iter()
                     .map(|arg| {
-                        eval_expr(arg, scopes, functions, methods, structs, enums, output, source_path)
+                        eval_expr(arg, scopes, functions, methods, structs, enums, output, consts, source_path)
                     })
                     .collect::<EvalResult<Vec<_>>>()?,
             );
-            Ok(eval_function(&function, &values, functions, methods, structs, enums, output)?)
+            Ok(eval_function(&function, &values, functions, methods, structs, enums, output, consts)?)
         }
         Expr::Index {
             target,
@@ -5943,9 +6148,9 @@ fn eval_expr(
             span,
         } => {
             let target =
-                eval_expr(target, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(target, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             let index =
-                eval_expr(index, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(index, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             Ok(eval_index(target, index, *span, source_path)?)
         }
         Expr::Go { value, span } => match value.as_ref() {
@@ -5967,6 +6172,7 @@ fn eval_expr(
                                     structs,
                                     enums,
                                     output,
+                                    consts,
                                     source_path,
                                 )
                             })
@@ -5980,6 +6186,7 @@ fn eval_expr(
                             structs,
                             enums,
                             output,
+                            consts,
                             source_path,
                         );
                     }
@@ -6000,7 +6207,7 @@ fn eval_expr(
                 let values = args
                     .iter()
                     .map(|arg| {
-                        eval_expr(arg, scopes, functions, methods, structs, enums, output, source_path)
+                        eval_expr(arg, scopes, functions, methods, structs, enums, output, consts, source_path)
                     })
                     .collect::<EvalResult<Vec<_>>>()?;
                 Ok(spawn_task(
@@ -6012,6 +6219,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?)
             }
@@ -6028,7 +6236,7 @@ fn eval_expr(
             .into()),
         },
         Expr::Await { value, span } => {
-            match eval_expr(value, scopes, functions, methods, structs, enums, output, source_path)? {
+            match eval_expr(value, scopes, functions, methods, structs, enums, output, consts, source_path)? {
                 Value::Task(task) => Ok(task.await_value()?),
                 _ => Err(Diagnostics(vec![
                     Diagnostic::error(
@@ -6045,7 +6253,7 @@ fn eval_expr(
         }
         Expr::Propagate { value, span } => {
             let value =
-                eval_expr(value, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(value, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             match value {
                 Value::Enum(result) if result.name == "Result" && result.variant == "Ok" => {
                     if let Some((_, payload)) = result.payloads.first() {
@@ -6097,13 +6305,13 @@ fn eval_expr(
         }
         Expr::Unary { op, value, span } => {
             let value =
-                eval_expr(value, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(value, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             Ok(eval_unary(*op, value, *span, source_path)?)
         }
         Expr::Binary { lhs, op, rhs, span } => {
             if matches!(op, BinaryOp::And | BinaryOp::Or) {
                 let lhs =
-                    eval_expr(lhs, scopes, functions, methods, structs, enums, output, source_path)?;
+                    eval_expr(lhs, scopes, functions, methods, structs, enums, output, consts, source_path)?;
                 return eval_logical(
                     lhs,
                     *op,
@@ -6114,15 +6322,16 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     *span,
                     source_path,
                 );
             }
 
             let lhs =
-                eval_expr(lhs, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(lhs, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             let rhs =
-                eval_expr(rhs, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(rhs, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             Ok(eval_binary(lhs, *op, rhs, *span, source_path)?)
         }
         // RFC 0050 tuple literals: members evaluate left to right into a
@@ -6138,6 +6347,7 @@ fn eval_expr(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?);
             }
@@ -6152,7 +6362,7 @@ fn eval_expr(
             span,
         } => {
             let target =
-                eval_expr(target, scopes, functions, methods, structs, enums, output, source_path)?;
+                eval_expr(target, scopes, functions, methods, structs, enums, output, consts, source_path)?;
             match target {
                 Value::Tuple(values) => match values.get(*index) {
                     Some(member) => Ok(member.clone()),
@@ -6206,7 +6416,7 @@ fn refutable_pattern_signal(position: &str, span: Span, source_path: &Path) -> E
 /// RFC 0052: Wildcard leaves bind nothing anywhere; Literal leaves bind
 /// nothing in match payload positions (the dispatch already tested
 /// them) and are rejected in binding statements and `for` bindings
-/// (GOF3163 backstop — the typed layer owns the check).
+/// (GOF3163 backstop ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the typed layer owns the check).
 fn bind_pattern_leaf(
     leaf: &crate::ast::BindingPattern,
     member: Value,
@@ -6318,7 +6528,7 @@ fn bind_pattern_leaf(
 /// value using the position's existing equality semantics; a binding or
 /// wildcard leaf matches anything; a tuple leaf matches a tuple value of
 /// the same arity whose members match pairwise. Used by the ordered
-/// match dispatch — the test runs before the guard, and only arms whose
+/// match dispatch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the test runs before the guard, and only arms whose
 /// patterns fully match evaluate their guard or body.
 fn pattern_leaf_matches(leaf: &crate::ast::BindingPattern, value: &Value) -> bool {
     match leaf {
@@ -6443,6 +6653,7 @@ fn eval_logical(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     span: Span,
     source_path: &Path,
 ) -> EvalResult<Value> {
@@ -6471,6 +6682,7 @@ fn eval_logical(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             match rhs {
@@ -6503,6 +6715,7 @@ fn spawn_task(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     let function = functions.get(callee).cloned().ok_or_else(|| {
@@ -6529,13 +6742,16 @@ fn spawn_task(
     let functions = Arc::clone(functions);
     let methods = Arc::clone(methods);
     let structs = Arc::clone(structs);
+    // RFC 0054: the const table crosses the thread boundary as an owned
+    // clone (value data â€” cheap, CoW-backed values inside).
+    let consts = consts.clone();
     let enums = Arc::clone(enums);
     let output = output.clone();
 
     std::thread::spawn(move || {
         match std::panic::catch_unwind(AssertUnwindSafe(|| {
             eval_function(
-                &function, &args, &functions, &methods, &structs, &enums, &output,
+                &function, &args, &functions, &methods, &structs, &enums, &output, &consts,
             )
         })) {
             Ok(Ok(value)) => task_handle.store_value(value),
@@ -6564,6 +6780,7 @@ fn spawn_closure_task(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     let boundary = if closure_returns_runtime_result(&closure.return_type) {
@@ -6580,6 +6797,9 @@ fn spawn_closure_task(
     let structs = Arc::clone(structs);
     let enums = Arc::clone(enums);
     let output = output.clone();
+    // RFC 0054: the const table crosses the thread boundary as an owned
+    // clone (value data â€” cheap, CoW-backed values inside).
+    let consts = consts.clone();
     let source_path = source_path.to_path_buf();
 
     std::thread::spawn(move || {
@@ -6593,6 +6813,7 @@ fn spawn_closure_task(
                 &structs,
                 &enums,
                 &output,
+                &consts,
                 &source_path,
             )
         })) {
@@ -7184,6 +7405,7 @@ fn eval_len_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7208,6 +7430,7 @@ fn eval_len_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     match value {
@@ -7235,6 +7458,7 @@ fn eval_print_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7259,6 +7483,7 @@ fn eval_print_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7287,6 +7512,7 @@ fn eval_append_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7311,6 +7537,7 @@ fn eval_append_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let appended = eval_expr(
@@ -7321,6 +7548,7 @@ fn eval_append_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7350,6 +7578,7 @@ fn eval_contains_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7374,6 +7603,7 @@ fn eval_contains_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let needle = eval_expr(
@@ -7384,6 +7614,7 @@ fn eval_contains_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7436,6 +7667,7 @@ fn eval_first_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7460,6 +7692,7 @@ fn eval_first_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7492,6 +7725,7 @@ fn eval_last_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7516,6 +7750,7 @@ fn eval_last_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7548,6 +7783,7 @@ fn eval_slice_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7572,6 +7808,7 @@ fn eval_slice_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let start = eval_expr(
@@ -7582,6 +7819,7 @@ fn eval_slice_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let end = eval_expr(
@@ -7592,6 +7830,7 @@ fn eval_slice_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7663,6 +7902,7 @@ fn eval_reverse_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7687,6 +7927,7 @@ fn eval_reverse_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7715,6 +7956,7 @@ fn eval_sort_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7727,6 +7969,7 @@ fn eval_sort_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
     )?;
@@ -7771,6 +8014,7 @@ fn eval_min_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7783,6 +8027,7 @@ fn eval_min_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
     )?;
@@ -7824,6 +8069,7 @@ fn eval_max_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7836,6 +8082,7 @@ fn eval_max_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
     )?;
@@ -7878,6 +8125,7 @@ fn eval_orderable_list_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Vec<Value>> {
@@ -7902,6 +8150,7 @@ fn eval_orderable_list_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7947,6 +8196,7 @@ fn eval_trim_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -7971,6 +8221,7 @@ fn eval_trim_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -7998,6 +8249,7 @@ fn eval_split_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8022,6 +8274,7 @@ fn eval_split_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let separator = eval_expr(
@@ -8032,6 +8285,7 @@ fn eval_split_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -8089,6 +8343,7 @@ fn eval_join_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8113,6 +8368,7 @@ fn eval_join_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let separator = eval_expr(
@@ -8123,6 +8379,7 @@ fn eval_join_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -8179,6 +8436,7 @@ fn eval_starts_with_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8190,6 +8448,7 @@ fn eval_starts_with_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
         "starts_with",
@@ -8206,6 +8465,7 @@ fn eval_ends_with_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8217,6 +8477,7 @@ fn eval_ends_with_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
         "ends_with",
@@ -8233,6 +8494,7 @@ fn eval_parse_int_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8257,6 +8519,7 @@ fn eval_parse_int_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -8289,6 +8552,7 @@ fn eval_to_string_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8313,6 +8577,7 @@ fn eval_to_string_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -8342,6 +8607,7 @@ fn eval_range_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8369,6 +8635,7 @@ fn eval_range_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )
         })
@@ -8436,6 +8703,7 @@ fn eval_string_pair_builtin<F>(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
     callee: &'static str,
@@ -8466,6 +8734,7 @@ where
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let pattern = eval_expr(
@@ -8476,6 +8745,7 @@ where
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -8519,6 +8789,7 @@ fn eval_assert_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8543,6 +8814,7 @@ fn eval_assert_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let message = if args.len() == 2 {
@@ -8554,6 +8826,7 @@ fn eval_assert_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         )?)
     } else {
@@ -8606,6 +8879,7 @@ fn eval_assert_builtin(
 fn eval_argv_builtin(
     args: &[Expr],
     output: &OutputBuffer,
+    _consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8635,6 +8909,7 @@ fn eval_argv_builtin(
 fn eval_read_stdin_builtin(
     args: &[Expr],
     output: &OutputBuffer,
+    _consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8660,6 +8935,7 @@ fn eval_read_stdin_builtin(
 fn eval_read_stdin_lines_builtin(
     args: &[Expr],
     output: &OutputBuffer,
+    _consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8690,6 +8966,7 @@ fn eval_env_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8715,6 +8992,7 @@ fn eval_env_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -8793,6 +9071,7 @@ fn eval_run_process_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8818,6 +9097,7 @@ fn eval_run_process_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3100",
     )?;
@@ -8831,6 +9111,7 @@ fn eval_run_process_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3100",
     )?;
@@ -8882,6 +9163,7 @@ fn eval_exists_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8907,6 +9189,7 @@ fn eval_exists_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -8921,6 +9204,7 @@ fn eval_read_dir_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -8946,6 +9230,7 @@ fn eval_read_dir_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -8980,6 +9265,7 @@ fn eval_mkdir_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9005,6 +9291,7 @@ fn eval_mkdir_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -9023,6 +9310,7 @@ fn eval_remove_file_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9048,6 +9336,7 @@ fn eval_remove_file_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -9066,6 +9355,7 @@ fn eval_path_join_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9091,6 +9381,7 @@ fn eval_path_join_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -9103,6 +9394,7 @@ fn eval_path_join_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -9123,6 +9415,7 @@ fn eval_path_dir_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9135,6 +9428,7 @@ fn eval_path_dir_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
     )?;
@@ -9153,6 +9447,7 @@ fn eval_path_base_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9165,6 +9460,7 @@ fn eval_path_base_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
     )?;
@@ -9183,6 +9479,7 @@ fn eval_path_ext_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9195,6 +9492,7 @@ fn eval_path_ext_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         span,
     )?;
@@ -9214,6 +9512,7 @@ fn eval_unary_path_like_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<String> {
@@ -9239,6 +9538,7 @@ fn eval_unary_path_like_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )
@@ -9253,6 +9553,7 @@ fn eval_string_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<String> {
@@ -9264,6 +9565,7 @@ fn eval_string_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::String(text) = value else {
@@ -9290,6 +9592,7 @@ fn eval_http_headers_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<BTreeMap<String, String>> {
@@ -9301,6 +9604,7 @@ fn eval_http_headers_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Dict(headers) = value else {
@@ -9354,6 +9658,7 @@ fn eval_string_list_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<Vec<String>> {
@@ -9365,6 +9670,7 @@ fn eval_string_list_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::List(items) = value else {
@@ -9418,6 +9724,7 @@ fn eval_int_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<i64> {
@@ -9429,6 +9736,7 @@ fn eval_int_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Int(number) = value else {
@@ -9455,6 +9763,7 @@ fn eval_non_negative_duration_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     invalid_operand_code: &'static str,
     negative_duration_code: &'static str,
@@ -9468,6 +9777,7 @@ fn eval_non_negative_duration_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         invalid_operand_code,
     )?;
@@ -9496,6 +9806,7 @@ fn eval_read_file_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9520,6 +9831,7 @@ fn eval_read_file_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::String(path_text) = path_value else {
@@ -9549,6 +9861,7 @@ fn eval_write_file_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9573,6 +9886,7 @@ fn eval_write_file_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let contents_value = eval_expr(
@@ -9583,6 +9897,7 @@ fn eval_write_file_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -9628,6 +9943,7 @@ fn eval_read_lines_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9652,6 +9968,7 @@ fn eval_read_lines_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::String(path_text) = path_value else {
@@ -9681,6 +9998,7 @@ fn eval_write_lines_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9705,6 +10023,7 @@ fn eval_write_lines_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let lines_value = eval_expr(
@@ -9715,6 +10034,7 @@ fn eval_write_lines_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -9794,6 +10114,7 @@ fn eval_insert_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9818,6 +10139,7 @@ fn eval_insert_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let key_value = eval_expr(
@@ -9828,6 +10150,7 @@ fn eval_insert_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let inserted = eval_expr(
@@ -9838,6 +10161,7 @@ fn eval_insert_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -9877,6 +10201,7 @@ fn eval_keys_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9901,6 +10226,7 @@ fn eval_keys_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -9928,6 +10254,7 @@ fn eval_values_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -9952,6 +10279,7 @@ fn eval_values_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -9979,6 +10307,7 @@ fn eval_channel_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10005,6 +10334,7 @@ fn eval_channel_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             "GOF3096",
         )?;
@@ -10038,6 +10368,7 @@ fn eval_close_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10062,6 +10393,7 @@ fn eval_close_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Channel(channel) = channel else {
@@ -10089,6 +10421,7 @@ fn eval_send_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10113,6 +10446,7 @@ fn eval_send_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let sent_value = eval_expr(
@@ -10123,6 +10457,7 @@ fn eval_send_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let cancel_token = if args.len() == 3 {
@@ -10134,6 +10469,7 @@ fn eval_send_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         )?)
     } else {
@@ -10169,6 +10505,7 @@ fn eval_recv_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10193,6 +10530,7 @@ fn eval_recv_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let cancel_token = if args.len() == 2 {
@@ -10204,6 +10542,7 @@ fn eval_recv_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         )?)
     } else {
@@ -10308,6 +10647,7 @@ fn prepare_select_operation(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<PreparedSelectOperation> {
     match operation {
@@ -10333,6 +10673,7 @@ fn prepare_select_operation(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             let cancel_token = if args.len() == 2 {
@@ -10344,6 +10685,7 @@ fn prepare_select_operation(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?)
             } else {
@@ -10392,6 +10734,7 @@ fn prepare_select_operation(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             let value = eval_expr(
@@ -10402,6 +10745,7 @@ fn prepare_select_operation(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
             )?;
             let cancel_token = if args.len() == 3 {
@@ -10413,6 +10757,7 @@ fn prepare_select_operation(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?)
             } else {
@@ -10501,6 +10846,7 @@ fn eval_select_arm_body(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     loop_depth: usize,
     source_path: &Path,
 ) -> EvalResult<EvalOutcome> {
@@ -10522,6 +10868,7 @@ fn eval_select_arm_body(
         structs,
         enums,
         output,
+        consts,
         loop_depth,
         false,
         source_path,
@@ -10555,6 +10902,7 @@ fn eval_cancel_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10579,6 +10927,7 @@ fn eval_cancel_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     token.cancel();
@@ -10593,6 +10942,7 @@ fn eval_is_cancelled_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10617,6 +10967,7 @@ fn eval_is_cancelled_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     Ok(Value::Bool(token.is_cancelled()))
@@ -10630,6 +10981,7 @@ fn eval_timeout_token_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10655,6 +11007,7 @@ fn eval_timeout_token_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3093",
         "GOF3094",
@@ -10671,6 +11024,7 @@ fn eval_cancel_after_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10695,6 +11049,7 @@ fn eval_cancel_after_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let millis = eval_non_negative_duration_argument(
@@ -10706,6 +11061,7 @@ fn eval_cancel_after_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3093",
         "GOF3094",
@@ -10722,6 +11078,7 @@ fn eval_await_result_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -10746,6 +11103,7 @@ fn eval_await_result_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let cancel_token = if args.len() == 2 {
@@ -10757,6 +11115,7 @@ fn eval_await_result_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         )?)
     } else {
@@ -10786,6 +11145,7 @@ fn eval_cancel_token_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<CancelTokenValue> {
     let value = eval_expr(
@@ -10796,6 +11156,7 @@ fn eval_cancel_token_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::CancelToken(token) = value else {
@@ -10823,6 +11184,7 @@ fn eval_opaque_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<OpaqueValue> {
@@ -10834,6 +11196,7 @@ fn eval_opaque_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Opaque(opaque) = value else {
@@ -10872,6 +11235,7 @@ fn eval_bytes_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<BytesValue> {
@@ -10885,6 +11249,7 @@ fn eval_bytes_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         diagnostic_code,
     )? {
@@ -10902,6 +11267,7 @@ fn eval_read_stream_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<ReadStreamValue> {
@@ -10915,6 +11281,7 @@ fn eval_read_stream_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         diagnostic_code,
     )? {
@@ -10932,6 +11299,7 @@ fn eval_write_stream_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<WriteStreamValue> {
@@ -10945,6 +11313,7 @@ fn eval_write_stream_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         diagnostic_code,
     )? {
@@ -10962,6 +11331,7 @@ fn eval_duplex_stream_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<DuplexStreamValue> {
@@ -10975,6 +11345,7 @@ fn eval_duplex_stream_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         diagnostic_code,
     )? {
@@ -10992,6 +11363,7 @@ fn eval_tcp_listener_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<TcpListenerValue> {
@@ -11005,6 +11377,7 @@ fn eval_tcp_listener_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         diagnostic_code,
     )? {
@@ -11022,6 +11395,7 @@ fn eval_socket_addr_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<SocketAddrValue> {
@@ -11035,6 +11409,7 @@ fn eval_socket_addr_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         diagnostic_code,
     )? {
@@ -11052,6 +11427,7 @@ fn eval_deadline_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     diagnostic_code: &'static str,
 ) -> EvalResult<NetDeadlineValue> {
@@ -11065,6 +11441,7 @@ fn eval_deadline_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
         diagnostic_code,
     )? {
@@ -11772,6 +12149,7 @@ fn eval_bytes_deadline_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> Option<EvalResult<Value>> {
     let value = match callee {
@@ -11785,6 +12163,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3109",
             );
@@ -11800,6 +12179,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3109",
             );
@@ -11818,6 +12198,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3109",
             );
@@ -11833,6 +12214,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3109",
             )
@@ -11846,6 +12228,7 @@ fn eval_bytes_deadline_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3109",
                 )?;
@@ -11858,6 +12241,7 @@ fn eval_bytes_deadline_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3109",
                 )?;
@@ -11877,6 +12261,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3109",
             )
@@ -11890,6 +12275,7 @@ fn eval_bytes_deadline_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3109",
                 )?;
@@ -11906,6 +12292,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3112",
             )
@@ -11921,6 +12308,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3112",
             )
@@ -11936,6 +12324,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3112",
             )
@@ -11951,6 +12340,7 @@ fn eval_bytes_deadline_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3112",
             )
@@ -11970,6 +12360,7 @@ fn eval_file_stream_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> Option<EvalResult<Value>> {
     let value = match callee {
@@ -11983,6 +12374,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -11998,6 +12390,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12013,6 +12406,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12026,6 +12420,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3110",
                 )?;
@@ -12042,6 +12437,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12055,6 +12451,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3110",
                 )?;
@@ -12071,6 +12468,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12086,6 +12484,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12101,6 +12500,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12114,6 +12514,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3110",
                 )?;
@@ -12133,6 +12534,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12145,6 +12547,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 Ok(Value::Opaque(OpaqueValue::ReadStream(ReadStreamValue {
@@ -12163,6 +12566,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12176,6 +12580,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3110",
                 )?;
@@ -12192,6 +12597,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12205,6 +12611,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3110",
                 )?;
@@ -12221,6 +12628,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12236,6 +12644,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12251,6 +12660,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12264,6 +12674,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3110",
                 )?;
@@ -12283,6 +12694,7 @@ fn eval_file_stream_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3110",
             )
@@ -12295,6 +12707,7 @@ fn eval_file_stream_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 Ok(Value::Opaque(OpaqueValue::WriteStream(WriteStreamValue {
@@ -12317,6 +12730,7 @@ fn eval_net_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> Option<EvalResult<Value>> {
     let value = match callee {
@@ -12330,6 +12744,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12345,6 +12760,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12358,6 +12774,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3111",
                 )?;
@@ -12369,6 +12786,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 Ok(connect_tcp_value(&address, Some(deadline), Some(token)))
@@ -12384,6 +12802,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12405,6 +12824,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12418,6 +12838,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3111",
                 )?;
@@ -12434,6 +12855,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12447,6 +12869,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3111",
                 )?;
@@ -12463,6 +12886,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12478,6 +12902,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12491,6 +12916,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3111",
                 )?;
@@ -12507,6 +12933,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12520,6 +12947,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3111",
                 )?;
@@ -12536,6 +12964,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12551,6 +12980,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12566,6 +12996,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12579,6 +13010,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3111",
                 )?;
@@ -12600,6 +13032,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12612,6 +13045,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 Ok(Value::Opaque(OpaqueValue::DuplexStream(
@@ -12632,6 +13066,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12647,6 +13082,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12662,6 +13098,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12677,6 +13114,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12692,6 +13130,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12705,6 +13144,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                     "GOF3111",
                 )?;
@@ -12724,6 +13164,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12736,6 +13177,7 @@ fn eval_net_bridge_builtin(
                     structs,
                     enums,
                     output,
+                    consts,
                     source_path,
                 )?;
                 Ok(Value::Opaque(OpaqueValue::TcpListener(TcpListenerValue {
@@ -12754,6 +13196,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12769,6 +13212,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12784,6 +13228,7 @@ fn eval_net_bridge_builtin(
                 structs,
                 enums,
                 output,
+                consts,
                 source_path,
                 "GOF3111",
             )
@@ -12803,6 +13248,7 @@ fn eval_stdlib_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -12815,6 +13261,7 @@ fn eval_stdlib_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     ) {
         return result;
@@ -12828,6 +13275,7 @@ fn eval_stdlib_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     ) {
         return result;
@@ -12841,6 +13289,7 @@ fn eval_stdlib_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     ) {
         return result;
@@ -12854,6 +13303,7 @@ fn eval_stdlib_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     ) {
         return result;
@@ -12882,6 +13332,7 @@ fn eval_testing_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> Option<EvalResult<Value>> {
     let result = match callee {
@@ -12893,6 +13344,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         "__gof_internal_test_equal" => eval_test_equal_bridge_builtin(
@@ -12903,6 +13355,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             false,
         ),
@@ -12914,6 +13367,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             true,
         ),
@@ -12925,6 +13379,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             true,
         ),
@@ -12936,6 +13391,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             false,
         ),
@@ -12947,6 +13403,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             true,
         ),
@@ -12958,6 +13415,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             false,
         ),
@@ -12969,6 +13427,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         "__gof_internal_test_case" => eval_test_case_bridge_builtin(
@@ -12979,6 +13438,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         "__gof_internal_test_temp_dir" => eval_test_temp_dir_bridge_builtin(
@@ -12989,6 +13449,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         "__gof_internal_test_temp_file" => eval_test_temp_file_bridge_builtin(
@@ -12999,6 +13460,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         "__gof_internal_test_env" => eval_test_env_bridge_builtin(
@@ -13009,6 +13471,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         "__gof_internal_test_skip" => eval_test_skip_or_todo_bridge_builtin(
@@ -13019,6 +13482,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             true,
         ),
@@ -13030,6 +13494,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             false,
         ),
@@ -13041,6 +13506,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         "__gof_internal_temp_file_path" => eval_temp_file_path_bridge_builtin(
@@ -13051,6 +13517,7 @@ fn eval_testing_bridge_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
         ),
         _ => return None,
@@ -13066,6 +13533,7 @@ fn eval_test_fail_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     let (context, message, span) = eval_test_context_and_message(
@@ -13076,6 +13544,7 @@ fn eval_test_fail_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "fail",
     )?;
@@ -13094,6 +13563,7 @@ fn eval_test_equal_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     expect_inequality: bool,
 ) -> EvalResult<Value> {
@@ -13115,6 +13585,7 @@ fn eval_test_equal_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "equal",
     )?;
@@ -13126,6 +13597,7 @@ fn eval_test_equal_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let expected = eval_expr(
@@ -13136,6 +13608,7 @@ fn eval_test_equal_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let message = eval_string_argument(
@@ -13151,6 +13624,7 @@ fn eval_test_equal_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13182,6 +13656,7 @@ fn eval_test_bool_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     expected: bool,
 ) -> EvalResult<Value> {
@@ -13202,6 +13677,7 @@ fn eval_test_bool_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         if expected { "true" } else { "false" },
     )?;
@@ -13213,6 +13689,7 @@ fn eval_test_bool_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let message = eval_string_argument(
@@ -13224,6 +13701,7 @@ fn eval_test_bool_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13261,6 +13739,7 @@ fn eval_test_result_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     expect_ok: bool,
 ) -> EvalResult<Value> {
@@ -13281,6 +13760,7 @@ fn eval_test_result_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "ok",
     )?;
@@ -13292,6 +13772,7 @@ fn eval_test_result_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let message = eval_string_argument(
@@ -13303,6 +13784,7 @@ fn eval_test_result_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13349,6 +13831,7 @@ fn eval_test_match_snapshot_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if args.len() != 3 {
@@ -13368,6 +13851,7 @@ fn eval_test_match_snapshot_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "match_snapshot",
     )?;
@@ -13380,6 +13864,7 @@ fn eval_test_match_snapshot_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13391,6 +13876,7 @@ fn eval_test_match_snapshot_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let rendered = render_test_value(&value);
@@ -13412,6 +13898,7 @@ fn eval_test_case_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if args.len() != 2 {
@@ -13431,6 +13918,7 @@ fn eval_test_case_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "case",
     )?;
@@ -13443,6 +13931,7 @@ fn eval_test_case_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13459,6 +13948,7 @@ fn eval_test_temp_dir_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if args.len() != 1 {
@@ -13478,6 +13968,7 @@ fn eval_test_temp_dir_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "temp_dir",
     )?;
@@ -13499,6 +13990,7 @@ fn eval_test_temp_file_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if args.len() != 2 {
@@ -13518,6 +14010,7 @@ fn eval_test_temp_file_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "temp_file",
     )?;
@@ -13530,6 +14023,7 @@ fn eval_test_temp_file_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13551,6 +14045,7 @@ fn eval_test_env_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if args.len() != 3 {
@@ -13570,6 +14065,7 @@ fn eval_test_env_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "env",
     )?;
@@ -13582,6 +14078,7 @@ fn eval_test_env_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13594,6 +14091,7 @@ fn eval_test_env_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13609,6 +14107,7 @@ fn eval_test_skip_or_todo_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     skip: bool,
 ) -> EvalResult<Value> {
@@ -13620,6 +14119,7 @@ fn eval_test_skip_or_todo_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         if skip { "skip" } else { "todo" },
     )?;
@@ -13652,6 +14152,7 @@ fn eval_temp_dir_path_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if args.len() != 1 {
@@ -13671,6 +14172,7 @@ fn eval_temp_dir_path_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Opaque(OpaqueValue::TempDir(dir)) = value else {
@@ -13696,6 +14198,7 @@ fn eval_temp_file_path_bridge_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
 ) -> EvalResult<Value> {
     if args.len() != 1 {
@@ -13715,6 +14218,7 @@ fn eval_temp_file_path_bridge_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Opaque(OpaqueValue::TempFile(file)) = value else {
@@ -13740,6 +14244,7 @@ fn eval_test_context_and_message(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     callee: &str,
 ) -> EvalResult<(TestContextValue, String, Span)> {
@@ -13760,6 +14265,7 @@ fn eval_test_context_and_message(
         structs,
         enums,
         output,
+        consts,
         source_path,
         callee,
     )?;
@@ -13772,6 +14278,7 @@ fn eval_test_context_and_message(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3117",
     )?;
@@ -13786,6 +14293,7 @@ fn eval_test_context_argument(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     callee: &str,
 ) -> EvalResult<TestContextValue> {
@@ -13797,6 +14305,7 @@ fn eval_test_context_argument(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Opaque(OpaqueValue::TestContext(context)) = value else {
@@ -13863,6 +14372,7 @@ fn eval_json_parse_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -13888,6 +14398,7 @@ fn eval_json_parse_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -13908,6 +14419,7 @@ fn eval_toml_parse_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -13933,6 +14445,7 @@ fn eval_toml_parse_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3099",
     )?;
@@ -13953,6 +14466,7 @@ fn eval_yaml_parse_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -13978,6 +14492,7 @@ fn eval_yaml_parse_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3104",
     )?;
@@ -13998,6 +14513,7 @@ fn eval_base64_encode_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14023,6 +14539,7 @@ fn eval_base64_encode_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3105",
     )?;
@@ -14037,6 +14554,7 @@ fn eval_base64_decode_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14062,6 +14580,7 @@ fn eval_base64_decode_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3105",
     )?;
@@ -14084,6 +14603,7 @@ fn eval_json_stringify_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14108,6 +14628,7 @@ fn eval_json_stringify_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Json(value) = value else {
@@ -14134,6 +14655,7 @@ fn eval_json_get_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14158,6 +14680,7 @@ fn eval_json_get_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let key = eval_string_argument(
@@ -14169,6 +14692,7 @@ fn eval_json_get_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -14203,6 +14727,7 @@ fn eval_json_index_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14227,6 +14752,7 @@ fn eval_json_index_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let index = eval_expr(
@@ -14237,6 +14763,7 @@ fn eval_json_index_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -14296,6 +14823,7 @@ fn eval_json_len_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14320,6 +14848,7 @@ fn eval_json_len_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Json(json) = value else {
@@ -14350,6 +14879,7 @@ fn eval_json_string_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14374,6 +14904,7 @@ fn eval_json_string_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Json(json) = value else {
@@ -14403,6 +14934,7 @@ fn eval_json_int_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14427,6 +14959,7 @@ fn eval_json_int_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::Json(json) = value else {
@@ -14456,6 +14989,7 @@ fn eval_csv_parse_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14481,6 +15015,7 @@ fn eval_csv_parse_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3098",
     )?;
@@ -14512,6 +15047,7 @@ fn eval_csv_stringify_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14536,6 +15072,7 @@ fn eval_csv_stringify_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
     let Value::List(rows) = rows_value else {
@@ -14607,6 +15144,7 @@ fn eval_template_render_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14632,6 +15170,7 @@ fn eval_template_render_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3103",
     )?;
@@ -14643,6 +15182,7 @@ fn eval_template_render_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
     )?;
 
@@ -14764,6 +15304,7 @@ fn eval_http_request_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14791,6 +15332,7 @@ fn eval_http_request_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3106",
     )?;
@@ -14803,6 +15345,7 @@ fn eval_http_request_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3106",
     )?;
@@ -14816,6 +15359,7 @@ fn eval_http_request_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             "GOF3106",
         )?)
@@ -14832,6 +15376,7 @@ fn eval_http_request_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             "GOF3106",
         )?
@@ -14848,6 +15393,7 @@ fn eval_http_request_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             "GOF3107",
             "GOF3107",
@@ -14874,6 +15420,7 @@ fn eval_http_get_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14899,6 +15446,7 @@ fn eval_http_get_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -14921,6 +15469,7 @@ fn eval_http_post_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -14946,6 +15495,7 @@ fn eval_http_post_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -14958,6 +15508,7 @@ fn eval_http_post_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3076",
     )?;
@@ -14971,6 +15522,7 @@ fn eval_http_post_builtin(
             structs,
             enums,
             output,
+            consts,
             source_path,
             "GOF3076",
         )?
@@ -14997,6 +15549,7 @@ fn eval_sleep_builtin(
     structs: &StructTable,
     enums: &EnumTable,
     output: &OutputBuffer,
+    consts: &ConstTable,
     source_path: &Path,
     span: Span,
 ) -> EvalResult<Value> {
@@ -15022,6 +15575,7 @@ fn eval_sleep_builtin(
         structs,
         enums,
         output,
+        consts,
         source_path,
         "GOF3085",
         "GOF3086",
@@ -16799,7 +17353,7 @@ mod tests {
     #[test]
     fn evaluates_guarded_match_arms_in_order() {
         // RFC 0052's classify shape: a repeated variant with different
-        // guards (legal — the narrowed GOF3030 never fires), guarded
+        // guards (legal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the narrowed GOF3030 never fires), guarded
         // arms before the unguarded total arm, first match wins.
         let value = run_source(
             "enum HttpOutcome:\n    Done(status: int, body: string)\n    Failed(code: int)\n\nfn classify(outcome: HttpOutcome) -> string:\n    match outcome:\n        HttpOutcome.Done(status, body) if status == 404 and starts_with(body, \"mis\"):\n            return \"missing\"\n        HttpOutcome.Done(status, body) if status >= 500:\n            return \"server\"\n        HttpOutcome.Done(status, body):\n            return \"plain\"\n        HttpOutcome.Failed(code):\n            return \"failed\"\n\nfn main() -> int:\n    assert(classify(HttpOutcome.Done(404, \"missing doc\")) == \"missing\", \"guard must see the arm bindings\")\n    assert(classify(HttpOutcome.Done(500, \"boom\")) == \"server\", \"guards run in order\")\n    assert(classify(HttpOutcome.Done(302, \"redirect\")) == \"plain\", \"the total arm closes the match\")\n    assert(classify(HttpOutcome.Failed(7)) == \"failed\", \"other variants dispatch unchanged\")\n    return 0\n",

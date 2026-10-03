@@ -173,3 +173,8 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3170`: method declared on a struct from another module (methods require the receiver struct in the same file; builtin opaque types are the stdlib exception)
 - `GOF3171`: import-vs-import name collision (two direct imports contributing the same plain function/struct/enum/protocol name)
 - `GOF3172`: warning — import of a blockless module (grandfather window: all its own declarations are importable and the default flips to private at the v1 freeze)
+- `GOF3173`: duplicate const in the module graph (two modules declaring the same const name)
+- `GOF3174`: const initializer is not a const expression (the grammar allows literals, operators over const operands, list/dict literals, enum/struct/Result construction, `len` over const operands, and references to other consts)
+- `GOF3175`: const declared with a non-value taxon type (handle types like channel/task/streams and opaque runtime types never cross into compile-time values)
+- `GOF3176`: const initializer does not match the declared type annotation
+- `GOF3177`: const evaluation fault (the value is fixed at declaration, so runtime faults like division by a literal zero are promoted to compile time)

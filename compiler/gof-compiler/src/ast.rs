@@ -20,6 +20,19 @@ pub struct Module {
     /// declaration, one bare identifier per line. Empty when the file
     /// is blockless (the grandfather window).
     pub exports: Vec<ModuleExport>,
+    /// RFC 0054 const declarations: `const NAME: Type = expr`, top
+    /// level only, mandatory annotation and initializer.
+    pub consts: Vec<ConstDecl>,
+}
+
+/// RFC 0054: a top-level const declaration with its mandatory type
+/// annotation and initializer. Evaluation happens once in typed HIR.
+#[derive(Debug, Clone, Serialize)]
+pub struct ConstDecl {
+    pub name: String,
+    pub ty: TypeRef,
+    pub value: Expr,
+    pub span: Span,
 }
 
 /// One `module:` export entry — a bare identifier naming a top-level
@@ -472,6 +485,7 @@ impl<'a> Parser<'a> {
         // RFC 0053: `module:` must be the file's FIRST top-level
         // declaration — tracked for the GOF3168 late-block rejection.
         let mut exports: Vec<ModuleExport> = Vec::new();
+        let mut consts: Vec<ConstDecl> = Vec::new();
         let mut seen_top_level = false;
         while !self.at_end() {
             self.skip_newlines();
@@ -505,7 +519,9 @@ impl<'a> Parser<'a> {
                 continue;
             }
             seen_top_level = true;
-            if self.check(TokenDiscriminant::Import) {
+            if self.check(TokenDiscriminant::Const) {
+                consts.push(self.parse_const());
+            } else if self.check(TokenDiscriminant::Import) {
                 imports.push(self.parse_import());
             } else if self.check(TokenDiscriminant::Struct) {
                 structs.push(self.parse_struct());
@@ -561,6 +577,32 @@ impl<'a> Parser<'a> {
             protocols,
             impls,
             exports,
+            consts,
+        }
+    }
+
+    /// RFC 0054: `const NAME: Type = expr` — top level only,
+    /// newline-terminated, same shape class as `import`. Statement or
+    /// body positions fall through to the existing token diagnostics.
+    fn parse_const(&mut self) -> ConstDecl {
+        let span = self.expect(TokenDiscriminant::Const, "expected `const`");
+        let name = self.expect_ident("expected a const name after `const`");
+        self.expect(
+            TokenDiscriminant::Colon,
+            "expected `:` after the const name (the annotation is mandatory)",
+        );
+        let ty = self.parse_type_ref("expected a type annotation for the const");
+        self.expect(
+            TokenDiscriminant::Equal,
+            "expected `=` followed by the const initializer",
+        );
+        let value = self.parse_expr();
+        self.finish_stmt_line("expected a newline after the const declaration");
+        ConstDecl {
+            name,
+            ty,
+            value,
+            span,
         }
     }
 
@@ -3073,6 +3115,7 @@ enum TokenDiscriminant {
     Enum,
     Protocol,
     Impl,
+    Const,
     Unsafe,
     Test,
     Fixture,
@@ -3134,6 +3177,7 @@ impl TokenDiscriminant {
                 | (Self::Enum, TokenKind::Enum)
                 | (Self::Protocol, TokenKind::Protocol)
                 | (Self::Impl, TokenKind::Impl)
+                | (Self::Const, TokenKind::Const)
                 | (Self::Unsafe, TokenKind::Unsafe)
                 | (Self::Test, TokenKind::Test)
                 | (Self::Fixture, TokenKind::Fixture)
@@ -3194,6 +3238,7 @@ impl TokenDiscriminant {
             Self::Enum => "`enum`",
             Self::Protocol => "`protocol`",
             Self::Impl => "`impl`",
+            Self::Const => "`const`",
             Self::Unsafe => "`unsafe`",
             Self::Fixture => "`fixture`",
             Self::Fn => "`fn`",

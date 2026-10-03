@@ -1,0 +1,7 @@
+fn compute() -> int:
+    return 7
+
+const VALUE: int = compute()
+
+fn main() -> int:
+    return 0

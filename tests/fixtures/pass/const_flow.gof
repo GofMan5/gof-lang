@@ -1,0 +1,18 @@
+const MAX_SIZE: int = 10
+const GREETING: string = "hello"
+const PREFIX: string = GREETING + " world"
+const LIMITS: list[int] = [MAX_SIZE, 20, 30]
+
+fn scale(value: int) -> int:
+    return value * MAX_SIZE
+
+fn main() -> int:
+    assert(PREFIX == "hello world", "const-into-const composition works")
+    assert(LIMITS[0] == 10, "const list referencing consts works")
+    assert(scale(4) == 40, "consts read inside function bodies")
+    mut total = 0
+    for limit in LIMITS:
+        total = total + limit
+    assert(total == 60, "const lists iterate")
+    print(MAX_SIZE + len(PREFIX))
+    return 0

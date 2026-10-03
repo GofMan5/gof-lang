@@ -1,0 +1,4 @@
+const BUFFER: Bytes = "x"
+
+fn main() -> int:
+    return 0

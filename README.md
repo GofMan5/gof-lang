@@ -82,6 +82,7 @@ gof test tests/fixtures                # run diagnostics/runtime fixtures
 | `unsafe:` permission blocks (checks unchanged, inert in v1 with a warning), closure-body ban, modifier rejection | stable |
 | Reserved `async` diagnostics (GOF3158–3160): every use fails with the spawn-and-join guidance; no function coloring in v1 | stable |
 | `module:` export blocks (GOF3168), method locality (GOF3170), import collisions (GOF3171), blockless-import grandfather warnings (GOF3172) | stable |
+| Top-level const expressions (RFC 0054: `const NAME: Type = expr`, value-taxon-only types, const grammar, once-evaluated immutable reads, GOF3173–3177) | stable |
 | Methods, field access, constructors | stable |
 | `if`/`else`, `while`, `for`, `break`, `continue`, `defer`, logical ops, explicit equality/ordering, unary `-`, `/`, `%` | stable |
 | Lists, dict literals, indexing, dict views | stable |

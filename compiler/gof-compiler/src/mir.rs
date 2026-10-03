@@ -373,6 +373,19 @@ impl MirBuilder {
                 });
                 dest
             }
+            // NOTE (RFC 0054, MIR convention): const references lower
+            // through the local-name path — the evaluator is the v1
+            // execution surface and resolves the name from the module's
+            // const table; the native lowering resolves the memoized
+            // value directly in Phase 2.
+            TypedExprKind::Const(name) => {
+                let dest = self.alloc();
+                self.instructions.push(MirInstruction::LoadLocal {
+                    dest,
+                    name: name.clone(),
+                });
+                dest
+            }
             TypedExprKind::EnumVariant {
                 enum_name,
                 variant,

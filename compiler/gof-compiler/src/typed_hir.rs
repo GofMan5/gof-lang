@@ -33,6 +33,9 @@ pub enum Type {
     /// Compatibility is exact structural match — no variance, no implicit
     /// coercion with any other type.
     Function(Vec<Type>, Box<Type>),
+    /// RFC 0054: reference to a top-level const. The evaluator reads the
+    /// memoized value from the const table.
+    Const(String),
     /// RFC 0044: a protocol name used as a value type annotation. Every
     /// value position rejects it (GOF3135) at resolution time; the
     /// variant exists so downstream layers can recognize the rejected
@@ -93,6 +96,7 @@ impl Type {
             Self::Bool => "bool".to_string(),
             Self::Json => "json".to_string(),
             Self::CancelToken => "cancel_token".to_string(),
+            Self::Const(name) => name.clone(),
             Self::Opaque(name) => name.clone(),
             Self::Struct(name) => name.clone(),
             Self::Enum(name) => name.clone(),
@@ -352,6 +356,9 @@ pub enum TypedExprKind {
     String(String),
     Bool(bool),
     Local(String),
+    /// RFC 0054: reference to a top-level const (name); the value is
+    /// memoized in the const table and the evaluator reads it.
+    Const(String),
     List {
         items: Vec<TypedExpr>,
     },
@@ -859,6 +866,208 @@ enum CallKind {
     Unknown,
 }
 
+/// RFC 0054: the const pass. For every top-level const declaration:
+/// resolve the declared annotation, validate the initializer against
+/// the const-expression grammar (GOF3174), check deep value-taxon
+/// eligibility (GOF3175), check the initializer's type against the
+/// annotation (GOF3176), and evaluate faults (GOF3177). Duplicate and
+/// graph-level conflicts were reported by the module graph (GOF3173).
+/// The pass returns the name → declared-type table used by body
+/// lowering to resolve const references. Evaluation memoization into
+/// runtime values lands with the evaluator's const table; this pass
+/// owns the static contract.
+fn run_const_pass(
+    module: &HirModule,
+    signatures: &HashMap<String, FunctionSignature>,
+    method_signatures: &HashMap<(String, String), FunctionSignature>,
+    known_structs: &HashSet<String>,
+    known_enums: &HashSet<String>,
+    known_protocols: &HashSet<String>,
+    struct_signatures: &HashMap<String, StructSignature>,
+    enum_signatures: &HashMap<String, EnumSignature>,
+    diagnostics: &mut Diagnostics,
+) -> HashMap<String, Type> {
+    let mut const_types: HashMap<String, Type> = HashMap::new();
+    for decl in &module.consts {
+        // The annotation resolves through the ordinary resolver with an
+        // empty generic context (consts are not generic in v1).
+        let ty = resolve_type_annotation(
+            Some(&decl.ty),
+            known_structs,
+            known_enums,
+            known_protocols,
+            &GenericContext::default(),
+            &Path::new("const.gof"),
+            diagnostics,
+        );
+        // Taxon rule (GOF3175): the declared type must be deeply
+        // value-taxon. Handle/owned members reject.
+        if !is_deep_value_taxon(&ty) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3175",
+                    format!("const `{}` type `{}` is not const-eligible", decl.name, ty.display_name()),
+                    "consts must be deeply value-taxon: handle types (channel/task/stream) and owned types never cross into compile-time values",
+                    decl.span,
+                )
+                .with_fix_it("choose a value-taxon type: int, string, bool, list, dict, structs, enums, Result")
+                .with_source_path(PathBuf::new()),
+            );
+        }
+        // The initializer typechecks through the ordinary typed layer by
+        // lowering it as a standalone expression; the const grammar
+        // check (GOF3174) runs on the typed result.
+        let typed_value = lower_expr(
+            &decl.value,
+            &ScopeStack::new(&[]),
+            signatures,
+            method_signatures,
+            known_structs,
+            known_enums,
+            known_protocols,
+            &GenericContext::default(),
+            struct_signatures,
+            enum_signatures,
+            &const_types,
+            diagnostics,
+            &Type::Unknown,
+            &Path::new("const.gof"),
+        );
+        check_const_grammar(&typed_value, diagnostics);
+        // GOF3176: the initializer's type must match the annotation.
+        if !types_compatible(&ty, &typed_value.ty) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3176",
+                    format!(
+                        "const `{}` initializer does not match the declared type",
+                        decl.name
+                    ),
+                    format!(
+                        "the annotation is `{}`, but the initializer resolves to `{}`",
+                        ty.display_name(),
+                        typed_value.ty.display_name()
+                    ),
+                    decl.span,
+                )
+                .with_source_path(PathBuf::new()),
+            );
+        }
+        // GOF3177: compile-time evaluation faults — division by a const
+        // zero is the v1 case.
+        if let Some(fault) = detect_const_evaluation_fault(&typed_value) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3177",
+                    format!("const `{}` evaluation fault: {fault}", decl.name),
+                    "the value is fixed at declaration, so the runtime division-by-zero diagnostic is promoted to compile time here",
+                    decl.span,
+                )
+                .with_source_path(PathBuf::new()),
+            );
+        }
+        const_types.insert(decl.name.clone(), ty);
+    }
+    const_types
+}
+
+/// RFC 0054: is the type deeply value-taxon? Handle types, owned types
+/// (future), and composites carrying them reject.
+fn is_deep_value_taxon(ty: &Type) -> bool {
+    match ty {
+        Type::Int
+        | Type::String
+        | Type::Bool
+        | Type::Json
+        | Type::Unit
+        | Type::Unknown
+        | Type::Const(_) => true,
+        Type::List(inner) | Type::Dict(inner) | Type::Option(inner) => is_deep_value_taxon(inner),
+        Type::Result(ok, err) => is_deep_value_taxon(ok) && is_deep_value_taxon(err),
+        Type::Tuple(members) => members.iter().all(is_deep_value_taxon),
+        // Channels, tasks, and cancel tokens are handle taxa — a const
+        // handle would be a resource created before the program runs and
+        // never deterministically closed.
+        Type::Channel(_) | Type::Task(_) | Type::CancelToken => false,
+        Type::Opaque(_) => false,
+        Type::Struct(_) | Type::Enum(_) => true,
+        Type::Function(_, _) => false,
+        Type::Protocol(_) | Type::TypeParam(_) | Type::SelfType => false,
+    }
+}
+
+/// RFC 0054 GOF3174: validate a typed initializer against the const
+/// grammar — literals, operators, list/dict literals, enum/struct/Result
+/// construction, len over const operands, and const references.
+fn check_const_grammar(expr: &TypedExpr, diagnostics: &mut Diagnostics) {
+    match &expr.kind {
+        TypedExprKind::Int(_) | TypedExprKind::String(_) | TypedExprKind::Bool(_) => {}
+        TypedExprKind::Const(_) => {}
+        TypedExprKind::List { items } => {
+            for item in items {
+                check_const_grammar(item, diagnostics);
+            }
+        }
+        TypedExprKind::Dict { entries } => {
+            for entry in entries {
+                check_const_grammar(&entry.key, diagnostics);
+                check_const_grammar(&entry.value, diagnostics);
+            }
+        }
+        TypedExprKind::Unary { value, .. } => check_const_grammar(value, diagnostics),
+        TypedExprKind::Binary { lhs, rhs, .. } => {
+            check_const_grammar(lhs, diagnostics);
+            check_const_grammar(rhs, diagnostics);
+        }
+        TypedExprKind::Tuple { items } => {
+            for item in items {
+                check_const_grammar(item, diagnostics);
+            }
+        }
+        TypedExprKind::StructInit { args, .. } | TypedExprKind::EnumVariant { args, .. } => {
+            for arg in args {
+                check_const_grammar(arg, diagnostics);
+            }
+        }
+        TypedExprKind::Call { callee, args } if callee == "len" && args.len() == 1 => {
+            check_const_grammar(&args[0], diagnostics);
+        }
+        other => {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3174",
+                    "const initializer is not a const expression",
+                    "the const grammar allows literals, operators over const operands, list/dict literals, enum/struct/Result construction, `len` over const operands, and references to other consts",
+                    expr.span,
+                )
+                .with_fix_it("compute the value in a function instead, or reduce the initializer to the const grammar")
+                .with_source_path(PathBuf::new()),
+            );
+            let _ = other;
+        }
+    }
+}
+
+/// RFC 0054 GOF3177: detect compile-time evaluation faults in a
+/// well-typed const initializer. The v1 case: division or modulo by a
+/// literal zero.
+fn detect_const_evaluation_fault(expr: &TypedExpr) -> Option<&'static str> {
+    match &expr.kind {
+        TypedExprKind::Binary { op, rhs, .. } => {
+            if matches!(op, BinaryOp::Div | BinaryOp::Mod)
+                && matches!(rhs.kind, TypedExprKind::Int(0))
+            {
+                return Some("division by zero");
+            }
+            detect_const_evaluation_fault(rhs)
+        }
+        TypedExprKind::Unary { value, .. } => detect_const_evaluation_fault(value),
+        TypedExprKind::List { items } => items.iter().find_map(detect_const_evaluation_fault),
+        TypedExprKind::Tuple { items } => items.iter().find_map(detect_const_evaluation_fault),
+        _ => None,
+    }
+}
+
 pub fn lower(module: &HirModule) -> Result<(TypedModule, Diagnostics), Diagnostics> {
     let mut diagnostics = Diagnostics::default();
     let builtin_enums = builtin_enum_signatures();
@@ -1122,6 +1331,21 @@ pub fn lower(module: &HirModule) -> Result<(TypedModule, Diagnostics), Diagnosti
 
     validate_fixture_resolution(module, &signatures, &mut diagnostics);
 
+    // RFC 0054: the const pass runs after the signature maps stabilize
+    // so const initializers resolve calls and annotations exactly like
+    // function bodies; the grammar check then rejects calls (GOF3174).
+    let const_types = run_const_pass(
+        module,
+        &signatures,
+        &method_signatures,
+        &known_structs,
+        &known_enums,
+        &known_protocols,
+        &struct_signatures,
+        &enum_signatures,
+        &mut diagnostics,
+    );
+
     for _ in 0..=module.functions.len() {
         let typed_functions = module
             .functions
@@ -1138,6 +1362,7 @@ pub fn lower(module: &HirModule) -> Result<(TypedModule, Diagnostics), Diagnosti
                     &declared_conformances,
                     &struct_signatures,
                     &enum_signatures,
+                    &const_types,
                     &mut Diagnostics::default(),
                 )
             })
@@ -1194,6 +1419,7 @@ pub fn lower(module: &HirModule) -> Result<(TypedModule, Diagnostics), Diagnosti
                 &declared_conformances,
                 &struct_signatures,
                 &enum_signatures,
+                &const_types,
                 &mut diagnostics,
             )
         })
@@ -2224,6 +2450,7 @@ fn lower_function(
     declared_conformances: &HashMap<(String, String), Vec<ResolvedRequirement>>,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
+    consts: &HashMap<String, Type>,
     diagnostics: &mut Diagnostics,
 ) -> TypedFunction {
     let signature = if let Some(receiver_type) = &function.receiver_type {
@@ -2264,6 +2491,7 @@ fn lower_function(
         &generics,
         struct_signatures,
         enum_signatures,
+        consts,
         diagnostics,
         0,
         false,
@@ -2472,6 +2700,7 @@ fn lower_block(
     generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
+    consts: &HashMap<String, Type>,
     diagnostics: &mut Diagnostics,
     loop_depth: usize,
     nested_scope: bool,
@@ -2496,6 +2725,7 @@ fn lower_block(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth,
                 function_return_type,
@@ -2522,6 +2752,7 @@ fn lower_stmt(
     generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
+    consts: &HashMap<String, Type>,
     diagnostics: &mut Diagnostics,
     loop_depth: usize,
     function_return_type: &Type,
@@ -2539,6 +2770,7 @@ fn lower_stmt(
             generics,
             struct_signatures,
             enum_signatures,
+            consts,
             diagnostics,
             function_return_type,
             source_path,
@@ -2561,6 +2793,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -2733,6 +2966,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -2846,6 +3080,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -2901,6 +3136,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -2917,6 +3153,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth,
                 true,
@@ -2934,6 +3171,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth,
                 true,
@@ -2962,6 +3200,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -2978,6 +3217,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth + 1,
                 true,
@@ -3013,6 +3253,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth,
                 true,
@@ -3038,6 +3279,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -3224,6 +3466,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth + 1,
                 false,
@@ -3249,6 +3492,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -3264,6 +3508,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth,
                 function_return_type,
@@ -3285,6 +3530,7 @@ fn lower_stmt(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth,
                 function_return_type,
@@ -3304,6 +3550,7 @@ fn lower_stmt(
             generics,
             struct_signatures,
             enum_signatures,
+            consts,
             diagnostics,
             function_return_type,
             source_path,
@@ -3322,6 +3569,7 @@ fn lower_match_arms(
     generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
+    consts: &HashMap<String, Type>,
     diagnostics: &mut Diagnostics,
     loop_depth: usize,
     function_return_type: &Type,
@@ -3426,6 +3674,7 @@ fn lower_match_arms(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -3444,6 +3693,7 @@ fn lower_match_arms(
             generics,
             struct_signatures,
             enum_signatures,
+            consts,
             diagnostics,
             loop_depth,
             false,
@@ -3483,6 +3733,7 @@ fn lower_select_arms(
     generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
+    consts: &HashMap<String, Type>,
     diagnostics: &mut Diagnostics,
     loop_depth: usize,
     function_return_type: &Type,
@@ -3519,6 +3770,7 @@ fn lower_select_arms(
                     generics,
                     struct_signatures,
                     enum_signatures,
+                    consts,
                     diagnostics,
                     function_return_type,
                     source_path,
@@ -3585,6 +3837,7 @@ fn lower_select_arms(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 loop_depth,
                 false,
@@ -4207,6 +4460,8 @@ fn guard_contains_control_flow(expr: &TypedExpr) -> bool {
         // Spawning a closure is SpawnClosure — control flow, handled below.
         TypedExprKind::SpawnClosure { .. } => true,
         TypedExprKind::Closure { .. } => false,
+        // RFC 0054: a const reference is a value read — no control flow.
+        TypedExprKind::Const(_) => false,
         TypedExprKind::List { items } => items.iter().any(guard_contains_control_flow),
         TypedExprKind::Dict { entries } => entries.iter().any(|entry| {
             guard_contains_control_flow(&entry.key) || guard_contains_control_flow(&entry.value)
@@ -4503,6 +4758,8 @@ fn lower_expr(
     generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
+    // RFC 0054: top-level const table (name → declared type).
+    consts: &HashMap<String, Type>,
     diagnostics: &mut Diagnostics,
     function_return_type: &Type,
     source_path: &Path,
@@ -4538,6 +4795,7 @@ fn lower_expr(
                         generics,
                         struct_signatures,
                         enum_signatures,
+                        consts,
                         diagnostics,
                         function_return_type,
                         source_path,
@@ -4566,6 +4824,7 @@ fn lower_expr(
                         generics,
                         struct_signatures,
                         enum_signatures,
+                        consts,
                         diagnostics,
                         function_return_type,
                         source_path,
@@ -4581,6 +4840,7 @@ fn lower_expr(
                         generics,
                         struct_signatures,
                         enum_signatures,
+                        consts,
                         diagnostics,
                         function_return_type,
                         source_path,
@@ -4602,13 +4862,22 @@ fn lower_expr(
                 .map(|binding| binding.ty)
                 .unwrap_or(Type::Unknown);
             if scopes.get(name).is_none() {
+                // RFC 0054: an identifier that is not a local may be a
+                // top-level const — a value reference, not a call.
+                if let Some(const_ty) = consts.get(name) {
+                    return TypedExpr {
+                        kind: TypedExprKind::Const(name.clone()),
+                        ty: const_ty.clone(),
+                        span: *span,
+                    };
+                }
                 // RFC 0052: `_` in pattern position is a wildcard that
                 // discards — it binds nothing, so reading it afterwards
                 // is an unknown-binding error with an explanatory note.
                 let note = if name == "_" {
                     "`_` is a wildcard in pattern positions: it matches anything and binds nothing"
                 } else {
-                    "the identifier is not a parameter or a previously created binding in scope"
+                    "the identifier is not a parameter, a previously created binding, or a top-level const in scope"
                 };
                 diagnostics.push(
                     Diagnostic::error("GOF3002", format!("unknown local `{name}`"), note, *span)
@@ -4637,6 +4906,7 @@ fn lower_expr(
                         generics,
                         struct_signatures,
                         enum_signatures,
+                        consts,
                         diagnostics,
                         function_return_type,
                         source_path,
@@ -4897,6 +5167,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -4940,6 +5211,7 @@ fn lower_expr(
                                 generics,
                                 struct_signatures,
                                 enum_signatures,
+                                consts,
                                 diagnostics,
                                 function_return_type,
                                 source_path,
@@ -4978,6 +5250,7 @@ fn lower_expr(
                                 generics,
                                 struct_signatures,
                                 enum_signatures,
+                                consts,
                                 diagnostics,
                                 function_return_type,
                                 source_path,
@@ -5016,6 +5289,7 @@ fn lower_expr(
                                 generics,
                                 struct_signatures,
                                 enum_signatures,
+                                consts,
                                 diagnostics,
                                 function_return_type,
                                 source_path,
@@ -5054,6 +5328,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5072,6 +5347,7 @@ fn lower_expr(
                         generics,
                         struct_signatures,
                         enum_signatures,
+                        consts,
                         diagnostics,
                         function_return_type,
                         source_path,
@@ -5123,6 +5399,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5138,6 +5415,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5173,6 +5451,7 @@ fn lower_expr(
                             generics,
                             struct_signatures,
                             enum_signatures,
+                            consts,
                             diagnostics,
                             function_return_type,
                             source_path,
@@ -5283,6 +5562,7 @@ fn lower_expr(
                     generics,
                     struct_signatures,
                     enum_signatures,
+                    consts,
                     diagnostics,
                     function_return_type,
                     source_path,
@@ -5320,6 +5600,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5362,6 +5643,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5393,6 +5675,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5420,6 +5703,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5435,6 +5719,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5476,6 +5761,7 @@ fn lower_expr(
                         generics,
                         struct_signatures,
                         enum_signatures,
+                        consts,
                         diagnostics,
                         function_return_type,
                         source_path,
@@ -5508,6 +5794,7 @@ fn lower_expr(
                 generics,
                 struct_signatures,
                 enum_signatures,
+                consts,
                 diagnostics,
                 function_return_type,
                 source_path,
@@ -5585,6 +5872,7 @@ fn lower_expr(
             generics,
             struct_signatures,
             enum_signatures,
+            consts,
             diagnostics,
             source_path,
         ),
@@ -5935,6 +6223,7 @@ fn lower_closure_expr(
     generics: &GenericContext,
     struct_signatures: &HashMap<String, StructSignature>,
     enum_signatures: &HashMap<String, EnumSignature>,
+    consts: &HashMap<String, Type>,
     diagnostics: &mut Diagnostics,
     source_path: &Path,
 ) -> TypedExpr {
@@ -6059,6 +6348,7 @@ fn lower_closure_expr(
         generics,
         struct_signatures,
         enum_signatures,
+        consts,
         diagnostics,
         0,
         false,
@@ -7918,6 +8208,9 @@ fn type_supports_self_equality_inner(
 ) -> bool {
     match ty {
         Type::Unknown | Type::Int | Type::String | Type::Bool | Type::Json | Type::Unit => true,
+        // RFC 0054: a const's declared type carries the equality
+        // semantics; the reference itself is a value read.
+        Type::Const(_) => false,
         Type::List(inner) | Type::Dict(inner) | Type::Channel(inner) | Type::Task(inner) => {
             match ty {
                 Type::List(_) | Type::Dict(_) => type_supports_self_equality_inner(
@@ -8667,7 +8960,9 @@ fn expr_propagated_error_type(expr: &TypedExpr) -> Option<Type> {
             TypedExprKind::Int(_)
             | TypedExprKind::String(_)
             | TypedExprKind::Bool(_)
-            | TypedExprKind::Local(_) => None,
+            | TypedExprKind::Local(_)
+            // RFC 0054: const references never propagate.
+            | TypedExprKind::Const(_) => None,
         },
     )
 }
@@ -12646,6 +12941,10 @@ fn stdlib_bridge_return_type(callee: &str) -> Type {
 
 fn is_printable_type(ty: &Type) -> bool {
     match ty {
+        // RFC 0054: const references resolve to their declared types
+        // before printing questions arise; the reference itself is not a
+        // printable shape.
+        Type::Const(_) => false,
         Type::Int
         | Type::String
         | Type::Bool
