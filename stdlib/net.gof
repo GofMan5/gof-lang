@@ -1,3 +1,17 @@
+module:
+    connect_tcp
+    connect_tcp_loopback
+    connect_tcp_with_timeout
+    connect_tcp_with_timeout_budget
+    connect_tcp_with_control
+    connect_tcp_loopback_with_control
+    connect_tcp_loopback_with_timeout
+    connect_tcp_loopback_with_timeout_budget
+    listen_tcp
+    listen_tcp_with_timeout
+    listen_tcp_loopback
+    listen_tcp_loopback_with_timeout
+
 fn connect_tcp(address: string) -> Result[DuplexStream, RuntimeError]:
     return __gof_internal_connect_tcp(address)
 

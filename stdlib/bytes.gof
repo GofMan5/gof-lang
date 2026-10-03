@@ -1,3 +1,10 @@
+module:
+    bytes_from_string
+    bytes_to_string
+    bytes_len
+    bytes_slice
+    bytes_concat
+
 fn bytes_from_string(text: string) -> Bytes:
     return __gof_internal_bytes_from_string(text)
 

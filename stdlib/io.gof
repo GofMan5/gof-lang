@@ -1,3 +1,9 @@
+module:
+    open_read_stream
+    open_read_stream_with_timeout
+    open_write_stream
+    open_write_stream_with_timeout
+
 fn open_read_stream(path: string) -> Result[ReadStream, RuntimeError]:
     return __gof_internal_open_read_stream(path)
 

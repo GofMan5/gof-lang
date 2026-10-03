@@ -1,3 +1,7 @@
+module:
+    deadline_after
+    deadline_at_unix_millis
+
 fn deadline_after(milliseconds: int) -> Result[NetDeadline, RuntimeError]:
     return __gof_internal_deadline_after(milliseconds)
 

@@ -157,6 +157,9 @@ pub(crate) fn cli_exit_error(code: i32, message: Option<String>) -> anyhow::Erro
 enum ModCommand {
     Init(ModInitArgs),
     Resolve(ModResolveArgs),
+    /// RFC 0053: print the `module:` export block a file needs (all
+    /// top-level names; a human prunes the private ones).
+    Export(ModExportArgs),
 }
 
 #[derive(Args)]
@@ -172,6 +175,12 @@ struct ModInitArgs {
 struct ModResolveArgs {
     #[arg(long, default_value = ".")]
     dir: PathBuf,
+}
+
+#[derive(Args)]
+struct ModExportArgs {
+    /// Source file whose public surface to print.
+    file: PathBuf,
 }
 
 fn main() {
@@ -198,6 +207,7 @@ fn run() -> Result<()> {
         Command::Mod { command } => match command {
             ModCommand::Init(args) => init_module(args),
             ModCommand::Resolve(args) => resolve_module_lockfile(args),
+            ModCommand::Export(args) => export_module_surface(args),
         },
         Command::Doc => print_docs(),
         Command::Bench => print_benchmarks(),
@@ -326,6 +336,43 @@ fn format_file(args: FmtArgs) -> Result<()> {
 
     fs::write(&args.input, formatted)?;
     println!("formatted {}", args.input.display());
+    Ok(())
+}
+
+/// RFC 0053 `gof mod export`: print the `module:` block a file needs —
+/// every top-level declaration name (structs, enums, protocols, free
+/// functions; test/fixture functions are never exported). A human
+/// prunes the private names before pasting the block at the top of the
+/// file.
+fn export_module_surface(args: ModExportArgs) -> Result<()> {
+    let path = resolve_source_input_path(&args.file)?;
+    let text = fs::read_to_string(&path)
+        .map_err(|error| anyhow!("failed to read {}: {error}", path.display()))?;
+    let source = SourceFile::from_path(&path)?;
+    let module = gof_compiler::module_graph::parse_single_source(&source)
+        .map_err(|diagnostics| render_error(&source, diagnostics))?;
+    let mut names: Vec<String> = Vec::new();
+    names.extend(module.structs.iter().map(|decl| decl.name.clone()));
+    names.extend(module.enums.iter().map(|decl| decl.name.clone()));
+    names.extend(module.protocols.iter().map(|decl| decl.name.clone()));
+    names.extend(
+        module
+            .functions
+            .iter()
+            .filter(|function| function.receiver_type.is_none())
+            .filter(|function| function.kind == gof_compiler::ast::FunctionKind::Function)
+            .map(|function| function.name.clone()),
+    );
+    if names.is_empty() {
+        println!("# {} has no top-level declarations to export", path.display());
+        return Ok(());
+    }
+    let mut block = String::from("module:");
+    for name in &names {
+        block.push_str("\n    ");
+        block.push_str(name);
+    }
+    println!("{block}");
     Ok(())
 }
 

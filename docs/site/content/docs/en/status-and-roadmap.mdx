@@ -29,6 +29,7 @@ The current repo already supports:
 - JSON helpers and bootstrap HTTP GET
 - channels, `close`, cancellation tokens, and `select`
 - `go` / `await`
+- `async` is a reserved keyword: every use reports a diagnostic pointing at the spawn-and-join equivalent (`t = go f(...)` then `await t`) — v1 concurrency has no function coloring
 - language-level `test fn`, typed `fixture(scope) fn`, shipped `testing` stdlib, snapshot-aware `gof test`, and markdown doctests
 - a real CLI and a bootstrap-native build path
 - an installable VS Code editor baseline with syntax highlighting and snippets

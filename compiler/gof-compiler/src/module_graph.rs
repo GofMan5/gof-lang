@@ -404,8 +404,18 @@ where
                 // Grandfather window: the module has no export block —
                 // all its own declarations are currently importable, and
                 // the default flips to private at the v1 freeze (GOF3172,
-                // warning severity).
-                if import_span.is_some() {
+                // warning severity). A module with NO top-level
+                // declarations of its own (only methods on builtin types,
+                // like the shipped testing module) has no surface to
+                // declare and stays silent.
+                let has_top_level_surface = !module.structs.is_empty()
+                    || !module.enums.is_empty()
+                    || !module.protocols.is_empty()
+                    || module
+                        .functions
+                        .iter()
+                        .any(|function| function.receiver_type.is_none());
+                if import_span.is_some() && has_top_level_surface {
                     diagnostics.push(
                         Diagnostic::warning(
                             "GOF3172",
