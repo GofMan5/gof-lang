@@ -1559,9 +1559,7 @@ fn gof_run_executes_http_patch_report_example_against_fake_api() {
         "expected custom trace header, got {requests:?}"
     );
     assert!(
-        requests
-            .iter()
-            .any(|request| request.contains("patched")),
+        requests.iter().any(|request| request.contains("patched")),
         "expected PATCH payload, got {requests:?}"
     );
 }

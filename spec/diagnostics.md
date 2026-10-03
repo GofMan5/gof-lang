@@ -178,3 +178,4 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3176`: const initializer does not match the declared type annotation
 - `GOF3177`: const evaluation fault (the value is fixed at declaration, so runtime faults like division by a literal zero are promoted to compile time)
 - `GOF3178`: the interpreter's dedicated execution thread failed to spawn (the big-stack run/test path could not start)
+- `GOF3180`: native execution (`gof run --native-run`, the machine-code backend) does not yet support this construct or type — the note names the deferred construct (match dispatch, value representations, spawn/await, builtin calls) or the entry-point contract; the fix-it points at the bootstrap evaluator

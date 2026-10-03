@@ -107,9 +107,7 @@ pub(crate) fn run(args: TestArgs) -> Result<()> {
     let handle = std::thread::Builder::new()
         .stack_size(stack_bytes)
         .spawn(move || run_inner(args))
-        .map_err(|error| {
-            anyhow::anyhow!("failed to start the test runner thread: {error}")
-        })?;
+        .map_err(|error| anyhow::anyhow!("failed to start the test runner thread: {error}"))?;
     match handle.join() {
         Ok(result) => result,
         Err(panic) => std::panic::resume_unwind(panic),
