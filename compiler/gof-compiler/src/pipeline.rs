@@ -59,12 +59,16 @@ where
 {
     let loaded_graph = load_module_graph_with_provider(source, provider)?;
     let ast = loaded_graph.module;
+    let graph_warnings = loaded_graph.warnings;
     let cst = CstModule::new(
         crate::lexer::lex(source)
             .map_err(|diagnostics| diagnostics.with_source_path(source.path()))?,
     );
     let hir = lower_hir(&ast);
-    let (typed_hir, warnings) = lower_typed(&hir)?;
+    let (typed_hir, mut warnings) = lower_typed(&hir)?;
+    // RFC 0053: grandfather-window warnings from the module graph flow
+    // through the same channel as the typed layer's warnings.
+    warnings.0.extend(graph_warnings.0);
     let mir = lower_mir(&typed_hir);
     let ssa = lower_ssa(&mir);
     let backend = lower_backend(

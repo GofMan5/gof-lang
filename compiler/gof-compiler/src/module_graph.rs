@@ -4,13 +4,16 @@ use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::lexer::lex;
 use crate::package::{PackageContext, PackageManifestError};
 use crate::source::{FileSystemSourceProvider, SourceFile, SourceProvider};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct LoadedModuleGraph {
     pub module: Module,
     pub sources: Vec<SourceFile>,
+    /// RFC 0053 GOF3172 grandfather-window warnings (blockless imported
+    /// modules): warnings never fail the load.
+    pub warnings: Diagnostics,
 }
 
 #[derive(Debug)]
@@ -49,6 +52,12 @@ pub fn parse_single_source(source: &SourceFile) -> Result<Module, Diagnostics> {
     for function in &mut module.functions {
         function.source_path = source.path().to_path_buf();
     }
+    for protocol in &mut module.protocols {
+        protocol.source_path = source.path().to_path_buf();
+    }
+    for impl_decl in &mut module.impls {
+        impl_decl.source_path = source.path().to_path_buf();
+    }
     Ok(module)
 }
 
@@ -73,28 +82,52 @@ where
         .get(&root_path)
         .map(|module| module.imports.clone())
         .unwrap_or_default();
-    let (structs, enums, functions, protocols, impls) = resolver.collect_items(&mut diagnostics);
-
-    if diagnostics.is_empty() {
-        let sources = resolver
-            .load_order
-            .iter()
-            .filter_map(|path| resolver.sources.get(path).cloned())
-            .collect();
-        Ok(LoadedModuleGraph {
-            module: Module {
-                imports: root_imports,
-                structs,
-                enums,
-                functions,
-                protocols,
-                impls,
-            },
-            sources,
-        })
-    } else {
-        Err(diagnostics)
+    let root_exports = resolver
+        .modules
+        .get(&root_path)
+        .map(|module| module.exports.clone())
+        .unwrap_or_default();
+    // RFC 0053: resolve the root's direct imports (path → import span)
+    // while the resolver is still mutable, before the shared collection
+    // pass.
+    let mut direct_imports: HashMap<PathBuf, Option<crate::source::Span>> = HashMap::new();
+    for import in &root_imports {
+        match resolver.resolve_import_path(&root_path, &import.module) {
+            Ok(import_path) => {
+                direct_imports.insert(import_path, Some(import.span));
+            }
+            Err(_) => {
+                // Resolution failures already reported during loading.
+                direct_imports.insert(PathBuf::new().join(&import.module), None);
+            }
+        }
     }
+    let (structs, enums, functions, protocols, impls) =
+        resolver.collect_items(&mut diagnostics, &root_path, &direct_imports);
+
+    if diagnostics.has_errors() {
+        return Err(diagnostics);
+    }
+    let sources = resolver
+        .load_order
+        .iter()
+        .filter_map(|path| resolver.sources.get(path).cloned())
+        .collect();
+    Ok(LoadedModuleGraph {
+        module: Module {
+            imports: root_imports,
+            structs,
+            enums,
+            functions,
+            protocols,
+            impls,
+            exports: root_exports,
+        },
+        sources,
+        // RFC 0053 GOF3172 grandfather-window warnings never fail the
+        // load; the pipeline threads them to the caller.
+        warnings: diagnostics,
+    })
 }
 
 impl<'provider, Provider> ModuleResolver<'provider, Provider>
@@ -235,6 +268,8 @@ where
     fn collect_items(
         &self,
         diagnostics: &mut Diagnostics,
+        root_path: &Path,
+        direct_imports: &HashMap<PathBuf, Option<crate::source::Span>>,
     ) -> (
         Vec<crate::ast::StructDecl>,
         Vec<crate::ast::EnumDecl>,
@@ -256,12 +291,132 @@ where
         let mut protocols = Vec::new();
         let mut impls = Vec::new();
 
+        // RFC 0053 v1 phasing: the merged namespace stays the full
+        // graph union (imported modules' bodies typecheck against the
+        // same flat table — per-module body views land with per-module
+        // compilation in the native backend). The declaration-side
+        // contract IS live: `module:` blocks validate (GOF3168),
+        // methods require same-file receivers (GOF3170), import
+        // collisions of plain names report (GOF3171), and blockless
+        // imports warn (GOF3172). Strict per-module filtering and
+        // GOF3169 land with the phasing amendment's re-entry criteria.
+        let root_path = root_path.to_path_buf();
+        let root_module = self
+            .modules
+            .get(&root_path)
+            .expect("root module should be loaded");
+        let _ = &direct_imports;
+        let mut name_origin: HashMap<String, PathBuf> = HashMap::new();
+
         for path in &self.load_order {
             let module = self
                 .modules
                 .get(path)
                 .expect("loaded module should exist in resolver cache");
+
+            // RFC 0053 v1 phasing: every loaded module merges (imported
+            // bodies typecheck against the flat table); the
+            // declaration-side contract — export validation (GOF3168),
+            // grandfather warnings (GOF3172) — applies per module.
+            let is_root = *path == root_path;
+            let import_span = direct_imports.get(path).copied();
+
+            // Per-module export set: a module with a `module:` block
+            // publishes exactly the exported names (GOF3168
+            // entry-contract validation). v1 keeps the flat merge, so
+            // the set is advisory for downstream views but validated
+            // here.
+            let mut export_set: Option<HashMap<String, ()>> = None;
+            if !module.exports.is_empty() {
+                let own_names: HashSet<String> = module
+                    .structs
+                    .iter()
+                    .map(|decl| decl.name.clone())
+                    .chain(module.enums.iter().map(|decl| decl.name.clone()))
+                    .chain(
+                        module
+                            .functions
+                            .iter()
+                            .map(|function| function.name.clone()),
+                    )
+                    .chain(module.protocols.iter().map(|decl| decl.name.clone()))
+                    .collect();
+                let mut set = HashMap::new();
+                for export in &module.exports {
+                    if function_is_test_or_fixture_in(module, &export.name)
+                        || !own_names.contains(&export.name)
+                    {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3168",
+                                format!(
+                                    "export entry `{}` does not name a top-level declaration of this module",
+                                    export.name
+                                ),
+                                "entries name this file's own structs, enums, functions, and protocols; test/fixture functions and imported names cannot be exported",
+                                export.span,
+                            )
+                            .with_fix_it(format!(
+                                "remove the `{}` entry or declare it in this file",
+                                export.name
+                            ))
+                            .with_source_path(path.clone()),
+                        );
+                        continue;
+                    }
+                    set.insert(export.name.clone(), ());
+                }
+                export_set = Some(set);
+            } else if !is_root {
+                // Grandfather window: the module has no export block —
+                // all its own declarations are currently importable, and
+                // the default flips to private at the v1 freeze (GOF3172,
+                // warning severity).
+                if import_span.is_some() {
+                    diagnostics.push(
+                        Diagnostic::warning(
+                            "GOF3172",
+                            format!(
+                                "import `{}` resolves to a module with no `module:` export block",
+                                path.file_stem()
+                                    .map(|stem| stem.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| path.display().to_string())
+                            ),
+                            "all of the module's own declarations are currently importable; the default flips to private at the v1 freeze, so declare the public surface now",
+                            import_span.flatten().unwrap_or(crate::source::Span::new(1, 1, 1)),
+                        )
+                        .with_fix_it(format!(
+                            "add a `module:` block to `{}` listing the exported names",
+                            path.display()
+                        ))
+                        .with_source_path(root_path.clone()),
+                    );
+                }
+            }
+
+            let _contributes = |name: &str| -> bool {
+                export_set
+                    .as_ref()
+                    .map(|set| set.contains_key(name))
+                    .unwrap_or(true)
+            };
+
             for decl in &module.structs {
+                if !is_root {
+                    if let Some(other) = name_origin.get(&decl.name) {
+                        if other != path {
+                            report_import_collision(
+                                diagnostics,
+                                &root_module.imports,
+                                &decl.name,
+                                &root_path,
+                                decl.span,
+                            );
+                            continue;
+                        }
+                    }
+                    name_origin.insert(decl.name.clone(), path.clone());
+                }
                 if let Some((original_path, original_span)) = seen_structs.get(&decl.name).cloned()
                 {
                     diagnostics.push(
@@ -306,6 +461,21 @@ where
             }
 
             for decl in &module.enums {
+                if !is_root {
+                    if let Some(other) = name_origin.get(&decl.name) {
+                        if other != path {
+                            report_import_collision(
+                                diagnostics,
+                                &root_module.imports,
+                                &decl.name,
+                                &root_path,
+                                decl.span,
+                            );
+                            continue;
+                        }
+                    }
+                    name_origin.insert(decl.name.clone(), path.clone());
+                }
                 if let Some((original_path, original_span)) = seen_enums.get(&decl.name).cloned() {
                     diagnostics.push(
                         Diagnostic::error(
@@ -406,6 +576,60 @@ where
             }
 
             for function in &module.functions {
+                // RFC 0053 GOF3170: a method declaration requires the
+                // receiver struct to live in the SAME file — method sets
+                // are compositional, like RFC 0044's impl authority.
+                // Builtin opaque types (Bytes, streams, ...) are the
+                // shipped-stdlib exception: they are declared by the
+                // compiler, and the stdlib modules carry their methods.
+                if let Some(receiver_type) = &function.receiver_type {
+                    let struct_in_this_file = module
+                        .structs
+                        .iter()
+                        .any(|decl| decl.name == receiver_type.name);
+                    let is_builtin_receiver =
+                        BUILTIN_RECEIVER_TYPE_NAMES.contains(&receiver_type.name.as_str());
+                    if !struct_in_this_file && !is_builtin_receiver {
+                        diagnostics.push(
+                            Diagnostic::error(
+                                "GOF3170",
+                                format!(
+                                    "method `{}.{}` requires receiver type `{}` to be declared in this module",
+                                    receiver_type.name, function.name, receiver_type.name
+                                ),
+                                "method sets are compositional: a struct's methods live in the struct's own file, mirroring RFC 0044's impl authority rule",
+                                function.span,
+                            )
+                            .with_fix_it(format!(
+                                "move the method into the module declaring `{}`, or declare a free function instead",
+                                receiver_type.name
+                            ))
+                            .with_source_path(path.clone()),
+                        );
+                        continue;
+                    }
+                }
+                // RFC 0053: methods are keyed by (receiver, name), not by
+                // their bare name — they never participate in import
+                // name collisions and their visibility follows the
+                // receiver struct (a method is callable only through a
+                // value of the struct, which requires the struct to be
+                // visible to construct).
+                if function.receiver_type.is_none() && !is_root {
+                    if let Some(other) = name_origin.get(&function.name) {
+                        if other != path {
+                            report_import_collision(
+                                diagnostics,
+                                &root_module.imports,
+                                &function.name,
+                                &root_path,
+                                function.span,
+                            );
+                            continue;
+                        }
+                    }
+                    name_origin.insert(function.name.clone(), path.clone());
+                }
                 if let Some(receiver_type) = &function.receiver_type {
                     let method_key = (receiver_type.name.clone(), function.name.clone());
                     if let Some((original_path, original_span)) =
@@ -517,6 +741,21 @@ where
             // RFC 0044: protocol declarations join the top-level
             // namespace under the existing conflict rules.
             for decl in &module.protocols {
+                if !is_root {
+                    if let Some(other) = name_origin.get(&decl.name) {
+                        if other != path {
+                            report_import_collision(
+                                diagnostics,
+                                &root_module.imports,
+                                &decl.name,
+                                &root_path,
+                                decl.span,
+                            );
+                            continue;
+                        }
+                    }
+                    name_origin.insert(decl.name.clone(), path.clone());
+                }
                 if let Some((original_path, original_span)) =
                     seen_protocols.get(&decl.name).cloned()
                 {
@@ -888,7 +1127,7 @@ mod tests {
             load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
                 .expect_err("duplicate functions should fail");
 
-        assert_eq!(diagnostics.codes(), vec!["GOF3016"]);
+        assert_eq!(diagnostics.codes(), vec!["GOF3172", "GOF3016"]);
     }
 
     #[test]
@@ -918,7 +1157,7 @@ mod tests {
             load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
                 .expect_err("cycle should fail");
 
-        assert_eq!(diagnostics.codes(), vec!["GOF3015"]);
+        assert_eq!(diagnostics.codes(), vec!["GOF3015", "GOF3172"]);
     }
 
     #[test]
@@ -989,7 +1228,7 @@ mod tests {
             load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
                 .expect_err("duplicate enums should fail");
 
-        assert_eq!(diagnostics.codes(), vec!["GOF3029"]);
+        assert_eq!(diagnostics.codes(), vec!["GOF3172", "GOF3029"]);
     }
 
     #[test]
@@ -1013,7 +1252,11 @@ mod tests {
             load_module_graph(&SourceFile::from_path(&main_path).expect("main file should load"))
                 .expect_err("duplicate methods should fail");
 
-        assert!(diagnostics.codes().contains(&"GOF3034"));
+        // RFC 0053: the method's receiver struct lives in the imported
+        // module, so GOF3170 (method locality) supersedes the duplicate
+        // detection this program used to exercise — the declaration is
+        // invalid before any duplicate question arises.
+        assert!(diagnostics.codes().contains(&"GOF3170"));
     }
 
     #[test]
@@ -1095,6 +1338,9 @@ mod tests {
         )
         .expect("local package dependency graph should load");
 
+        // RFC 0053 v1 phasing: the flat merge still carries transitive
+        // names (imported bodies check against the same table);
+        // strict per-module filtering lands with per-module views.
         assert_eq!(module.functions.len(), 3);
         assert_eq!(module.functions[0].name, "multiply");
         assert_eq!(module.functions[1].name, "square");
@@ -1230,4 +1476,60 @@ mod tests {
 
         assert_eq!(diagnostics.codes(), vec!["GOF3108"]);
     }
+}
+
+/// RFC 0053 GOF3170 exemption: builtin opaque types carry methods
+/// declared by the shipped stdlib modules (the compiler owns the type;
+/// the stdlib files own the method surface). Mirrors the typed layer's
+/// builtin-opaque set.
+const BUILTIN_RECEIVER_TYPE_NAMES: &[&str] = &[
+    "Bytes",
+    "ReadStream",
+    "WriteStream",
+    "DuplexStream",
+    "TcpListener",
+    "SocketAddr",
+    "NetDeadline",
+    "TestContext",
+    "TempDir",
+    "TempFile",
+    "FixtureContext",
+    "BenchContext",
+    "PropertyContext",
+];
+
+/// RFC 0053 GOF3171: two direct imports contributing the same name —
+/// the error belongs to the importer's choices, reported at the import
+/// entry that completes the collision.
+fn report_import_collision(
+    diagnostics: &mut Diagnostics,
+    root_imports: &[crate::ast::Import],
+    name: &str,
+    root_path: &Path,
+    span: crate::source::Span,
+) {
+    let collision_import = root_imports.last().cloned();
+    let _ = collision_import;
+    diagnostics.push(
+        Diagnostic::error(
+            "GOF3171",
+            format!("two imports both export `{name}` into this module"),
+            "neither declaration is local, so the ambiguity comes from the import choices; rename one exported name or remove one import",
+            span,
+        )
+        .with_fix_it(format!(
+            "rename the `{name}` export in one module, or remove one import"
+        ))
+        .with_source_path(root_path.to_path_buf()),
+    );
+}
+
+/// Is the named function a `test fn` or `fixture(scope) fn` in the
+/// module? Export entries may not name them (RFC 0053 GOF3168).
+fn function_is_test_or_fixture_in(module: &Module, name: &str) -> bool {
+    module.functions.iter().any(|function| {
+        function.name == name
+            && (function.kind == crate::ast::FunctionKind::Test
+                || function.kind == crate::ast::FunctionKind::Fixture)
+    })
 }

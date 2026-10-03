@@ -1,0 +1,12 @@
+module:
+    Point
+
+struct Point:
+    x: int
+
+fn Point.scale(self: Point, factor: int) -> int:
+    return self.x * factor
+
+fn main() -> int:
+    assert(Point(6).scale(7) == 42, "expected the exported struct to work")
+    return 0

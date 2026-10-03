@@ -101,6 +101,7 @@ The bootstrap compiler in this repository currently supports:
 - `unsafe:` block statements open permission regions: valid wherever a statement is, they scope bindings like ordinary blocks, apply every type and ownership check unchanged, and are not valid inside closure bodies in v1
 - every `unsafe:` block is currently inert (no explicitly-unsafe operation exists in v1) and reports a warning; `unsafe` is never a declaration or statement modifier
 - `async` is reserved: it cannot decorate function declarations (`async fn` and friends report GOF3158), form blocks (`async:` reports GOF3159), or appear in any expression, operand, or type position (GOF3160); v1 concurrency is `go` + `await` + `await_result` and no function coloring exists
+- `module:` export blocks declare a file's public surface: first top-level position only, at most one per file, one bare identifier per line naming a top-level declaration of the same file (GOF3168); methods require their receiver struct in the same file (GOF3170), imports of blockless modules warn (GOF3172), and import name collisions report (GOF3171) — strict private-name filtering lands with per-module body views per the RFC's phasing amendment
 - field access through `value.field`
 - method calls through `value.method(...)`
 - indexing through `list_expr[index_expr]`

@@ -3,6 +3,7 @@ use crate::diagnostics::{Diagnostic, Diagnostics};
 use crate::source::Span;
 use crate::token::{Token, TokenKind};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize)]
@@ -15,6 +16,18 @@ pub struct Module {
     pub protocols: Vec<ProtocolDecl>,
     /// RFC 0044 explicit conformance declarations: `impl Type: Proto`.
     pub impls: Vec<ImplDecl>,
+    /// RFC 0053 export block: `module:` as the FIRST top-level
+    /// declaration, one bare identifier per line. Empty when the file
+    /// is blockless (the grandfather window).
+    pub exports: Vec<ModuleExport>,
+}
+
+/// One `module:` export entry — a bare identifier naming a top-level
+/// declaration of the same file.
+#[derive(Debug, Clone, Serialize)]
+pub struct ModuleExport {
+    pub name: String,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -456,11 +469,42 @@ impl<'a> Parser<'a> {
         let mut functions = Vec::new();
         let mut protocols = Vec::new();
         let mut impls = Vec::new();
+        // RFC 0053: `module:` must be the file's FIRST top-level
+        // declaration — tracked for the GOF3168 late-block rejection.
+        let mut exports: Vec<ModuleExport> = Vec::new();
+        let mut seen_top_level = false;
         while !self.at_end() {
             self.skip_newlines();
             if self.matches(TokenDiscriminant::Eof) {
                 break;
             }
+            // RFC 0053 export block: `module:` + indented bare-identifier
+            // entries, one per line. Valid only as the first top-level
+            // declaration and at most once per file (GOF3168).
+            if self.check(TokenDiscriminant::Module) && self.peek_ahead_is(TokenDiscriminant::Colon)
+            {
+                let span = self.advance().span;
+                self.advance(); // `:`
+                if seen_top_level || !exports.is_empty() {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3168",
+                            "the `module:` export block must be the first top-level declaration",
+                            "the export list is the file's public contract and is read before the implementation",
+                            span,
+                        )
+                        .with_fix_it("move the `module:` block to the top of the file")
+                        .with_source_path(PathBuf::new()),
+                    );
+                    // Recover: parse and discard the block.
+                    let _ = self.parse_block("expected an indented block after `module:`");
+                    continue;
+                }
+                self.skip_newlines();
+                exports = self.parse_module_exports(span);
+                continue;
+            }
+            seen_top_level = true;
             if self.check(TokenDiscriminant::Import) {
                 imports.push(self.parse_import());
             } else if self.check(TokenDiscriminant::Struct) {
@@ -516,7 +560,84 @@ impl<'a> Parser<'a> {
             functions,
             protocols,
             impls,
+            exports,
         }
+    }
+
+    /// RFC 0053: the `module:` export block — bare identifier entries,
+    /// one per line, newline-terminated, same indented-block shape as
+    /// struct fields. Duplicate entries and non-identifier content
+    /// report GOF3168; the block must contain at least one entry.
+    fn parse_module_exports(&mut self, span: Span) -> Vec<ModuleExport> {
+        let mut exports = Vec::new();
+        let mut seen: HashMap<String, Span> = HashMap::new();
+        if !self.check(TokenDiscriminant::Indent) {
+            self.diagnostics.push(
+                Diagnostic::error(
+                    "GOF3168",
+                    "the `module:` export block requires at least one entry",
+                    "gof has no empty blocks; a module with nothing to export is not imported by anyone",
+                    span,
+                )
+                .with_fix_it("add the exported names, one per line")
+                .with_source_path(PathBuf::new()),
+            );
+            return exports;
+        }
+        self.advance();
+        while !self.check(TokenDiscriminant::Dedent) && !self.at_end() {
+            self.skip_newlines();
+            if self.check(TokenDiscriminant::Dedent) {
+                break;
+            }
+            if self.matches(TokenDiscriminant::Eof) {
+                break;
+            }
+            if !matches!(self.peek().kind, TokenKind::Ident(_)) {
+                let bad = self.peek().span;
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3168",
+                        "export entries are bare identifiers, one per line",
+                        "no commas, no qualifiers, no trailing colons — the block shape matches struct fields",
+                        bad,
+                    )
+                    .with_fix_it("write one exported name per line")
+                    .with_source_path(PathBuf::new()),
+                );
+                self.advance();
+                continue;
+            }
+            let name = self.expect_ident("expected an exported name");
+            let entry_span = self.previous().span;
+            if let Some(first) = seen.get(&name) {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "GOF3168",
+                        format!("duplicate export entry `{name}`"),
+                        format!("the entry was first declared at line {}", first.line),
+                        entry_span,
+                    )
+                    .with_fix_it("remove the duplicate entry")
+                    .with_source_path(PathBuf::new()),
+                );
+                continue;
+            }
+            seen.insert(name.clone(), entry_span);
+            exports.push(ModuleExport {
+                name,
+                span: entry_span,
+            });
+            self.expect(
+                TokenDiscriminant::Newline,
+                "expected a newline after the export entry",
+            );
+        }
+        self.expect(
+            TokenDiscriminant::Dedent,
+            "expected the export block to end",
+        );
+        exports
     }
 
     /// RFC 0044 protocol declaration: `protocol Name:` followed by an
@@ -2719,6 +2840,15 @@ impl<'a> Parser<'a> {
 
     fn peek_next(&self) -> Option<&Token> {
         self.tokens.get(self.current + 1)
+    }
+
+    /// RFC 0053: does the token AFTER the current one match? Used to
+    /// distinguish the `module:` export block from the `module` fixture
+    /// scope keyword without consuming.
+    fn peek_ahead_is(&self, expected: TokenDiscriminant) -> bool {
+        self.peek_next()
+            .map(|token| expected.matches(&token.kind))
+            .unwrap_or(false)
     }
 
     fn previous(&self) -> &Token {

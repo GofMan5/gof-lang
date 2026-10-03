@@ -1,0 +1,14 @@
+module:
+    helper
+
+fn helper() -> int:
+    return 1
+
+module:
+    other
+
+fn other() -> int:
+    return 2
+
+fn main() -> int:
+    return 0

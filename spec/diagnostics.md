@@ -169,3 +169,7 @@ Diagnostics must be deterministic. The same source and edition must produce iden
 - `GOF3158`: reserved `async` modifier on a function-shaped declaration (`async fn`, `async test fn`, `async fixture(scope) fn`, `async fn Type.method`) — v1 concurrency is `go` + `await` / `await_result`
 - `GOF3159`: reserved `async:` block prefix in statement position — there are no async blocks; the fix-it suggests the spawn-and-join equivalent
 - `GOF3160`: reserved `async` in any other position (expression, operand, type annotation, identifier, or spawn target)
+- `GOF3168`: invalid `module:` export declaration (late or second block, empty block, non-identifier entries, duplicate entries, or entries naming unknown/imported/test/fixture names)
+- `GOF3170`: method declared on a struct from another module (methods require the receiver struct in the same file; builtin opaque types are the stdlib exception)
+- `GOF3171`: import-vs-import name collision (two direct imports contributing the same plain function/struct/enum/protocol name)
+- `GOF3172`: warning — import of a blockless module (grandfather window: all its own declarations are importable and the default flips to private at the v1 freeze)

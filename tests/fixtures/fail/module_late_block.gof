@@ -1,0 +1,11 @@
+module:
+    late
+
+fn helper() -> int:
+    return 1
+
+module:
+    late
+
+fn main() -> int:
+    return 0

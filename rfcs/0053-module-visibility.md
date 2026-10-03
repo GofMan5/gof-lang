@@ -532,6 +532,40 @@ Honest, staged, with the one immediate tightening called out:
   extension grammar, snippets, and tests are updated per AGENTS.md §9
   with `npm test` and `npm run package` verified
 
+### Implementation phasing amendment (review-adjudicated)
+
+The v1 implementation ships the **declaration-side contract** in full
+and defers the **namespace-enforcement side**:
+
+Shipped (commits on `agent/language-completion`):
+
+- `module:` block syntax: first-position validation, at-most-one,
+  non-empty, bare-identifier entries, duplicates rejected — all GOF3168
+- entry-contract validation: entries naming unknown, imported, `test
+  fn`, or `fixture fn` names report GOF3168
+- method locality (GOF3170): `fn Type.method` requires the receiver
+  struct in the same file, with the builtin-opaque exception for
+  shipped stdlib method surfaces
+- import collisions (GOF3171): two direct imports contributing the same
+  plain-function/struct/enum/protocol name; methods are keyed by
+  `(receiver, name)` and never collide by bare name
+- grandfather window (GOF3172): every import of a blockless module
+  warns through the warnings channel (warning severity never fails
+  compilation), with the `module:` fix-it
+
+Deferred with re-entry criteria: the strict per-module namespace —
+export-block filtering of contributions, no-transitive-leakage, and
+GOF3169 — lands when the typed layer gains per-module body views (each
+function's body resolving against its own module's visible set). The
+current flat merge exists because imported modules' bodies typecheck
+against the one merged table; filtering a name out of that table breaks
+the importing module's own body before it protects any importer.
+Re-entry trigger: per-module compilation in the native backend (ADR
+0004's per-module parallel codegen), which requires per-module views
+anyway. Until then, a `module:` block validates and documents the
+public surface but does not yet hide the private names from the flat
+merge; the v1-freeze flip therefore also defers to the same trigger.
+
 ## Diagnostics Impact
 
 Five codes, allocated after the last reserved GOF3157 (GOF3158–GOF3167
