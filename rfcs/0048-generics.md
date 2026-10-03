@@ -521,6 +521,37 @@ explicit, cheap to check, and matches the rest of the type system.
 - `spec/language-v1.md` binding rules, `spec/diagnostics.md`, examples, and
   `roadmap.md` sync when the typed-HIR pass lands
 
+### Implementation phasing amendment (review-adjudicated)
+
+Phase A — generic **functions** — shipped through RFC 0044's machinery
+(commits 20bc0ae..573b185): protocol-constrained type parameters
+`fn f[T: Proto](x: T)`, declaration-side contract validation, abstract
+body checking (bounded methods only), call-site inference with
+nested extraction, bound subsumption for generic-to-generic flow,
+`go` spawn of instantiations, and the mut-receiver parameter rule
+(GOF3131). Phase A deviates from this RFC's text in three pinned ways:
+
+- every type parameter carries at least one protocol bound (this RFC
+  allows unconstrained parameters with universal operations only) —
+  unconstrained parameters join Phase B, when the universal-operation
+  check is worth its declaration cost
+- instantiation is inference-only; the explicit bracket form
+  `name[T](...)` joins Phase B together with the indexing-ambiguity
+  regression suite it requires
+- Phase A's diagnostics reuse RFC 0044's GOF3132 family (the
+  declaration-contract code) rather than allocating this RFC's
+  GOF3146/GOF3149 — the code split lands with Phase B's new triggers
+
+Phase B — generic **structs** and **enums** (`struct Pair[T]`,
+parameterized payload enums), methods on generic structs, explicit
+instantiation syntax, unconstrained parameters, and the GOF3147/GOF3148/
+GOF3150 allocation — deferred with re-entry criteria: (1) the native
+backend's witness-table dispatch (ADR 0004) makes generic types
+lowerable, or (2) the evaluator's dynamic dispatch demonstrates a
+concrete need for parameterized user types beyond the protocol surface.
+The closure-restriction trigger (`GOF3146`'s capture clause) stays
+reserved exactly as this RFC specifies it.
+
 ## Diagnostics Impact
 
 This RFC adds exactly five codes, all errors, each following the
