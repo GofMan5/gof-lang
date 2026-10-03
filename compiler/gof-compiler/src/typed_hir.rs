@@ -888,6 +888,42 @@ fn run_const_pass(
     diagnostics: &mut Diagnostics,
 ) -> HashMap<String, Type> {
     let mut const_types: HashMap<String, Type> = HashMap::new();
+    // GOF3173 name-collision pass: a const name colliding with a
+    // function, struct, enum, or protocol in the module graph leaves
+    // one token with simultaneous value and call meanings — the exact
+    // ambiguity the RFC forbids.
+    for decl in &module.consts {
+        let collision = if signatures.contains_key(&decl.name) {
+            Some("function")
+        } else if known_structs.contains(&decl.name) {
+            Some("struct")
+        } else if known_enums.contains(&decl.name) {
+            Some("enum")
+        } else if known_protocols.contains(&decl.name) {
+            Some("protocol")
+        } else {
+            None
+        };
+        if let Some(kind) = collision {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3173",
+                    format!("const `{}` collides with a {} of the same name", decl.name, kind),
+                    "one token cannot carry both a const value and a callable/constructible meaning in the same module graph",
+                    decl.span,
+                )
+                .with_fix_it(format!(
+                    "rename the const or the {} so every name keeps one meaning",
+                    kind
+                ))
+                .with_source_path(decl.source_path.clone()),
+            );
+        }
+    }
+    // Two passes (RFC 0054: declaration order does not constrain
+    // references): first collect ALL declared const types, then lower
+    // initializers against the complete table — forward references
+    // resolve, and cycles get detected below.
     for decl in &module.consts {
         // The annotation resolves through the ordinary resolver with an
         // empty generic context (consts are not generic in v1).
@@ -897,9 +933,10 @@ fn run_const_pass(
             known_enums,
             known_protocols,
             &GenericContext::default(),
-            &Path::new("const.gof"),
+            &decl.source_path,
             diagnostics,
         );
+        const_types.insert(decl.name.clone(), ty.clone());
         // Taxon rule (GOF3175): the declared type must be deeply
         // value-taxon. Handle/owned members reject.
         if !is_deep_value_taxon(&ty) {
@@ -911,9 +948,21 @@ fn run_const_pass(
                     decl.span,
                 )
                 .with_fix_it("choose a value-taxon type: int, string, bool, list, dict, structs, enums, Result")
-                .with_source_path(PathBuf::new()),
+                .with_source_path(decl.source_path.clone()),
             );
         }
+    }
+    // Pass 2: initializers lower against the COMPLETE table —
+    // declaration order does not constrain references (RFC 0054). The
+    // grammar (GOF3174), annotation match (GOF3176), and literal-zero
+    // faults (GOF3177) check here, and the reference graph feeds the
+    // cycle detector below.
+    let mut const_refs: HashMap<String, Vec<String>> = HashMap::new();
+    for decl in &module.consts {
+        let ty = const_types
+            .get(&decl.name)
+            .cloned()
+            .unwrap_or(Type::Unknown);
         // The initializer typechecks through the ordinary typed layer by
         // lowering it as a standalone expression; the const grammar
         // check (GOF3174) runs on the typed result.
@@ -931,7 +980,7 @@ fn run_const_pass(
             &const_types,
             diagnostics,
             &Type::Unknown,
-            &Path::new("const.gof"),
+            &decl.source_path,
         );
         check_const_grammar(&typed_value, diagnostics);
         // GOF3176: the initializer's type must match the annotation.
@@ -950,7 +999,7 @@ fn run_const_pass(
                     ),
                     decl.span,
                 )
-                .with_source_path(PathBuf::new()),
+                .with_source_path(decl.source_path.clone()),
             );
         }
         // GOF3177: compile-time evaluation faults — division by a const
@@ -963,12 +1012,101 @@ fn run_const_pass(
                     "the value is fixed at declaration, so the runtime division-by-zero diagnostic is promoted to compile time here",
                     decl.span,
                 )
-                .with_source_path(PathBuf::new()),
+                .with_source_path(decl.source_path.clone()),
             );
         }
-        const_types.insert(decl.name.clone(), ty);
+        let mut refs = Vec::new();
+        collect_const_refs(&typed_value, &mut refs);
+        const_refs.insert(decl.name.clone(), refs);
+    }
+    for decl in &module.consts {
+        let mut path = vec![decl.name.clone()];
+        let mut visiting: HashSet<String> = [decl.name.clone()].into();
+        if const_reference_cycle(&decl.name, &const_refs, &mut visiting, &mut path) {
+            diagnostics.push(
+                Diagnostic::error(
+                    "GOF3173",
+                    format!(
+                        "const `{}` participates in a reference cycle: {}",
+                        decl.name,
+                        path.join(" -> ")
+                    ),
+                    "const initializers form a reference graph evaluated once; a cycle has no evaluation order",
+                    decl.span,
+                )
+                .with_fix_it("break the cycle by grounding at least one initializer in a literal")
+                .with_source_path(decl.source_path.clone()),
+            );
+        }
     }
     const_types
+}
+
+/// DFS: does `name`'s reference graph reach back to a name already on
+/// the visiting path?
+fn const_reference_cycle(
+    name: &str,
+    const_refs: &HashMap<String, Vec<String>>,
+    visiting: &mut HashSet<String>,
+    path: &mut Vec<String>,
+) -> bool {
+    let Some(refs) = const_refs.get(name) else {
+        return false;
+    };
+    for reference in refs {
+        if visiting.contains(reference) {
+            path.push(reference.clone());
+            return true;
+        }
+        visiting.insert(reference.clone());
+        path.push(reference.clone());
+        if const_reference_cycle(reference, const_refs, visiting, path) {
+            return true;
+        }
+        path.pop();
+        visiting.remove(reference);
+    }
+    false
+}
+
+/// Collect the const names referenced anywhere inside a typed
+/// initializer (the GOF3173 cycle-detection input).
+fn collect_const_refs(expr: &TypedExpr, refs: &mut Vec<String>) {
+    match &expr.kind {
+        TypedExprKind::Const(name) => refs.push(name.clone()),
+        TypedExprKind::List { items } => {
+            for item in items {
+                collect_const_refs(item, refs);
+            }
+        }
+        TypedExprKind::Dict { entries } => {
+            for entry in entries {
+                collect_const_refs(&entry.key, refs);
+                collect_const_refs(&entry.value, refs);
+            }
+        }
+        TypedExprKind::Unary { value, .. } => collect_const_refs(value, refs),
+        TypedExprKind::Binary { lhs, rhs, .. } => {
+            collect_const_refs(lhs, refs);
+            collect_const_refs(rhs, refs);
+        }
+        TypedExprKind::Tuple { items } => {
+            for item in items {
+                collect_const_refs(item, refs);
+            }
+        }
+        TypedExprKind::StructInit { args, .. } | TypedExprKind::EnumVariant { args, .. } => {
+            for arg in args {
+                collect_const_refs(arg, refs);
+            }
+        }
+        TypedExprKind::Call { args, .. } => {
+            for arg in args {
+                collect_const_refs(arg, refs);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// RFC 0054: is the type deeply value-taxon? Handle types, owned types
@@ -2923,6 +3061,25 @@ fn lower_stmt(
                     );
                 }
 
+                // RFC 0054: an immutable plain bind over a const name is
+                // the accidental-rebinding case — the interpreter rejects
+                // it at runtime (GOF3003 against the outermost const
+                // frame), so the typed layer promotes the rejection to
+                // compile time. `mut name = ...` remains the explicit,
+                // legal shadow.
+                if !mutable && consts.contains_key(&name) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3003",
+                            format!("cannot reassign immutable binding `{name}`"),
+                            "the name is a top-level const: consts are immutable everywhere, and rebinding without `mut` reads as reassignment",
+                            name_span,
+                        )
+                        .with_fix_it("use a `mut name = ...` binding to shadow the const, or pick a different name")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
+
                 if ty.is_some() {
                     ensure_type_compatibility(
                         &declared_type,
@@ -3005,6 +3162,22 @@ fn lower_stmt(
                     value,
                 }
             } else {
+                // RFC 0054: a plain assignment landing on a const name
+                // (no local in scope) is the accidental-rebind case —
+                // promote the interpreter's runtime GOF3003 to compile
+                // time.
+                if consts.contains_key(name) {
+                    diagnostics.push(
+                        Diagnostic::error(
+                            "GOF3003",
+                            format!("cannot reassign immutable binding `{name}`"),
+                            "the name is a top-level const: consts are immutable everywhere",
+                            *span,
+                        )
+                        .with_fix_it("use a `mut name = ...` binding to shadow the const, or pick a different name")
+                        .with_source_path(source_path.to_path_buf()),
+                    );
+                }
                 scopes.define_current(
                     name.clone(),
                     LocalBinding {

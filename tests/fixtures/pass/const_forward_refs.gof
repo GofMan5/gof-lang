@@ -1,0 +1,9 @@
+const A: int = B + 1
+const B: int = 2
+const C: int = A * B
+
+fn main() -> int:
+    assert(A == 3, "forward const references resolve")
+    assert(C == 6, "chained forward references compose")
+    print(A + C)
+    return 0

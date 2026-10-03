@@ -52,6 +52,9 @@ pub fn parse_single_source(source: &SourceFile) -> Result<Module, Diagnostics> {
     for function in &mut module.functions {
         function.source_path = source.path().to_path_buf();
     }
+    for decl in &mut module.consts {
+        decl.source_path = source.path().to_path_buf();
+    }
     for protocol in &mut module.protocols {
         protocol.source_path = source.path().to_path_buf();
     }
@@ -335,10 +338,6 @@ where
         // imports warn (GOF3172). Strict per-module filtering and
         // GOF3169 land with the phasing amendment's re-entry criteria.
         let root_path = root_path.to_path_buf();
-        let root_module = self
-            .modules
-            .get(&root_path)
-            .expect("root module should be loaded");
         let _ = &direct_imports;
         let mut name_origin: HashMap<String, PathBuf> = HashMap::new();
 
@@ -353,7 +352,7 @@ where
             // declaration-side contract — export validation (GOF3168),
             // grandfather warnings (GOF3172) — applies per module.
             let is_root = *path == root_path;
-            let import_span = direct_imports.get(path).copied();
+            let import_span = direct_imports.get(path).copied().flatten();
 
             // Per-module export set: a module with a `module:` block
             // publishes exactly the exported names (GOF3168
@@ -417,7 +416,7 @@ where
                                     .unwrap_or_else(|| path.display().to_string())
                             ),
                             "all of the module's own declarations are currently importable; the default flips to private at the v1 freeze, so declare the public surface now",
-                            import_span.flatten().unwrap_or(crate::source::Span::new(1, 1, 1)),
+                            import_span.unwrap_or(crate::source::Span::new(1, 1, 1)),
                         )
                         .with_fix_it(format!(
                             "add a `module:` block to `{}` listing the exported names",
@@ -441,10 +440,11 @@ where
                         if other != path {
                             report_import_collision(
                                 diagnostics,
-                                &root_module.imports,
+                                import_span,
+                                path,
+                                other,
                                 &decl.name,
                                 &root_path,
-                                decl.span,
                             );
                             continue;
                         }
@@ -500,10 +500,11 @@ where
                         if other != path {
                             report_import_collision(
                                 diagnostics,
-                                &root_module.imports,
+                                import_span,
+                                path,
+                                other,
                                 &decl.name,
                                 &root_path,
-                                decl.span,
                             );
                             continue;
                         }
@@ -654,10 +655,11 @@ where
                         if other != path {
                             report_import_collision(
                                 diagnostics,
-                                &root_module.imports,
+                                import_span,
+                                path,
+                                other,
                                 &function.name,
                                 &root_path,
-                                function.span,
                             );
                             continue;
                         }
@@ -780,10 +782,11 @@ where
                         if other != path {
                             report_import_collision(
                                 diagnostics,
-                                &root_module.imports,
+                                import_span,
+                                path,
+                                other,
                                 &decl.name,
                                 &root_path,
-                                decl.span,
                             );
                             continue;
                         }
@@ -1535,20 +1538,28 @@ const BUILTIN_RECEIVER_TYPE_NAMES: &[&str] = &[
 /// RFC 0053 GOF3171: two direct imports contributing the same name —
 /// the error belongs to the importer's choices, reported at the import
 /// entry that completes the collision.
+/// RFC 0053 GOF3171: two direct imports contributing the same name —
+/// the error belongs to the importer's choices, reported at the IMPORT
+/// ENTRY that brought the second contribution in, with notes pointing
+/// at both source modules.
 fn report_import_collision(
     diagnostics: &mut Diagnostics,
-    root_imports: &[crate::ast::Import],
+    import_span: Option<crate::source::Span>,
+    import_source: &Path,
+    other_source: &Path,
     name: &str,
     root_path: &Path,
-    span: crate::source::Span,
 ) {
-    let collision_import = root_imports.last().cloned();
-    let _ = collision_import;
+    let span = import_span.unwrap_or(crate::source::Span::new(1, 1, 1));
     diagnostics.push(
         Diagnostic::error(
             "GOF3171",
             format!("two imports both export `{name}` into this module"),
-            "neither declaration is local, so the ambiguity comes from the import choices; rename one exported name or remove one import",
+            format!(
+                "the name arrives from `{}` and `{}`; neither declaration is local, so the ambiguity comes from the import choices",
+                other_source.display(),
+                import_source.display()
+            ),
             span,
         )
         .with_fix_it(format!(

@@ -193,7 +193,7 @@ impl PartialEq for Value {
             (Self::Task(lhs), Self::Task(rhs)) => lhs.ptr_eq(rhs),
             // RFC 0050: tuple equality is pairwise and recursive.
             (Self::Tuple(lhs), Self::Tuple(rhs)) => lhs == rhs,
-            // RFC 0047: closures do not participate in equality ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the
+            // RFC 0047: closures do not participate in equality - the
             // same posture as channel and task values.
             (Self::Closure(_), Self::Closure(_)) => false,
             (Self::Unit, Self::Unit) => true,
@@ -2539,7 +2539,7 @@ struct ScopeStack {
     scopes: Vec<HashMap<String, Binding>>,
 }
 
-/// RFC 0054: the module's memoized const values (name ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ value),
+/// RFC 0054: the module's memoized const values (name --„¢ value),
 /// threaded through the eval family exactly like `output`.
 type ConstTable = HashMap<String, Value>;
 
@@ -2613,12 +2613,15 @@ pub fn run_with_output_with_args(
     run_with_output_with_args_and_optional_stdin(module, program_args, None)
 }
 
-/// RFC 0054: evaluate a module's top-level consts once, in declaration
-/// order, with previously evaluated consts visible through the seeding
-/// scope (const initializers may reference earlier consts). Returns the
-/// memoized table threaded through the eval family; `eval_function`
-/// seeds its root scope from it so consts read like immutable bindings
-/// and locals shadow them per the local-first discipline.
+/// RFC 0054: evaluate a module's top-level consts once, in reference
+/// (topological) order — declaration order does not constrain
+/// references, so a const may read a later-declared const as long as
+/// the reference graph is acyclic (the typed pass rejects cycles with
+/// GOF3173). Previously evaluated consts stay visible through the
+/// seeding scope. Returns the memoized table threaded through the eval
+/// family; `eval_function` seeds its root scope from it so consts read
+/// like immutable bindings and locals shadow them per the local-first
+/// discipline.
 fn evaluate_consts(
     module: &Module,
     functions: &FunctionTable,
@@ -2629,7 +2632,14 @@ fn evaluate_consts(
 ) -> Result<ConstTable, Diagnostics> {
     let mut table: ConstTable = HashMap::new();
     let mut seeds = ScopeStack::new(&[], &[]);
+    let mut order: Vec<&crate::ast::ConstDecl> = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    // Topological order: dependencies first (post-order DFS over the
+    // referenced const names).
     for decl in &module.consts {
+        order_consts(decl, module, &mut visited, &mut order);
+    }
+    for decl in order {
         let value = match eval_expr(
             &decl.value,
             &seeds,
@@ -2639,7 +2649,7 @@ fn evaluate_consts(
             enums,
             output,
             &HashMap::new(),
-            &Path::new("const.gof"),
+            &decl.source_path,
         ) {
             Ok(value) => value,
             Err(EvalSignal::Diagnostics(diagnostics)) => return Err(diagnostics),
@@ -2664,6 +2674,73 @@ fn evaluate_consts(
         table.insert(decl.name.clone(), value);
     }
     Ok(table)
+}
+
+/// Post-order DFS for the const evaluation order: a const's referenced
+/// const names evaluate first. Cycles were rejected by the typed pass
+/// (GOF3173); the `visited` set keeps the walk linear even if the
+/// module slipped through with one.
+fn order_consts<'decl>(
+    decl: &'decl crate::ast::ConstDecl,
+    module: &'decl Module,
+    visited: &mut HashSet<String>,
+    order: &mut Vec<&'decl crate::ast::ConstDecl>,
+) {
+    if visited.contains(&decl.name) {
+        return;
+    }
+    visited.insert(decl.name.clone());
+    for name in referenced_const_names(&decl.value) {
+        if let Some(dep) = module.consts.iter().find(|d| d.name == name) {
+            order_consts(dep, module, visited, order);
+        }
+    }
+    order.push(decl);
+}
+
+/// Collect the const names referenced by a const initializer's AST
+/// expression (identifier reads that match declared consts).
+fn referenced_const_names(expr: &crate::ast::Expr) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_referenced_names(expr, &mut names);
+    names
+}
+
+fn collect_referenced_names(expr: &crate::ast::Expr, names: &mut Vec<String>) {
+    use crate::ast::Expr;
+    match expr {
+        Expr::Ident(name, _) => names.push(name.clone()),
+        Expr::List { items, .. } => {
+            for item in items {
+                collect_referenced_names(item, names);
+            }
+        }
+        Expr::Dict { entries, .. } => {
+            for entry in entries {
+                collect_referenced_names(&entry.key, names);
+                collect_referenced_names(&entry.value, names);
+            }
+        }
+        Expr::Call { args, .. } => {
+            // Call targets are function names (builtins like `len` are
+            // const-legal), not const reads — the typed layer rejects
+            // everything else in a const initializer (GOF3174).
+            for arg in args {
+                collect_referenced_names(arg, names);
+            }
+        }
+        Expr::Unary { value, .. } => collect_referenced_names(value, names),
+        Expr::Binary { lhs, rhs, .. } => {
+            collect_referenced_names(lhs, names);
+            collect_referenced_names(rhs, names);
+        }
+        Expr::Tuple { items, .. } => {
+            for item in items {
+                collect_referenced_names(item, names);
+            }
+        }
+        _ => {}
+    }
 }
 
 pub fn run_test_function_with_output(
@@ -3733,8 +3810,8 @@ fn eval_block(
     })();
 
     // Flush pending defers LIFO on every exit path (RFC 0045): deferred
-    // calls execute at scope exit ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â before the block's values leave scope
-    // ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and failures are collected, never swallowed (GOF3138).
+    // calls execute at scope exit - before the block's values leave scope
+    // - and failures are collected, never swallowed (GOF3138).
     let defer_failures = flush_deferred(
         &mut deferred,
         scopes,
@@ -3837,7 +3914,7 @@ fn eval_stmt(
             // RFC 0050 destructuring: tuple patterns split the value
             // across the leaves; single names keep today's semantics.
             // RFC 0052: `_` discards the value (binding nothing); a
-            // literal leaf is refutable and rejected (GOF3163 backstop ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+            // literal leaf is refutable and rejected (GOF3163 backstop -
             // the typed layer owns the check).
             match pattern {
                 crate::ast::BindingPattern::Name(name, _) => {
@@ -4022,7 +4099,7 @@ fn eval_stmt(
                     }
                     // RFC 0047 defer target capture: when the callee
                     // resolves to a local closure binding, the defer
-                    // record captures the closure VALUE at registration ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â
+                    // record captures the closure VALUE at registration -
                     // `mut c = f; defer c(); c = g` must call f at exit.
                     // Plain function names stay by-name (the function
                     // tables are immutable, so name resolution at flush
@@ -4173,7 +4250,7 @@ fn eval_stmt(
             }
         }
         // RFC 0046: an `unsafe:` block executes as an ordinary scoped
-        // block ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â rule 2 (no check relaxations) and rule 4 (lexical
+        // block - rule 2 (no check relaxations) and rule 4 (lexical
         // context only) make it semantically identical to a plain block
         // in v1.
         Stmt::Unsafe(body, _) => eval_block(
@@ -4280,7 +4357,7 @@ fn eval_stmt(
                     }
                     // RFC 0052: `_` iterates without binding anything.
                     crate::ast::BindingPattern::Wildcard(_) => {}
-                    // GOF3163 backstop ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the typed layer owns the check.
+                    // GOF3163 backstop - the typed layer owns the check.
                     crate::ast::BindingPattern::Literal(_, literal_span) => {
                         scopes.pop();
                         return Err(refutable_pattern_signal(
@@ -4503,8 +4580,8 @@ fn eval_stmt(
             // and first match wins. Within an arm: the pattern test runs
             // first (literal payload leaves compare by value, wildcards
             // match anything, tuples recurse), then the arm's bindings
-            // are created, then the guard ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â evaluated in the arm scope
-            // with the bindings visible ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â and a `false` guard falls
+            // are created, then the guard - evaluated in the arm scope
+            // with the bindings visible - and a `false` guard falls
             // through to the next arm.
             for (pattern, arm) in resolved_arms {
                 if pattern.enum_name != target_enum.name || pattern.variant != target_enum.variant {
@@ -6434,7 +6511,7 @@ fn refutable_pattern_signal(position: &str, span: Span, source_path: &Path) -> E
 /// RFC 0052: Wildcard leaves bind nothing anywhere; Literal leaves bind
 /// nothing in match payload positions (the dispatch already tested
 /// them) and are rejected in binding statements and `for` bindings
-/// (GOF3163 backstop ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the typed layer owns the check).
+/// (GOF3163 backstop - the typed layer owns the check).
 fn bind_pattern_leaf(
     leaf: &crate::ast::BindingPattern,
     member: Value,
@@ -6546,7 +6623,7 @@ fn bind_pattern_leaf(
 /// value using the position's existing equality semantics; a binding or
 /// wildcard leaf matches anything; a tuple leaf matches a tuple value of
 /// the same arity whose members match pairwise. Used by the ordered
-/// match dispatch ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the test runs before the guard, and only arms whose
+/// match dispatch - the test runs before the guard, and only arms whose
 /// patterns fully match evaluate their guard or body.
 fn pattern_leaf_matches(leaf: &crate::ast::BindingPattern, value: &Value) -> bool {
     match leaf {
@@ -17371,7 +17448,7 @@ mod tests {
     #[test]
     fn evaluates_guarded_match_arms_in_order() {
         // RFC 0052's classify shape: a repeated variant with different
-        // guards (legal ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the narrowed GOF3030 never fires), guarded
+        // guards (legal - the narrowed GOF3030 never fires), guarded
         // arms before the unguarded total arm, first match wins.
         let value = run_source(
             "enum HttpOutcome:\n    Done(status: int, body: string)\n    Failed(code: int)\n\nfn classify(outcome: HttpOutcome) -> string:\n    match outcome:\n        HttpOutcome.Done(status, body) if status == 404 and starts_with(body, \"mis\"):\n            return \"missing\"\n        HttpOutcome.Done(status, body) if status >= 500:\n            return \"server\"\n        HttpOutcome.Done(status, body):\n            return \"plain\"\n        HttpOutcome.Failed(code):\n            return \"failed\"\n\nfn main() -> int:\n    assert(classify(HttpOutcome.Done(404, \"missing doc\")) == \"missing\", \"guard must see the arm bindings\")\n    assert(classify(HttpOutcome.Done(500, \"boom\")) == \"server\", \"guards run in order\")\n    assert(classify(HttpOutcome.Done(302, \"redirect\")) == \"plain\", \"the total arm closes the match\")\n    assert(classify(HttpOutcome.Failed(7)) == \"failed\", \"other variants dispatch unchanged\")\n    return 0\n",

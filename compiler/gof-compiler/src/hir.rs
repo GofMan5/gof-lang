@@ -28,6 +28,7 @@ pub struct HirConstDecl {
     pub ty: HirTypeRef,
     pub value: HirExpr,
     pub span: Span,
+    pub source_path: std::path::PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -380,6 +381,7 @@ fn lower_const(decl: &crate::ast::ConstDecl) -> HirConstDecl {
         ty: lower_type_ref(&decl.ty),
         value: lower_expr(&decl.value),
         span: decl.span,
+        source_path: decl.source_path.clone(),
     }
 }
 

@@ -1,0 +1,5 @@
+const FIXED: int = 7
+
+fn main() -> int:
+    FIXED = 99
+    return 0

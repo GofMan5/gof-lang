@@ -33,6 +33,9 @@ pub struct ConstDecl {
     pub ty: TypeRef,
     pub value: Expr,
     pub span: Span,
+    /// Source file that declared the const — threaded for
+    /// file-aware diagnostics (RFC 0054 GOF3173–3177).
+    pub source_path: PathBuf,
 }
 
 /// One `module:` export entry — a bare identifier naming a top-level
@@ -603,6 +606,7 @@ impl<'a> Parser<'a> {
             ty,
             value,
             span,
+            source_path: PathBuf::new(),
         }
     }
 
