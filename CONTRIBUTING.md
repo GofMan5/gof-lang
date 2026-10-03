@@ -27,5 +27,8 @@
 - `cargo fmt --all --check`
 - `cargo test --workspace`
 - `cargo bench -p gof-bench --no-run`
+- dev-build budget tripwire (opt-in, release profile):
+  `cargo test --release -p gof-bench --test dev_build_budget_gate -- --ignored --nocapture`
+  — fails past 3x the pinned budget; see `benchmarks/gof-bench/BUDGETS.md`
 
 New deterministic compiler/runtime modules are expected to reach full coverage and must not regress existing conformance fixtures or benchmark baselines.

@@ -1,0 +1,84 @@
+fn clamp(value: int, low: int, high: int) -> int:
+    if value < low:
+        return low
+    if value > high:
+        return high
+    return value
+
+fn digit_sum(value: int) -> int:
+    mut remaining: int = value
+    mut total: int = 0
+    while remaining > 0:
+        total = total + remaining % 10
+        remaining = remaining / 10
+    return total
+
+fn collatz_steps(start: int, limit: int) -> int:
+    mut value: int = start
+    mut steps: int = 0
+    while value != 1 and steps < limit:
+        if value % 2 == 0:
+            value = value / 2
+        else:
+            value = 3 * value + 1
+        steps = steps + 1
+    return steps
+
+fn weigh(value: int, salt: int) -> int:
+    if value % 3 == 0:
+        return value / 3 + salt
+    if value % 5 == 0:
+        return value / 5 - salt
+    return value * 2 + salt
+
+fn mix(left: int, right: int, flag: bool) -> int:
+    if flag and left > right:
+        return left - right
+    if not flag and left < right:
+        return right - left
+    return left + right
+
+fn hot_loop(rounds: int, seed: int) -> int:
+    mut accumulator: int = seed
+    mut index: int = 0
+    while index < rounds:
+        if index % 2 == 0:
+            accumulator = accumulator + weigh(index, 3)
+        else:
+            accumulator = accumulator - weigh(index, 1)
+        if accumulator > 1000000:
+            accumulator = accumulator % 1000000
+        index = index + 1
+    return accumulator
+
+fn cold_loop(rounds: int, seed: int) -> int:
+    mut total: int = 0
+    mut outer: int = 0
+    while outer < rounds:
+        mut inner: int = 0
+        while inner < rounds:
+            total = total + mix(outer * inner % 97, seed % 13, inner >= 3 and inner <= 60)
+            inner = inner + 1
+        outer = outer + 1
+    return total
+
+fn classify(value: int) -> int:
+    if value >= 0 and value <= 9:
+        return 1
+    if value >= 10 and value <= 99:
+        return 2
+    return 3
+
+fn main() -> int:
+    mut result: int = 0
+    result = result + hot_loop(50, 7)
+    result = result + cold_loop(6, 11)
+    result = result + collatz_steps(27, 200)
+    result = result + digit_sum(clamp(result, 0, 9999))
+    if classify(result) == 3:
+        result = result % 512
+    else:
+        result = result % 256
+    if result > 255:
+        result = result % 256
+    return result

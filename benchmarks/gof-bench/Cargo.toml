@@ -19,3 +19,7 @@ harness = false
 name = "concurrency_runtime"
 harness = false
 
+[[bench]]
+name = "dev_build_budget"
+harness = false
+

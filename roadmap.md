@@ -305,6 +305,7 @@ Hard sequencing rule:
 - `[~]` CP-M7-2: first native artifact path
 - `[x]` CP-M7-2a: bootstrap-native executables keep same supported import/package behavior outside the source tree
 - `[ ]` CP-M7-3: performance regression gates
+- `[x]` CP-M7-3a: dev-build budget pinned by benchmark — canonical int/bool fixture, in-process pipeline budgets (≤ 4.0 ms uncached, ≤ 3.0 ms cache-hit on the reference machine) with a 3x tripwire gate; the record and re-pin procedure live in `benchmarks/gof-bench/BUDGETS.md`
 - Exit criteria:
 - `gof build` emits real executable artifacts
 - performance work is benchmark-backed and operationally visible
