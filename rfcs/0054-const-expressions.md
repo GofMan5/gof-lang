@@ -189,6 +189,19 @@ Evaluation semantics:
   time is division or modulo by a zero divisor (`GOF3177`), the compile-time
   counterpart of the runtime `GOF3068` class — a declared const can never
   raise a runtime diagnostic
+
+  **Implementation phasing note (v1):** the typed pass detects the literal
+  zero divisor (the common case) and reports GOF3177 at compile time. A
+  const-referenced zero divisor (`const Z: int = 0` then `10 / Z`) cannot
+  be promoted through the typed layer in v1: the one-way layer discipline
+  (ADR 0002) keeps the typed pass above the evaluator, and const values
+  only materialize in the module's const evaluation. Such programs fault
+  during const initialization — before the first statement of any
+  function runs — so the observable contract "a declared const never
+  raises a runtime diagnostic mid-execution" still holds. Full
+  value-level promotion joins the strict per-module views re-entry
+  (Phase 2), where const evaluation moves to a typed-layer pure
+  evaluator shared with the native backend.
 - `and`/`or` keep left-to-right short-circuit; evaluation is deterministic,
   environment-independent, effect-free, and total
 - termination holds by construction: the grammar contains no calls, no loops,
