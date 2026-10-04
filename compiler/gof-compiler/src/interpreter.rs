@@ -2051,7 +2051,28 @@ impl ChannelHandle {
                 .as_ref()
                 .expect("channel send wait signal should be registered before blocking")
                 .clone();
+            // Snapshot the wake generation BEFORE the final cancelled
+            // re-check — the order `TaskHandle::wait_outcome` and the
+            // `select` loop already use. The token's flag is read while
+            // this channel's state lock is held, but the canceller takes
+            // no channel lock, so a `cancel` can land between the
+            // loop-top check above and a snapshot taken after it: the
+            // cancel's `notify` bumps the generation first, the snapshot
+            // absorbs the wake, and `wait_for_change` parks forever
+            // waiting for a change that already happened (the
+            // intermittent cancel-path lost wake that froze the
+            // cancel-wake bench — see benchmarks/gof-bench/
+            // MEASUREMENTS.md, "The hang finding"). With the snapshot
+            // taken here, both orderings are safe: a cancel that already
+            // bumped the generation is caught by the re-check below
+            // (looping back so the cancelled check at the top returns
+            // `Cancelled` with its rendezvous cleanup), and a cancel
+            // that lands after the snapshot is caught by
+            // `wait_for_change` itself.
             let generation = signal.generation();
+            if token.is_some_and(CancelTokenValue::is_cancelled) {
+                continue;
+            }
             drop(state);
             signal.wait_for_change(generation);
         }
@@ -2115,7 +2136,28 @@ impl ChannelHandle {
                 .as_ref()
                 .expect("channel recv wait signal should be registered before blocking")
                 .clone();
+            // Snapshot the wake generation BEFORE the final cancelled
+            // re-check — the order `TaskHandle::wait_outcome` and the
+            // `select` loop already use. The token's flag is read while
+            // this channel's state lock is held, but the canceller takes
+            // no channel lock, so a `cancel` can land between the
+            // loop-top check above and a snapshot taken after it: the
+            // cancel's `notify` bumps the generation first, the snapshot
+            // absorbs the wake, and `wait_for_change` parks forever
+            // waiting for a change that already happened (the
+            // intermittent cancel-path lost wake that froze the
+            // cancel-wake bench — see benchmarks/gof-bench/
+            // MEASUREMENTS.md, "The hang finding"). With the snapshot
+            // taken here, both orderings are safe: a cancel that already
+            // bumped the generation is caught by the re-check below
+            // (looping back so the cancelled check at the top returns
+            // `Cancelled` with its blocking-receiver cleanup), and a
+            // cancel that lands after the snapshot is caught by
+            // `wait_for_change` itself.
             let generation = signal.generation();
+            if token.is_some_and(CancelTokenValue::is_cancelled) {
+                continue;
+            }
             drop(state);
             signal.wait_for_change(generation);
         }
@@ -17344,6 +17386,119 @@ mod tests {
             let outcome = outcome_rx
                 .recv_timeout(WAKE_TIMEOUT)
                 .expect("cancelling the recv token must wake the blocked receiver");
+            assert_eq!(outcome, ChannelReceiveState::Cancelled);
+        }
+    }
+
+    #[test]
+    fn recv_cancel_landing_between_cancelled_check_and_wake_snapshot_wakes_the_waiter() {
+        // The Phase 3 lost-wake regression (see
+        // benchmarks/gof-bench/MEASUREMENTS.md, "The hang finding"): a
+        // blocked `recv` used to read the token's cancelled flag and
+        // only THEN snapshot its WaitSignal generation. A `cancel`
+        // landing in that gap bumps the generation BEFORE the snapshot,
+        // so `wait_for_change` parks waiting for a change that already
+        // happened — the wake is absorbed and the recv hangs forever
+        // (the bench's intermittent freeze). This test drives a cancel
+        // through that exact window on purpose: the waiter and the
+        // canceller start together at a barrier, and the canceller's
+        // spin delay sweeps the cancel's timing across the waiter's
+        // commit path, so some round is guaranteed to land the cancel
+        // between the cancelled check and the snapshot. A regression
+        // hangs a round (detected by the deadline — a lost wake hangs,
+        // it does not flake); the fixed order re-checks the token AFTER
+        // snapshotting the generation, so every round returns
+        // `Cancelled`. The sweep is repeated enough to also sample
+        // scheduler jitter, the amplifier the bench needed.
+        const ROUNDS: usize = 4096;
+        const SWEEP_STEPS: usize = 512;
+        const ROUND_DEADLINE: Duration = Duration::from_millis(250);
+
+        for round in 0..ROUNDS {
+            let channel = Arc::new(ChannelHandle::new(Some(0)));
+            let wait_channel = Arc::clone(&channel);
+            let token = CancelTokenValue::new();
+            let wait_token = token.clone();
+            let start = Arc::new(std::sync::Barrier::new(2));
+            let wait_start = Arc::clone(&start);
+            let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
+            let spin_steps = 2 * (round % SWEEP_STEPS);
+
+            let waiter = std::thread::spawn(move || {
+                wait_start.wait();
+                outcome_tx
+                    .send(wait_channel.recv(Some(&wait_token)))
+                    .expect("recv waiter should report its outcome");
+            });
+
+            start.wait();
+            for _ in 0..spin_steps {
+                std::hint::spin_loop();
+            }
+            token.cancel();
+
+            let outcome = outcome_rx.recv_timeout(ROUND_DEADLINE).unwrap_or_else(|_| {
+                panic!(
+                    "cancel landing during the waiter's commit window must still wake it: \
+                         round {round} (spin delay {spin_steps} spin_loop iterations) never \
+                         returned — a lost wake on the recv cancel path"
+                )
+            });
+            waiter
+                .join()
+                .expect("recv waiter should join after its cancel wake");
+            assert_eq!(outcome, ChannelReceiveState::Cancelled);
+        }
+    }
+
+    #[test]
+    fn send_cancel_landing_between_cancelled_check_and_wake_snapshot_wakes_the_sender() {
+        // The send-side twin of the recv regression above: a blocked
+        // rendezvous sender used to check the token and only then
+        // snapshot its WaitSignal generation, so a cancel landing
+        // between them bumped the generation first and the snapshot
+        // absorbed the wake — the sender hung forever. The canceller's
+        // swept spin delay drives the cancel through that exact window
+        // (the rendezvous shape is deliberate: the sender enqueues into
+        // the slot first, so its commit path is as long as the
+        // receiver's and the sweep can actually land in the window).
+        const ROUNDS: usize = 4096;
+        const SWEEP_STEPS: usize = 512;
+        const ROUND_DEADLINE: Duration = Duration::from_millis(250);
+
+        for round in 0..ROUNDS {
+            let channel = Arc::new(ChannelHandle::new(Some(0)));
+            let wait_channel = Arc::clone(&channel);
+            let token = CancelTokenValue::new();
+            let wait_token = token.clone();
+            let start = Arc::new(std::sync::Barrier::new(2));
+            let wait_start = Arc::clone(&start);
+            let (outcome_tx, outcome_rx) = std::sync::mpsc::channel();
+            let spin_steps = 2 * (round % SWEEP_STEPS);
+
+            let waiter = std::thread::spawn(move || {
+                wait_start.wait();
+                outcome_tx
+                    .send(wait_channel.send(Value::Int(2), Some(&wait_token)))
+                    .expect("send waiter should report its outcome");
+            });
+
+            start.wait();
+            for _ in 0..spin_steps {
+                std::hint::spin_loop();
+            }
+            token.cancel();
+
+            let outcome = outcome_rx.recv_timeout(ROUND_DEADLINE).unwrap_or_else(|_| {
+                panic!(
+                    "cancel landing during the sender's commit window must still wake it: \
+                         round {round} (spin delay {spin_steps} spin_loop iterations) never \
+                         returned — a lost wake on the send cancel path"
+                )
+            });
+            waiter
+                .join()
+                .expect("send waiter should join after its cancel wake");
             assert_eq!(outcome, ChannelReceiveState::Cancelled);
         }
     }
