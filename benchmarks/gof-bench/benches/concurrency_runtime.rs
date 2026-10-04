@@ -38,10 +38,11 @@
 //!   end-to-end per round (spawn and join included — comparable to
 //!   the spawn/join bench, which is the same structure minus the
 //!   blocking and the cancel). This bench carries a WATCHDOG: the
-//!   interpreter currently has an intermittent lost-wake on this
-//!   exact path (the finding in MEASUREMENTS.md), and the watchdog
-//!   turns a would-be silent hang of `cargo bench` into a loud
-//!   fast failure.
+//!   interpreter HAD an intermittent lost-wake on this exact path
+//!   (root-caused and fixed — see "The hang finding" and its
+//!   resolution in MEASUREMENTS.md); the watchdog stays as a standing
+//!   tripwire, turning any future would-be silent hang of `cargo
+//!   bench` into a loud fast failure.
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use gof_bench::concurrency_runtime::{
@@ -117,13 +118,15 @@ fn benchmark_rendezvous_wake_round_trips(c: &mut Criterion) {
 }
 
 /// A no-progress watchdog for the cancel-wake bench: the interpreter
-/// currently has an intermittent lost-wake on this fixture's exact
-/// cancel path (the finding in [MEASUREMENTS.md](../MEASUREMENTS.md)
-/// — a blocked operation that should be woken by `cancel` never
-/// returns). Without the watchdog that manifests as `cargo bench`
-/// freezing with no output; with it, the hang becomes a loud failure
-/// within `TIMEOUT` instead. The margin is ~3000x the measured
-/// per-iteration time, so a merely slow machine never trips it.
+/// HAD an intermittent lost-wake on this fixture's exact cancel path
+/// (root-caused and fixed — see the resolution in
+/// [MEASUREMENTS.md](../MEASUREMENTS.md); a blocked operation that
+/// should be woken by `cancel` never returned). The watchdog remains
+/// as a standing tripwire: without it a recurrence would manifest as
+/// `cargo bench` freezing with no output; with it, a hang becomes a
+/// loud failure within `TIMEOUT` instead. The margin is ~3000x the
+/// measured per-iteration time, so a merely slow machine never trips
+/// it.
 const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(60);
 const WATCHDOG_POLL: Duration = Duration::from_secs(5);
 

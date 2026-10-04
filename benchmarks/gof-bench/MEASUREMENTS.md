@@ -102,11 +102,11 @@ is the record.
 
 The other four measurements are recorded above but deliberately NOT
 pinned yet: the spawn/join number includes the just-landed P3 stack
-change (re-pin after it settles), the channel and cancel-wake numbers
-have only one or two clean full-suite samples each, and the
-cancel-wake bench currently trips the intermittent hang documented
-below — pinning a number from a bench that can hang would be pinning
-an artifact. Each is a named future pin once its bench is stable.
+change (re-pin after it settles), and the channel and cancel-wake
+numbers have only one or two clean full-suite samples each (the
+cancel-wake bench's intermittent hang is now fixed — see the
+resolution under "The hang finding" below — so clean samples can
+accumulate). Each is a named future pin once its bench is stable.
 
 ## The gates
 
@@ -176,11 +176,40 @@ does not touch wake behavior):
   µs scale. This is follow-up work for the wake-path owners (audit
   P7/P9/P1 territory), NOT fixed in this slice.
 
-Until it is fixed, the bench carries a watchdog: if a single run of
-the cancel-wake bench stops making progress for over 60 s (~3000x
-its measured per-iteration time), the bench prints the pointer to
-this section and exits with code 2 — a loud fast failure instead of
-a silent infinite hang of `cargo bench`.
+### Resolution (Phase 3 investigator slice, same week)
+
+Root cause found and fixed in
+`compiler/gof-compiler/src/interpreter.rs` (fix + regression tests
+there): `ChannelHandle::recv` and `ChannelHandle::send` snapshotted
+their WaitSignal generation AFTER the final token-cancelled check
+instead of BEFORE it. A `cancel` landing in that tiny gap bumps the
+generation first, the snapshot then absorbs the wake, and
+`wait_for_change` parks forever waiting for a change that already
+happened — the waiter never returns, its task never completes, and
+the awaiting main thread blocks forever (exactly the minidump shape:
+both threads in futex-class waits). `TaskHandle::wait_outcome` and
+the `select` loop already had the correct snapshot-then-recheck
+order, which is why only the channel cancel path hung — and why
+channel-state changes (send/close, made under the same channel mutex
+the waiter holds across its checks) never raced. The fix takes the
+snapshot first and re-checks the token after it; two stress
+regression tests sweep a cancel through the exact commit window
+(4096 rounds each; they hang within seconds on the old code and run
+5/5 clean on the fixed code, debug and release).
+
+Verification: the full suite above ran clean 3 consecutive times
+post-fix (previously 5/6 freezes; the pre-fix run taken for this fix
+froze in the cancel-wake warmup and was ended by the watchdog, exit
+code 2); the wake-latency gate stayed green (median 8.91 µs per
+exchange against the 10.0 µs budget); `cargo test -p gof-compiler`
+568 green (the 566 + the two regression tests).
+
+The bench keeps its watchdog below — no longer a pointer to a known
+bug, but a standing tripwire: if a single run of the cancel-wake
+bench stops making progress for over 60 s (~3000x its measured
+per-iteration time), the bench prints the pointer to this section
+and exits with code 2 — a loud fast failure instead of a silent
+infinite hang of `cargo bench`.
 
 ## Re-measuring and re-pinning
 
