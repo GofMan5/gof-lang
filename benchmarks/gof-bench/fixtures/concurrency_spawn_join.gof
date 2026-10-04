@@ -1,0 +1,9 @@
+fn trivial() -> int:
+    return 7
+
+fn main() -> int:
+    mut total = 0
+    for i in range(128):
+        task = go trivial()
+        total = total + await task
+    return total

@@ -1,0 +1,23 @@
+fn echo(ping: channel[int], pong: channel[int], rounds: int) -> Result[int, RuntimeError]:
+    mut total = 0
+    for i in range(rounds):
+        value = recv(ping)?
+        send(pong, value)?
+        total = total + value
+    return Result.Ok(total)
+
+fn main() -> Result[int, RuntimeError]:
+    ping: channel[int] = channel(0)
+    pong: channel[int] = channel(0)
+    echo_task = go echo(ping, pong, 512)
+    mut total = 0
+    for i in range(512):
+        send(ping, i)?
+        value = recv(pong)?
+        total = total + value
+    echo_outcome = await echo_task
+    match echo_outcome:
+        Result.Ok(echo_total):
+            return Result.Ok(total + echo_total)
+        Result.Err(error):
+            return Result.Err(error)

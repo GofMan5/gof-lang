@@ -1,0 +1,11 @@
+fn inc(i: int) -> int:
+    return i + 1
+
+fn main() -> Result[int, RuntimeError]:
+    mut tasks: list = []
+    for i in range(10000):
+        tasks = append(tasks, go inc(i))
+    mut total = 0
+    for task in tasks:
+        total = total + await task
+    return Result.Ok(total)

@@ -1,0 +1,8 @@
+fn main() -> Result[int, RuntimeError]:
+    ch: channel[int] = channel(64)
+    mut total = 0
+    for i in range(1024):
+        send(ch, i)?
+        value = recv(ch)?
+        total = total + value
+    return Result.Ok(total)

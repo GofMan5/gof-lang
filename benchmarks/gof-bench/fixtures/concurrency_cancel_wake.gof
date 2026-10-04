@@ -1,0 +1,25 @@
+fn waiter(ready: channel[int], data: channel[int], token: cancel_token) -> Result[int, RuntimeError]:
+    send(ready, 1)?
+    outcome = recv(data, token)
+    match outcome:
+        Result.Ok(value):
+            return Result.Ok(value)
+        Result.Err(_):
+            return Result.Ok(0)
+
+fn main() -> Result[int, RuntimeError]:
+    mut total = 0
+    for i in range(128):
+        ready: channel[int] = channel(1)
+        data: channel[int] = channel(0)
+        token: cancel_token = cancel_token()
+        task = go waiter(ready, data, token)
+        signal = recv(ready)?
+        cancel(token)
+        joined = await task
+        match joined:
+            Result.Ok(value):
+                total = total + value + signal
+            Result.Err(error):
+                return Result.Err(error)
+    return Result.Ok(total)

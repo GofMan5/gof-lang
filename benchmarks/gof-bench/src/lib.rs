@@ -171,3 +171,231 @@ pub fn dev_build_cache_hit_object(cache: &IrCache) -> Vec<u8> {
         .expect("the warmed cache entry must hit (a miss means the key derivation drifted)");
     emit_object(&bound).expect("the cached IR must emit an object")
 }
+
+/// The concurrency runtime measurement surface (Phase 3, audit P7 +
+/// P8): the canonical fixture programs the concurrency benches
+/// measure, the round counts that turn per-program wall-clock into
+/// per-operation rates, and the compile/run helpers the benchmark
+/// (`benches/concurrency_runtime.rs`) and the gates
+/// (`tests/concurrency_stress_gate.rs`) share — the gates enforce
+/// exactly what the benchmark measures, with zero drift by
+/// construction: every gate's expected value is computed from the
+/// SAME round constant the benchmark's throughput uses, so a fixture
+/// edited out of sync with its constant fails the gate loudly
+/// instead of silently mislabeling the measurement.
+///
+/// The measurement record — the numbers, the machine, the
+/// interpretation of what each number isolates, and the re-measure
+/// procedure — lives in [MEASUREMENTS.md](../MEASUREMENTS.md).
+///
+/// All fixtures run through the PUBLIC seam (`compile_source` +
+/// `run_with_output`), like every other bench in this crate: the
+/// interpreter's task/channel/token primitives are private to
+/// `gof-compiler`, so the concurrency numbers are end-to-end program
+/// runs, and the record documents what each program's structure
+/// isolates (the wake-latency fixtures exchange values in a loop so
+/// the per-operation number is the run time divided by the loop
+/// count, with interpreter setup amortized).
+pub mod concurrency_runtime {
+    use gof_compiler::interpreter::run_with_output;
+    use gof_compiler::pipeline::CompiledModule;
+    use gof_compiler::{CompileMode, SourceFile, compile_source};
+
+    /// Rounds in the spawn/join fixture: one `go trivial()` + `await`
+    /// round trip per round. Must equal the `range(...)` bound in
+    /// [`fixtures/concurrency_spawn_join.gof`](../fixtures/concurrency_spawn_join.gof);
+    /// the gate enforces the pairing through the expected value.
+    pub const SPAWN_JOIN_ROUNDS: u64 = 128;
+
+    /// Buffered send/recv pairs in the channel-throughput fixture.
+    /// Must equal the `range(...)` bound in
+    /// [`fixtures/concurrency_channel_pairs.gof`](../fixtures/concurrency_channel_pairs.gof).
+    pub const CHANNEL_PAIRS: u64 = 1024;
+
+    /// Rendezvous exchanges in the wake-latency fixture: one
+    /// ping/pong round trip (a blocked recv woken by a send, in both
+    /// directions) per exchange. Must equal the `range(...)` bounds
+    /// in
+    /// [`fixtures/concurrency_rendezvous_wake.gof`](../fixtures/concurrency_rendezvous_wake.gof).
+    pub const RENDEZVOUS_EXCHANGES: u64 = 512;
+
+    /// Cancel-wake rounds in the cancel-wake fixture: one blocked
+    /// recv woken by a token cancel (plus its spawn and join) per
+    /// round. Must equal the `range(...)` bound in
+    /// [`fixtures/concurrency_cancel_wake.gof`](../fixtures/concurrency_cancel_wake.gof).
+    pub const CANCEL_WAKE_ROUNDS: u64 = 128;
+
+    /// Tasks in the 10k stress fixture. Must equal the `range(...)`
+    /// bound in
+    /// [`fixtures/concurrency_stress_10k.gof`](../fixtures/concurrency_stress_10k.gof).
+    pub const STRESS_TASKS: u64 = 10_000;
+
+    fn fixture_module(name: &str, source: &str) -> CompiledModule {
+        compile_source(&SourceFile::new(name, source), CompileMode::Executable)
+            .expect("the concurrency fixture must compile")
+    }
+
+    fn run_module_text(module: &CompiledModule) -> String {
+        let result = run_with_output(&module.ast).expect("the concurrency fixture must run");
+        result
+            .value
+            .cli_text()
+            .unwrap_or_else(|| "unit".to_string())
+    }
+
+    /// The spawn/join fixture compiled once — the trivial task
+    /// (`go trivial()` + `await`, rendezvous-free) round trip the
+    /// benchmark iterates.
+    pub fn spawn_join_module() -> CompiledModule {
+        fixture_module(
+            "concurrency_spawn_join.gof",
+            include_str!("../fixtures/concurrency_spawn_join.gof"),
+        )
+    }
+
+    /// One run of the spawn/join fixture: `SPAWN_JOIN_ROUNDS`
+    /// sequential go+await round trips.
+    pub fn run_spawn_join(module: &CompiledModule) -> String {
+        run_module_text(module)
+    }
+
+    /// The value a correct run of the spawn/join fixture must return
+    /// (`trivial` returns 7): the gate's completion assert.
+    pub fn spawn_join_expected() -> String {
+        (SPAWN_JOIN_ROUNDS * 7).to_string()
+    }
+
+    /// The channel-throughput fixture compiled once — buffered
+    /// (capacity 64) send/recv pairs, sender and receiver on the same
+    /// thread, `CHANNEL_PAIRS` pairs per run.
+    pub fn channel_pairs_module() -> CompiledModule {
+        fixture_module(
+            "concurrency_channel_pairs.gof",
+            include_str!("../fixtures/concurrency_channel_pairs.gof"),
+        )
+    }
+
+    /// One run of the channel-throughput fixture.
+    pub fn run_channel_pairs(module: &CompiledModule) -> String {
+        run_module_text(module)
+    }
+
+    /// The value a correct run of the channel-throughput fixture must
+    /// return (the sum of the sent values): the gate's completion
+    /// assert.
+    pub fn channel_pairs_expected() -> String {
+        format!(
+            "Result.Ok(value: {})",
+            CHANNEL_PAIRS * (CHANNEL_PAIRS - 1) / 2
+        )
+    }
+
+    /// The rendezvous wake fixture compiled once — two tasks exchange
+    /// values over a pair of rendezvous channels; every exchange is a
+    /// blocked recv woken by a send (in both directions), so the
+    /// per-exchange latency is the run time divided by
+    /// `RENDEZVOUS_EXCHANGES`.
+    pub fn rendezvous_wake_module() -> CompiledModule {
+        fixture_module(
+            "concurrency_rendezvous_wake.gof",
+            include_str!("../fixtures/concurrency_rendezvous_wake.gof"),
+        )
+    }
+
+    /// One run of the rendezvous wake fixture.
+    pub fn run_rendezvous_wake(module: &CompiledModule) -> String {
+        run_module_text(module)
+    }
+
+    /// The value a correct run of the rendezvous wake fixture must
+    /// return (main's and echo's sums are equal): the gate's
+    /// completion assert.
+    pub fn rendezvous_wake_expected() -> String {
+        format!(
+            "Result.Ok(value: {})",
+            RENDEZVOUS_EXCHANGES * (RENDEZVOUS_EXCHANGES - 1)
+        )
+    }
+
+    /// The cancel-wake fixture compiled once — each round spawns a
+    /// waiter blocked on `recv(data, token)`, main learns the waiter
+    /// is committed through a `ready` channel, cancels the token, and
+    /// joins: the same wake the interpreter's default-suite
+    /// cancellation tests assert, measured per round.
+    pub fn cancel_wake_module() -> CompiledModule {
+        fixture_module(
+            "concurrency_cancel_wake.gof",
+            include_str!("../fixtures/concurrency_cancel_wake.gof"),
+        )
+    }
+
+    /// One run of the cancel-wake fixture: `CANCEL_WAKE_ROUNDS`
+    /// cancel-wake rounds (each including its spawn and join).
+    pub fn run_cancel_wake(module: &CompiledModule) -> String {
+        run_module_text(module)
+    }
+
+    /// The value a correct run of the cancel-wake fixture must return
+    /// (each cancelled waiter contributes its ready signal): the
+    /// gate's completion assert.
+    pub fn cancel_wake_expected() -> String {
+        format!("Result.Ok(value: {})", CANCEL_WAKE_ROUNDS)
+    }
+
+    /// The 10k stress fixture compiled once — `STRESS_TASKS` spawned
+    /// tasks, all joined sequentially, sum asserted.
+    pub fn stress_10k_module() -> CompiledModule {
+        fixture_module(
+            "concurrency_stress_10k.gof",
+            include_str!("../fixtures/concurrency_stress_10k.gof"),
+        )
+    }
+
+    /// One run of the 10k stress fixture: spawn 10k tasks, join all
+    /// of them, total the results.
+    pub fn run_stress_10k(module: &CompiledModule) -> String {
+        run_module_text(module)
+    }
+
+    /// The value a correct run of the 10k stress fixture must return
+    /// (the sum of `inc(i)` over all tasks): the stress gate's
+    /// completion assert — a task lost to a spawn failure or a lost
+    /// join changes the sum.
+    pub fn stress_10k_expected() -> String {
+        format!(
+            "Result.Ok(value: {})",
+            STRESS_TASKS * (STRESS_TASKS + 1) / 2
+        )
+    }
+
+    /// The pinned wake-latency budget (audit P7's latency claim,
+    /// measured instead of wall-clock-asserted): the per-exchange
+    /// rendezvous wake round trip — a blocked `recv` woken by a
+    /// `send`, in both directions — through the public interpreter
+    /// seam. Pinned on the reference machine (see
+    /// [MEASUREMENTS.md](../MEASUREMENTS.md) for identity, date, and
+    /// the three-run stability evidence) under the bench/release
+    /// profile.
+    ///
+    /// Re-pinning is a reviewed decision, never a side effect: change
+    /// the constant here, re-measure with
+    /// `cargo bench -p gof-bench --bench concurrency_runtime --
+    /// "rendezvous wake"`, and update the record.
+    pub mod wake_budget {
+        /// The per-exchange rendezvous wake round-trip budget: ≤
+        /// 10.0 µs (measured medians 6.07–6.59 µs across three runs).
+        /// The wake claim this pins is ORDERS OF MAGNITUDE, not
+        /// precision: a polling-floor regression lands at tens of
+        /// milliseconds per exchange — thousands of times this
+        /// budget.
+        pub const RENDEZVOUS_WAKE_EXCHANGE_US: f64 = 10.0;
+
+        /// The regression margin the gate tripwire tolerates before
+        /// failing: 3x the budget, the same deliberately generous
+        /// margin the dev-build budget gate uses — absorbs machine
+        /// noise while still catching the 1000x-class regressions
+        /// (a polling floor) that would actually destroy the
+        /// claim.
+        pub const GATE_MARGIN: f64 = 3.0;
+    }
+}
